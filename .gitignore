@@ -1,0 +1,27 @@
+# Build trees
+build/
+build-*/
+cmake-build-*/
+_deps/
+
+# Generated run output. Curated artefacts live in docs/figures and docs/results.
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Editors and tooling
+.vscode/
+.idea/
+compile_commands.json
+.cache/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,126 @@
+#include "sparlab/fem/Selector.hpp"
+
+#include "sparlab/core/Exceptions.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+
+namespace sparlab {
+namespace {
+
+Scalar default_tolerance(const Mesh& mesh) {
+  const Eigen::Vector4d bb = mesh.bounding_box();
+  const Scalar diag = std::hypot(bb(2) - bb(0), bb(3) - bb(1));
+  return 1.0e-9 * std::max(diag, 1.0e-30);
+}
+
+}  // namespace
+
+bool Selector::contains(const Vector2& x, Scalar tol) const {
+  const Scalar t = tolerance > 0.0 ? tolerance : tol;
+  switch (kind) {
+    case SelectorKind::All:
+      return true;
+    case SelectorKind::Box:
+      return x.x() >= xmin - t && x.x() <= xmax + t && x.y() >= ymin - t &&
+             x.y() <= ymax + t;
+    case SelectorKind::Circle:
+      return (x - center).norm() <= radius + t;
+    case SelectorKind::Annulus: {
+      const Scalar r = (x - center).norm();
+      return r >= inner_radius - t && r <= radius + t;
+    }
+    case SelectorKind::NodeIds:
+    case SelectorKind::ElementIds:
+    case SelectorKind::NearestNode:
+      // Handled by the group, which needs mesh-wide information.
+      return false;
+  }
+  return false;
+}
+
+std::vector<Index> SelectorGroup::select_nodes(const Mesh& mesh) const {
+  const Scalar tol = default_tolerance(mesh);
+  std::vector<char> hit(static_cast<std::size_t>(mesh.num_nodes()), 0);
+
+  for (const Selector& sel : members) {
+    if (sel.kind == SelectorKind::ElementIds) {
+      throw ConfigError("region '" + name +
+                        "' uses element_ids where a node region is expected");
+    }
+    if (sel.kind == SelectorKind::NodeIds) {
+      for (Index id : sel.ids) {
+        if (id < 0 || id >= mesh.num_nodes()) {
+          std::ostringstream os;
+          os << "region '" << name << "' lists node id " << id
+             << " which is outside [0, " << mesh.num_nodes() - 1 << "]";
+          throw ConfigError(os.str());
+        }
+        hit[static_cast<std::size_t>(id)] = 1;
+      }
+      continue;
+    }
+    if (sel.kind == SelectorKind::NearestNode) {
+      Index best = -1;
+      Scalar best_d2 = std::numeric_limits<Scalar>::max();
+      for (Index n = 0; n < mesh.num_nodes(); ++n) {
+        const Scalar d2 = (mesh.node(n) - sel.point).squaredNorm();
+        if (d2 < best_d2) {
+          best_d2 = d2;
+          best = n;
+        }
+      }
+      if (best < 0) throw ConfigError("region '" + name + "': mesh has no nodes");
+      hit[static_cast<std::size_t>(best)] = 1;
+      continue;
+    }
+    for (Index n = 0; n < mesh.num_nodes(); ++n) {
+      if (sel.contains(mesh.node(n), tol)) hit[static_cast<std::size_t>(n)] = 1;
+    }
+  }
+
+  std::vector<Index> out;
+  for (Index n = 0; n < mesh.num_nodes(); ++n) {
+    const bool inside = hit[static_cast<std::size_t>(n)] != 0;
+    if (inside != invert) out.push_back(n);
+  }
+  return out;
+}
+
+std::vector<Index> SelectorGroup::select_elements(const Mesh& mesh) const {
+  const Scalar tol = default_tolerance(mesh);
+  std::vector<char> hit(static_cast<std::size_t>(mesh.num_elements()), 0);
+
+  for (const Selector& sel : members) {
+    if (sel.kind == SelectorKind::NodeIds || sel.kind == SelectorKind::NearestNode) {
+      throw ConfigError("region '" + name +
+                        "' uses a node-only selector where an element region is "
+                        "expected");
+    }
+    if (sel.kind == SelectorKind::ElementIds) {
+      for (Index id : sel.ids) {
+        if (id < 0 || id >= mesh.num_elements()) {
+          std::ostringstream os;
+          os << "region '" << name << "' lists element id " << id
+             << " which is outside [0, " << mesh.num_elements() - 1 << "]";
+          throw ConfigError(os.str());
+        }
+        hit[static_cast<std::size_t>(id)] = 1;
+      }
+      continue;
+    }
+    for (Index e = 0; e < mesh.num_elements(); ++e) {
+      if (sel.contains(mesh.element_centroid(e), tol)) hit[static_cast<std::size_t>(e)] = 1;
+    }
+  }
+
+  std::vector<Index> out;
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    const bool inside = hit[static_cast<std::size_t>(e)] != 0;
+    if (inside != invert) out.push_back(e);
+  }
+  return out;
+}
+
+}  // namespace sparlab

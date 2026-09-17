@@ -1,0 +1,142 @@
+name: build-and-verify
+
+# Three jobs, each answering one question:
+#   build-and-test   does it compile warning-clean on GCC and Clang, and do the
+#                    tests pass?
+#   verify           do the verification and validation studies still meet their
+#                    documented tolerances?
+#   benchmark        does a full topology-optimisation benchmark still run end to
+#                    end and produce its figures?
+#
+# The verify job is the one that can catch a numerical regression, so it uploads
+# its summary either way.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build and test (${{ matrix.compiler }}, ${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libeigen3-dev catch2
+
+      - name: Select compiler
+        run: |
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            echo "CC=clang"   >> "$GITHUB_ENV"
+            echo "CXX=clang++" >> "$GITHUB_ENV"
+          else
+            echo "CC=gcc"   >> "$GITHUB_ENV"
+            echo "CXX=g++"  >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSPARLAB_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        # The Debug build runs Eigen's own assertions, which is slow but is the
+        # configuration most likely to catch an indexing mistake.
+        run: ctest --test-dir build --output-on-failure -j "$(nproc)"
+
+  verify:
+    name: verification and validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libeigen3-dev catch2
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j "$(nproc)"
+
+      - name: Run the studies
+        # sparlab_verify exits non-zero if any study misses its documented
+        # tolerance, so this step is the numerical regression gate.
+        run: ./scripts/run_verification.sh results/verification
+
+      - name: Upload the verification summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-summary
+          path: results/verification/
+
+  benchmark:
+    name: benchmark smoke test and figures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libeigen3-dev catch2
+          python3 -m pip install --quiet numpy pandas matplotlib pillow
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j "$(nproc)"
+
+      - name: Static and modal analysis
+        run: ./scripts/run_benchmark.sh cantilever_analysis results
+
+      - name: Topology optimization on a reduced mesh
+        # The committed cantilever deck runs a 160x80 mesh for several hundred
+        # iterations. CI runs the same deck at a quarter of the resolution and a
+        # shorter budget: enough to exercise the whole pipeline, including the
+        # modal comparison of the interpreted topology, in about a minute.
+        run: |
+          ./build/bin/sparlab_topopt \
+            --config configs/benchmarks/cantilever_beam.json \
+            --output results/cantilever_beam \
+            --nx 80 --ny 40 --max-iterations 60 --modes 4
+
+      - name: Runtime scaling (small sizes)
+        run: ./build/bin/sparlab_bench --sizes 20,40,80 --repeats 1 --output results/benchmark
+
+      - name: Regenerate figures
+        run: |
+          python3 python/scripts/plot_case.py --case results/cantilever_analysis \
+                                              --figures ci-figures
+          python3 python/scripts/plot_case.py --case results/cantilever_beam \
+                                              --figures ci-figures
+          python3 python/scripts/plot_verification.py \
+              --verification results/verification --benchmark results/benchmark \
+              --figures ci-figures || true
+
+      - name: Upload figures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-figures
+          path: ci-figures/

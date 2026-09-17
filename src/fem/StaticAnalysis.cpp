@@ -1,0 +1,183 @@
+#include "sparlab/fem/StaticAnalysis.hpp"
+
+#include "sparlab/core/Exceptions.hpp"
+#include "sparlab/core/Logging.hpp"
+#include "sparlab/fem/ModelDiagnostics.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+
+namespace sparlab {
+StaticAnalysis::StaticAnalysis(const FemModel& model, const Assembler& assembler,
+                               StaticAnalysisOptions options)
+    : model_(model), assembler_(assembler), options_(options) {
+  if (!model_.finalized()) {
+    throw ModelError(
+        "StaticAnalysis requires a finalised model; call FemModel::finalize() first");
+  }
+  if (options_.check_model) require_well_posed(model_);
+  prescribed_ = model_.dofs().prescribed_vector();
+}
+
+void StaticAnalysis::prepare(const Vector* stiffness_scale) {
+  k_full_ = assembler_.assemble_stiffness(stiffness_scale);
+  k_ff_ = assembler_.reduce_free_free(k_full_);
+  if (model_.dofs().has_nonzero_prescribed()) {
+    k_fp_ = assembler_.reduce_free_prescribed(k_full_);
+  } else {
+    k_fp_ = SparseMatrix(model_.dofs().num_free(), model_.dofs().num_constrained());
+  }
+  solver_ = make_linear_solver(options_.linear);
+  solver_->factorize(k_ff_);
+  prepared_ = true;
+}
+
+Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
+  if (!prepared_) prepare();
+  if (applied_force.size() != model_.dofs().num_dofs()) {
+    std::ostringstream os;
+    os << "load vector has length " << applied_force.size() << " but the model has "
+       << model_.dofs().num_dofs() << " DOFs";
+    throw ModelError(os.str());
+  }
+
+  Vector rhs = model_.dofs().restrict_to_free(applied_force);
+  if (model_.dofs().has_nonzero_prescribed()) {
+    const auto& fixed = model_.dofs().constrained_dofs();
+    Vector up(static_cast<Eigen::Index>(fixed.size()));
+    for (std::size_t k = 0; k < fixed.size(); ++k) {
+      up(static_cast<Eigen::Index>(k)) = prescribed_(fixed[k]);
+    }
+    rhs -= k_fp_ * up;
+  }
+
+  const Vector uf = solver_->solve(rhs);
+  if (!uf.allFinite()) {
+    throw SolverError(
+        "the linear solver returned a non-finite displacement field; the reduced "
+        "stiffness matrix is singular or severely ill-conditioned");
+  }
+  return model_.dofs().expand(uf);
+}
+
+StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar weight,
+                                              const Vector& applied_force) {
+  StaticSolution sol;
+  sol.load_case_name = name;
+  sol.weight = weight;
+  sol.displacement = solve_load_vector(applied_force);
+
+  // Residual of the reduced system, computed from the assembled blocks.
+  {
+    Vector rhs = model_.dofs().restrict_to_free(applied_force);
+    if (model_.dofs().has_nonzero_prescribed()) {
+      const auto& fixed = model_.dofs().constrained_dofs();
+      Vector up(static_cast<Eigen::Index>(fixed.size()));
+      for (std::size_t k = 0; k < fixed.size(); ++k) {
+        up(static_cast<Eigen::Index>(k)) = prescribed_(fixed[k]);
+      }
+      rhs -= k_fp_ * up;
+    }
+    const Vector uf = model_.dofs().restrict_to_free(sol.displacement);
+    sol.scaled_residual = scaled_residual(k_ff_, uf, rhs);
+    if (sol.scaled_residual > options_.linear.residual_tolerance) {
+      std::ostringstream os;
+      os << "load case '" << name << "': the linear solve left a scaled residual of "
+         << sol.scaled_residual << ", above the recorded tolerance "
+         << options_.linear.residual_tolerance;
+      throw SolverError(os.str());
+    }
+  }
+  sol.solver_iterations = solver_->last_iterations();
+
+  // Reactions from the full residual r = K u - f.
+  const Vector residual = k_full_ * sol.displacement - applied_force;
+  sol.reactions = Vector::Zero(model_.dofs().num_dofs());
+  for (Index d : model_.dofs().constrained_dofs()) sol.reactions(d) = residual(d);
+
+  sol.compliance = applied_force.dot(sol.displacement);
+  sol.strain_energy = 0.5 * sol.displacement.dot(k_full_ * sol.displacement);
+
+  // Peak displacement magnitude and its node.
+  const Index nn = model_.mesh().num_nodes();
+  for (Index n = 0; n < nn; ++n) {
+    const Scalar mag = std::hypot(sol.displacement(n * kDofsPerNode + 0),
+                                  sol.displacement(n * kDofsPerNode + 1));
+    if (mag > sol.max_displacement_magnitude) {
+      sol.max_displacement_magnitude = mag;
+      sol.max_displacement_node = n;
+    }
+  }
+
+  // Global force and moment balance about the origin.
+  EquilibriumCheck& eq = sol.equilibrium;
+  Scalar applied_moment_scale = 0.0;
+  for (Index n = 0; n < nn; ++n) {
+    const Vector2 x = model_.mesh().node(n);
+    const Vector2 fa(applied_force(n * kDofsPerNode + 0),
+                     applied_force(n * kDofsPerNode + 1));
+    const Vector2 fr(sol.reactions(n * kDofsPerNode + 0),
+                     sol.reactions(n * kDofsPerNode + 1));
+    eq.applied_force += fa;
+    eq.reaction_force += fr;
+    eq.applied_moment += x.x() * fa.y() - x.y() * fa.x();
+    eq.reaction_moment += x.x() * fr.y() - x.y() * fr.x();
+    applied_moment_scale += x.norm() * fa.norm();
+  }
+  eq.force_residual = eq.applied_force + eq.reaction_force;
+  eq.moment_residual = eq.applied_moment + eq.reaction_moment;
+  eq.relative_force_error =
+      eq.force_residual.norm() / std::max(eq.applied_force.norm(), 1.0e-30);
+  eq.relative_moment_error =
+      std::abs(eq.moment_residual) / std::max(applied_moment_scale, 1.0e-30);
+
+  if (eq.applied_force.norm() > 0.0 &&
+      eq.relative_force_error > options_.equilibrium_tolerance) {
+    std::ostringstream os;
+    os << "load case '" << name << "': global force balance is violated. Applied ("
+       << eq.applied_force.x() << ", " << eq.applied_force.y() << ") N, reactions ("
+       << eq.reaction_force.x() << ", " << eq.reaction_force.y() << ") N, relative error "
+       << eq.relative_force_error << " exceeds the tolerance "
+       << options_.equilibrium_tolerance;
+    throw SolverError(os.str());
+  }
+  if (applied_moment_scale > 0.0 &&
+      eq.relative_moment_error > options_.equilibrium_tolerance) {
+    log::warn("load case '", name, "': moment balance residual ", eq.moment_residual,
+              " N m (relative ", eq.relative_moment_error,
+              ") exceeds the equilibrium tolerance ", options_.equilibrium_tolerance);
+  }
+
+  return sol;
+}
+
+std::vector<StaticSolution> StaticAnalysis::solve_all(const Vector* stiffness_scale) {
+  prepare(stiffness_scale);
+  const std::vector<Vector>& loads = model_.load_vectors();
+  const std::vector<LoadCaseSpec>& specs = model_.load_case_specs();
+
+  std::vector<StaticSolution> solutions;
+  solutions.reserve(loads.size());
+  for (std::size_t l = 0; l < loads.size(); ++l) {
+    solutions.push_back(build_solution(specs[l].name, specs[l].weight, loads[l]));
+    log::debug("load case '", specs[l].name, "': compliance ",
+               solutions.back().compliance, " J, max |u| ",
+               solutions.back().max_displacement_magnitude, " m");
+  }
+  return solutions;
+}
+
+Scalar StaticAnalysis::weighted_compliance(const std::vector<StaticSolution>& solutions,
+                                           const std::vector<Scalar>& weights) {
+  if (solutions.size() != weights.size()) {
+    throw ModelError("weighted_compliance: solution and weight counts differ");
+  }
+  Scalar c = 0.0;
+  for (std::size_t l = 0; l < solutions.size(); ++l) {
+    c += weights[l] * solutions[l].compliance;
+  }
+  return c;
+}
+
+}  // namespace sparlab
