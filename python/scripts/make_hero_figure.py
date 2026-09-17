@@ -81,27 +81,45 @@ def _resultant(load_case: dict) -> tuple:
     return fx, fy, [f["node"] for f in forces]
 
 
-def build(case_dir: str, load_case: str, path: str, threshold: float = None,
-          width: float = 10.0) -> str:
+def read_case(case_dir: str, load_case: str, threshold: float = None):
+    """Geometry, retained-material mask and material stress of one run."""
     case = load_results(case_dir)
-    mesh = case.mesh
-    summary = case.summary
-
     density_table = case.density()
     if density_table is None:
         raise ResultError(f"{case_dir} has no density_final.csv; this figure is "
                           "for a topology-optimisation run")
-    density = density_table["physical_density[-]"].to_numpy()
     stress = case.stress(load_case)
     if "solid_von_mises[Pa]" not in stress.columns:
         raise ResultError("stress table has no solid_von_mises[Pa] column")
 
     if threshold is None:
         threshold = float(
-            summary.get("solid_interpretation", {}).get("threshold", 0.5)
+            case.summary.get("solid_interpretation", {}).get("threshold", 0.5)
         )
-    keep = density >= threshold
+    keep = density_table["physical_density[-]"].to_numpy() >= threshold
     values = stress["solid_von_mises[Pa]"].to_numpy() / 1.0e6  # MPa
+    return case, keep, values, threshold
+
+
+def load_resultant(mesh, load_case: str):
+    """(tail point, force vector, node count) of a load case's resultant."""
+    entry = next((lc for lc in (mesh.load_cases or [])
+                  if lc.get("name") == load_case), None)
+    if entry is None:
+        return None
+    result = _resultant(entry)
+    if result is None:
+        return None
+    fx, fy, nodes = result
+    loaded = mesh.nodes[np.asarray(nodes, dtype=int)]
+    return loaded.mean(axis=0), np.array([fx, fy]), len(nodes)
+
+
+def build(case_dir: str, load_case: str, path: str, threshold: float = None,
+          width: float = 10.0) -> str:
+    case, keep, values, threshold = read_case(case_dir, load_case, threshold)
+    mesh = case.mesh
+    summary = case.summary
 
     # Colour limits from the retained material only, clipped at the 99th
     # percentile: a handful of re-entrant corner cells sit far above the bulk of
@@ -145,28 +163,21 @@ def build(case_dir: str, load_case: str, path: str, threshold: float = None,
                 label=f"bolted: {fixed.size} nodes fixed in x and y")
 
     # --- applied load -----------------------------------------------------
-    entry = next((lc for lc in (mesh.load_cases or [])
-                  if lc.get("name") == load_case), None)
-    if entry is not None:
-        result = _resultant(entry)
-        if result is not None:
-            fx, fy, nodes = result
-            magnitude = float(np.hypot(fx, fy))
-            loaded = mesh.nodes[np.asarray(nodes, dtype=int)]
-            tail = loaded.mean(axis=0)
-            span = min(xmax - xmin, ymax - ymin)
-            length = 0.30 * span
-            scale = length / max(magnitude, 1.0e-30)
-            ax.annotate(
-                "", xy=(tail[0] + scale * fx, tail[1] + scale * fy),
-                xytext=(tail[0], tail[1]), annotation_clip=False,
-                arrowprops=dict(arrowstyle="-|>", linewidth=2.6,
-                                color=st.series_color(1), shrinkA=0, shrinkB=0,
-                                mutation_scale=22),
-            )
-            ax.plot([], [], "-", color=st.series_color(1), linewidth=2.6,
-                    label=f"applied load {st.format_si(magnitude)} N "
-                          f"over {len(nodes)} nodes")
+    applied = load_resultant(mesh, load_case)
+    if applied is not None:
+        tail, force, count = applied
+        magnitude = float(np.hypot(*force))
+        length = 0.30 * min(xmax - xmin, ymax - ymin)
+        head = tail + force / max(magnitude, 1.0e-30) * length
+        ax.annotate(
+            "", xy=tuple(head), xytext=tuple(tail), annotation_clip=False,
+            arrowprops=dict(arrowstyle="-|>", linewidth=2.6,
+                            color=st.series_color(1), shrinkA=0, shrinkB=0,
+                            mutation_scale=22),
+        )
+        ax.plot([], [], "-", color=st.series_color(1), linewidth=2.6,
+                label=f"applied load {st.format_si(magnitude)} N "
+                      f"over {count} nodes")
 
     fld.add_colorbar(fig, collection, ax,
                      "von Mises stress in the material [MPa]",
