@@ -446,16 +446,27 @@ void ResultWriter::write_modal(const Mesh& mesh, const ModalResult& modal,
 }
 
 void ResultWriter::write_history(const TopologyOptimizationResult& result) const {
-  CsvWriter csv(file("history.csv"),
-                {"iteration", "penalty[-]", "compliance[J]", "volume[m3]",
-                 "volume_fraction[-]", "max_design_change[-]", "lagrange_multiplier[-]",
-                 "grey_level[-]", "oc_bisections[-]", "volume_converged[-]",
-                 "seconds[s]"});
+  const bool mma = result.method == OptimizerMethod::MMA;
+  std::vector<std::string> header{
+      "iteration", "penalty[-]", "compliance[J]", "volume[m3]", "volume_fraction[-]",
+      "max_design_change[-]", "lagrange_multiplier[-]", "grey_level[-]",
+      mma ? "mma_iterations[-]" : "oc_bisections[-]", "volume_converged[-]",
+      "seconds[s]"};
+  if (mma) {
+    header.insert(header.end(), {"max_stress_ratio[-]", "stress_constraint[-]",
+                                 "constraint_violation[-]"});
+  }
+  CsvWriter csv(file("history.csv"), header);
   for (const TopologyIteration& it : result.history) {
-    csv.row(it.iteration,
-            {it.penalty, it.compliance, it.volume, it.volume_fraction, it.max_change,
-             it.lambda, it.gray_level, static_cast<Scalar>(it.bisections),
-             it.volume_converged ? 1.0 : 0.0, it.seconds});
+    std::vector<Scalar> row{it.penalty, it.compliance, it.volume, it.volume_fraction,
+                            it.max_change, it.lambda, it.gray_level,
+                            static_cast<Scalar>(it.bisections),
+                            it.volume_converged ? 1.0 : 0.0, it.seconds};
+    if (mma) {
+      row.insert(row.end(), {it.max_stress_ratio, it.stress_constraint,
+                             it.constraint_violation});
+    }
+    csv.row(it.iteration, row);
   }
   csv.close();
 }
@@ -770,6 +781,34 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
               json::Value::make_number(config.topology.optimizer.objective_tolerance));
     setup.set("objective_window",
               json::Value::make_number(config.topology.optimizer.objective_window));
+    setup.set("method", json::Value::make_string(to_string(result.method)));
+    if (result.method == OptimizerMethod::MMA) {
+      json::Value mma = json::Value::make_object();
+      const MmaOptions& mo = config.topology.optimizer.mma;
+      mma.set("move_limit", json::Value::make_number(mo.move_limit));
+      mma.set("asymptote_init", json::Value::make_number(mo.asymptote_init));
+      mma.set("asymptote_increase", json::Value::make_number(mo.asymptote_increase));
+      mma.set("asymptote_decrease", json::Value::make_number(mo.asymptote_decrease));
+      mma.set("constraint_penalty", json::Value::make_number(mo.c));
+      mma.set("subproblem_tolerance", json::Value::make_number(mo.epsimin));
+      mma.set("constraint_tolerance",
+              json::Value::make_number(config.topology.optimizer.constraint_tolerance));
+      setup.set("mma", mma);
+    }
+    if (result.stress_constrained) {
+      json::Value sc = json::Value::make_object();
+      const StressConstraintOptions& so = config.topology.optimizer.stress;
+      sc.set("limit_Pa", json::Value::make_number(so.limit));
+      sc.set("p_norm", json::Value::make_number(so.p_norm));
+      sc.set("relaxation_q", json::Value::make_number(so.relaxation));
+      sc.set("scaling_blend", json::Value::make_number(so.scaling_blend));
+      sc.set("feasibility_tolerance", json::Value::make_number(so.feasibility_tolerance));
+      sc.set("formulation", json::Value::make_string(
+                                "rho^q sigma_vm(solid) at the element centre, p-norm over "
+                                "elements with adaptive scale c, one constraint per load "
+                                "case: c * g_PN - 1 <= 0"));
+      setup.set("stress_constraint", sc);
+    }
     out.set("optimization_setup", setup);
   }
 
@@ -808,6 +847,42 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                                            ? result.history.front().compliance /
                                                  result.compliance
                                            : 0.0));
+    }
+    if (result.method == OptimizerMethod::MMA) {
+      res.set("constraint_violation", json::Value::make_number(result.constraint_violation));
+      res.set("feasible", json::Value::make_bool(result.feasible));
+    }
+    if (result.stress_constrained) {
+      json::Value stress = json::Value::make_object();
+      stress.set("max_relaxed_stress_ratio",
+                 json::Value::make_number(result.max_stress_ratio));
+      stress.set("max_relaxed_stress_Pa",
+                 json::Value::make_number(result.max_stress_ratio *
+                                          config.topology.optimizer.stress.limit));
+      json::Value cases = json::Value::make_array();
+      for (const StressConstraintRecord& rec : result.stress) {
+        json::Value c = json::Value::make_object();
+        c.set("load_case", json::Value::make_string(rec.load_case));
+        c.set("max_relaxed_stress_Pa", json::Value::make_number(rec.max_relaxed_stress_Pa));
+        c.set("max_relaxed_stress_ratio", json::Value::make_number(rec.max_relaxed_ratio));
+        c.set("max_element", json::Value::make_number(rec.max_element));
+        c.set("p_norm_ratio", json::Value::make_number(rec.p_norm_ratio));
+        c.set("scale", json::Value::make_number(rec.scale));
+        c.set("constraint_value", json::Value::make_number(rec.constraint));
+        c.set("max_solid_stress_ratio_retained",
+              json::Value::make_number(rec.max_solid_ratio_retained));
+        cases.push_back(c);
+      }
+      stress.set("load_cases", cases);
+      stress.set("note", json::Value::make_string(
+                             "The constraint bounds the relaxed (rho^q) aggregated stress "
+                             "of the SIMP model. max_solid_stress_ratio_retained is the "
+                             "unrelaxed solid-material stress over the elements at or above "
+                             "the interpretation threshold, and "
+                             "interpreted_solid_analysis.max_von_mises_over_limit is the "
+                             "re-solve of the thresholded structure: those are the numbers "
+                             "that say whether the structure meets the limit."));
+      res.set("stress", stress);
     }
     out.set("optimization_result", res);
   }

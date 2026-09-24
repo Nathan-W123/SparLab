@@ -84,6 +84,11 @@ class StaticAnalysis {
   /// full displacement vector.
   Vector solve_load_vector(const Vector& applied_force);
 
+  /// Solve \f$K_{ff}\,\lambda_f = r_f\f$ with the current factorisation and
+  /// zeros at the prescribed DOFs: the adjoint problem of any functional
+  /// evaluated on this model, whatever the prescribed displacements.
+  Vector solve_homogeneous(const Vector& rhs);
+
   /// Weighted compliance \f$\sum_l w_l\, f_l^T u_l\f$ with normalised weights.
   static Scalar weighted_compliance(const std::vector<StaticSolution>& solutions,
                                     const std::vector<Scalar>& normalised_weights);

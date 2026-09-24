@@ -95,6 +95,26 @@ Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
   return model_.dofs().expand(uf);
 }
 
+Vector StaticAnalysis::solve_homogeneous(const Vector& rhs) {
+  if (!prepared_) prepare();
+  if (rhs.size() != model_.dofs().num_dofs()) {
+    std::ostringstream os;
+    os << "adjoint right-hand side has length " << rhs.size() << " but the model has "
+       << model_.dofs().num_dofs() << " DOFs";
+    throw ModelError(os.str());
+  }
+  const Vector reduced = solver_->solve(model_.dofs().restrict_to_free(rhs));
+  if (!reduced.allFinite()) {
+    throw SolverError(
+        "the adjoint solve returned a non-finite field; the reduced stiffness matrix is "
+        "singular or severely ill-conditioned");
+  }
+  Vector full = Vector::Zero(model_.dofs().num_dofs());
+  const auto& free = model_.dofs().free_dofs();
+  for (std::size_t k = 0; k < free.size(); ++k) full(free[k]) = reduced(static_cast<Eigen::Index>(k));
+  return full;
+}
+
 StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar weight,
                                               const Vector& applied_force) {
   const int dim = model_.dim();

@@ -3,9 +3,11 @@
 #
 # usage: scripts/run_benchmark.sh <case-name> [results-dir]
 #
-# <case-name> is the stem of a file in configs/benchmarks/, e.g. cantilever_beam,
-# mbb_beam, aerospace_bracket or wing_rib. A deck with a topology section is run
-# through sparlab_topopt; one without is run through sparlab_solve.
+# <case-name> is the stem of a file in configs/benchmarks/ (cantilever_beam,
+# mbb_beam, aerospace_bracket, wing_rib, l_bracket_stress, bracket_3d) or in
+# configs/verification/ (cantilever_analysis, block_3d_analysis). A deck with a
+# topology section is run through sparlab_topopt; one without is run through
+# sparlab_solve.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 

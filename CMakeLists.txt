@@ -69,12 +69,15 @@ add_library(sparlab STATIC
   src/topopt/DesignDomain.cpp
   src/topopt/Sensitivity.cpp
   src/topopt/OptimalityCriteria.cpp
+  src/topopt/Mma.cpp
+  src/topopt/StressConstraint.cpp
   src/topopt/TopologyOptimizer.cpp
   src/io/Json.cpp
   src/io/Config.cpp
   src/io/CsvWriter.cpp
   src/io/VtkWriter.cpp
   src/io/StlWriter.cpp
+  src/io/CalculixWriter.cpp
   src/io/ResultWriter.cpp
 )
 

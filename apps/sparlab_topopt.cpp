@@ -91,7 +91,8 @@ int main(int argc, char** argv) {
         "volume-fraction", "penalty",   "filter-radius", "filter-radius-elements",
         "filter-type",   "max-iterations", "nx",       "ny",           "nz",
         "youngs-modulus", "load-weights", "modes",     "no-vtk",
-        "no-csv",        "tag",         "help"};
+        "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
+        "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -108,6 +109,10 @@ int main(int argc, char** argv) {
            {"--youngs-modulus <E>", "override material.youngs_modulus [Pa]"},
            {"--load-weights <w1,w2,...>", "override the per-load-case weights"},
            {"--modes <n>", "enable modal analysis with n modes"},
+           {"--method <oc|mma>", "override optimizer.method"},
+           {"--stress-limit <Pa>", "enable the aggregated stress constraint at this "
+                                   "allowable von Mises stress (switches to MMA)"},
+           {"--no-stress", "disable the deck's stress constraint"},
            {"--tag <name>", "suffix appended to the case name in summary.json"},
            {"--no-vtk / --no-csv", "skip the corresponding output"},
            {"--strict-config", "treat unknown configuration keys as errors"},
@@ -169,6 +174,15 @@ int main(int argc, char** argv) {
       config.modal.enabled = true;
       config.modal.options.num_modes = cli.integer("modes", 6);
     }
+    if (cli.has("method")) {
+      config.topology.optimizer.method = parse_optimizer_method(cli.value("method"));
+    }
+    if (cli.has("stress-limit")) {
+      config.topology.optimizer.stress.enabled = true;
+      config.topology.optimizer.stress.limit = cli.number("stress-limit", 0.0);
+      config.topology.optimizer.method = OptimizerMethod::MMA;
+    }
+    if (cli.has("no-stress")) config.topology.optimizer.stress.enabled = false;
     if (cli.has("no-vtk")) config.output.write_vtk = false;
     if (cli.has("no-csv")) config.output.write_csv = false;
     if (cli.has("tag")) config.name += "_" + cli.value("tag");
@@ -291,12 +305,24 @@ int main(int argc, char** argv) {
                           json::Value::make_number(
                               result.compliance > 0.0 ? c / result.compliance : 0.0));
           Scalar max_vm = 0.0;
+          json::Value per_case = json::Value::make_array();
           for (const StaticSolution& s : sols) {
             const StressField f =
                 recover_stresses(*sub.model, *sub_assembler, s.displacement);
             max_vm = std::max(max_vm, f.element_von_mises.maxCoeff());
+            per_case.push_back(json::Value::make_number(f.element_von_mises.maxCoeff()));
           }
           interpreted.set("max_von_mises_Pa", json::Value::make_number(max_vm));
+          interpreted.set("max_von_mises_per_load_case_Pa", per_case);
+          if (result.stress_constrained) {
+            // The check that matters: the thresholded structure with full
+            // material, against the limit the optimiser was given.
+            const Scalar limit = config.topology.optimizer.stress.limit;
+            interpreted.set("stress_limit_Pa", json::Value::make_number(limit));
+            interpreted.set("max_von_mises_over_limit",
+                            json::Value::make_number(max_vm / limit));
+            interpreted.set("meets_stress_limit", json::Value::make_bool(max_vm <= limit));
+          }
         }
       } catch (const std::exception& error) {
         sub_build.reset();
@@ -499,6 +525,24 @@ int main(int argc, char** argv) {
               << app::format(domain.volume_fraction()) << ", relative violation "
               << app::format(result.volume_constraint_violation) << ")\n";
     std::cout << "  grey level:  " << app::format(result.gray_level) << "\n";
+    std::cout << "  method:      " << to_string(result.method);
+    if (result.method == OptimizerMethod::MMA) {
+      std::cout << " (largest constraint value "
+                << app::format(result.constraint_violation) << ", "
+                << (result.feasible ? "feasible" : "INFEASIBLE") << ")";
+    }
+    std::cout << "\n";
+    if (result.stress_constrained) {
+      std::cout << "  stress:      max relaxed ratio " << app::format(result.max_stress_ratio)
+                << " of the " << app::format(config.topology.optimizer.stress.limit)
+                << " Pa limit";
+      const json::Value* over = interpreted.find("max_von_mises_over_limit");
+      if (over != nullptr) {
+        std::cout << "; interpreted structure re-solve " << app::format(over->number_value())
+                  << " of the limit";
+      }
+      std::cout << "\n";
+    }
     std::cout << "  interpreted: threshold "
               << app::format(interpretation->threshold) << " keeps "
               << interpretation->elements_retained << " of "

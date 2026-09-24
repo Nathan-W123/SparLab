@@ -4,6 +4,7 @@
 
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Timer.hpp"
+#include "sparlab/io/CalculixWriter.hpp"
 #include "sparlab/io/Config.hpp"
 #include "sparlab/io/CsvWriter.hpp"
 #include "sparlab/io/Json.hpp"
@@ -568,6 +569,58 @@ TEST_CASE("CSV and VTK writers produce well-formed files", "[io][writers]") {
     REQUIRE_THROWS_AS(ensure_directory(file), IoError);
     std::remove(file.c_str());
   }
+}
+
+TEST_CASE("CalculiX decks are written per load case with the matching element",
+          "[io][writers][cross-validation]") {
+  ensure_directory("results/_test_tmp");
+  FemModel model = make_small_plate(3, 2);
+  const std::vector<std::string> decks =
+      write_calculix_decks(model, "results/_test_tmp/ccx", "unit");
+  REQUIRE(decks.size() == 1);
+  REQUIRE(calculix_element_type(model) == "CPS4");
+  std::ifstream in(decks.front());
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+  REQUIRE(text.find("*ELEMENT, TYPE=CPS4, ELSET=EALL") != std::string::npos);
+  REQUIRE(text.find("*NODE, NSET=NALL\n1, 0, 0, 0\n") != std::string::npos);
+  // The thickness follows the section header; it is written with full
+  // precision, so parse it back rather than matching its text.
+  const std::string section_header = "*SOLID SECTION, ELSET=EALL, MATERIAL=MAT\n";
+  const std::size_t section_at = text.find(section_header);
+  REQUIRE(section_at != std::string::npos);
+  const std::size_t thickness_at = section_at + section_header.size();
+  const std::size_t thickness_end = text.find('\n', thickness_at);
+  REQUIRE(thickness_end != std::string::npos);
+  const double thickness = std::stod(text.substr(thickness_at, thickness_end - thickness_at));
+  REQUIRE(thickness == Catch::Approx(0.005).epsilon(1e-15));
+  REQUIRE(text.find("*BOUNDARY") != std::string::npos);
+  REQUIRE(text.find("*CLOAD") != std::string::npos);
+  REQUIRE(text.find("*END STEP") != std::string::npos);
+  // One *BOUNDARY line per prescribed DOF, one *CLOAD line per non-zero force.
+  std::size_t boundary_lines = 0;
+  std::size_t cload_lines = 0;
+  std::istringstream lines(text);
+  std::string line;
+  int section = 0;
+  while (std::getline(lines, line)) {
+    if (line.rfind("*BOUNDARY", 0) == 0) { section = 1; continue; }
+    if (line.rfind("*CLOAD", 0) == 0) { section = 2; continue; }
+    if (line.rfind("*", 0) == 0) { section = 0; continue; }
+    if (section == 1) ++boundary_lines;
+    if (section == 2) ++cload_lines;
+  }
+  REQUIRE(boundary_lines == static_cast<std::size_t>(model.dofs().num_constrained()));
+  REQUIRE(cload_lines == 2);  // fx and fy at the loaded corner node
+  std::remove(decks.front().c_str());
+
+  StructuredMeshSpec spec;
+  spec.nx = spec.ny = spec.nz = 2;
+  FemModel solid(make_structured_hex_mesh(spec), default_material(), 1.0,
+                 StressState::ThreeDimensional, IntegrationOptions());
+  REQUIRE(calculix_element_type(solid) == "C3D8");
+  REQUIRE_THROWS_AS(write_calculix_decks(solid, "results/_test_tmp/ccx3", "x"), IoError);
 }
 
 TEST_CASE("path_join handles separators", "[io]") {

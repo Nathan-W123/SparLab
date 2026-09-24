@@ -474,6 +474,39 @@ Configuration parse_configuration(const json::Value& document, const std::string
     o.oc.max_bisections = opt.integer_or("max_bisections", 200);
     o.analysis = config.analysis;
 
+    // Update method: optimality criteria (default, volume constraint only) or
+    // MMA (any number of constraints). MMA shares the move limit unless its
+    // own block overrides it.
+    o.method = parse_optimizer_method(opt.string_or("method", "oc"));
+    const ConfigNode mma = opt.child("mma");
+    o.mma.move_limit = mma.number_or("move_limit", o.oc.move_limit);
+    o.mma.asymptote_init = mma.number_or("asymptote_init", 0.5);
+    o.mma.asymptote_increase = mma.number_or("asymptote_increase", 1.2);
+    o.mma.asymptote_decrease = mma.number_or("asymptote_decrease", 0.7);
+    o.mma.c = mma.number_or("constraint_penalty", 1000.0);
+    o.mma.epsimin = mma.number_or("subproblem_tolerance", 1.0e-7);
+    o.constraint_tolerance = opt.number_or("constraint_tolerance", 1.0e-4);
+
+    // Aggregated von Mises stress constraint (MMA only).
+    const ConfigNode stress = topo.child("stress");
+    o.stress.enabled = stress.boolean_or("enabled", false);
+    o.stress.limit = stress.number_or("limit", 0.0);
+    o.stress.p_norm = stress.number_or("p_norm", 8.0);
+    o.stress.relaxation = stress.number_or("relaxation", 0.5);
+    o.stress.scaling_blend = stress.number_or("scaling_blend", 0.5);
+    o.stress.feasibility_tolerance = stress.number_or("feasibility_tolerance", 1.0e-3);
+    if (o.stress.enabled && o.method != OptimizerMethod::MMA) {
+      throw ConfigError(
+          "'topology.stress.enabled' needs 'topology.optimizer.method' = \"mma\"; the "
+          "optimality-criteria update cannot handle a second constraint");
+    }
+    if (o.stress.enabled && config.topology.filter_type == FilterType::Sensitivity) {
+      throw ConfigError(
+          "'topology.stress' needs the density filter (or none): the sensitivity filter "
+          "has no exact chain rule for the stress gradient");
+    }
+    if (config.topology.enabled) o.stress.validate(o.simp);
+
     int passive_index = 0;
     for (const ConfigNode& region : topo.array("passive_regions")) {
       PassiveRegionSpec spec;

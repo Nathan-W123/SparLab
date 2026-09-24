@@ -13,6 +13,7 @@
 #include "sparlab/fem/ModelDiagnostics.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/fem/StressRecovery.hpp"
+#include "sparlab/io/CalculixWriter.hpp"
 #include "sparlab/io/Config.hpp"
 #include "sparlab/io/ResultWriter.hpp"
 
@@ -24,7 +25,7 @@ int main(int argc, char** argv) {
   return app::run_guarded([&]() -> int {
     const std::vector<std::string> known = {"config",   "output",        "verbosity",
                                             "strict-config", "modes",   "no-vtk",
-                                            "no-csv",   "help"};
+                                            "no-csv",   "export-calculix", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -34,6 +35,8 @@ int main(int argc, char** argv) {
            {"--modes <n>", "override modal.num_modes and enable modal analysis"},
            {"--no-vtk", "skip VTK output"},
            {"--no-csv", "skip per-node/per-element CSV output"},
+           {"--export-calculix", "also write one CalculiX .inp per load case into the "
+                                 "output directory (cross-validation)"},
            {"--strict-config", "treat unknown configuration keys as errors"},
            {"--verbosity <lvl>", "trace|debug|info|warn|error|silent"},
            {"--help", "show this message"}});
@@ -114,6 +117,11 @@ int main(int argc, char** argv) {
         }
       }
       if (modal) writer.write_modal(model.mesh(), *modal);
+      if (cli.has("export-calculix")) {
+        const std::vector<std::string> decks =
+            write_calculix_decks(model, writer.file("calculix"), config.name);
+        for (const std::string& deck : decks) log::info("wrote CalculiX deck ", deck);
+      }
     }
 
     timings.add("total", wall.elapsed_seconds());

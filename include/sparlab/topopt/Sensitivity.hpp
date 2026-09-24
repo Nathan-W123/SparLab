@@ -39,6 +39,7 @@
 #include "sparlab/topopt/DesignDomain.hpp"
 #include "sparlab/topopt/SimpInterpolation.hpp"
 
+#include <memory>
 #include <vector>
 
 namespace sparlab {
@@ -81,6 +82,17 @@ class ComplianceObjective {
 
   Index num_solves() const { return num_solves_; }
 
+  /// Solve \f$K(\tilde\rho)\,\lambda = r\f$ with the factorisation of the last
+  /// `evaluate` call (homogeneous conditions at prescribed DOFs). This is the
+  /// adjoint solve behind every non-self-adjoint sensitivity, e.g. the stress
+  /// constraint; it costs one back-substitution.
+  /// \throws ModelError before the first evaluation.
+  Vector solve_adjoint(const Vector& rhs);
+
+  const FemModel& model() const { return model_; }
+  const Assembler& assembler() const { return assembler_; }
+  const DensityFilter& filter() const { return filter_; }
+
  private:
   const FemModel& model_;
   const Assembler& assembler_;
@@ -90,6 +102,8 @@ class ComplianceObjective {
   StaticAnalysisOptions analysis_options_;
   std::vector<Scalar> weights_;
   Index num_solves_ = 0;
+  /// Factorisation of the last evaluated design, kept for adjoint solves.
+  std::unique_ptr<StaticAnalysis> analysis_;
 };
 
 /// Outcome of comparing an analytical gradient entry with central differences.

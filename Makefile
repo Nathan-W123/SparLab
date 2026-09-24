@@ -8,10 +8,11 @@
 #   make build       build the library, apps and tests
 #   make test        run the whole Catch2 suite through ctest
 #   make verify      run the verification / validation studies
+#   make cross-validation  compare nodal displacements with CalculiX and scikit-fem
 #   make benchmark   run one benchmark          (CASE=cantilever_beam)
-#   make benchmarks  run all four benchmarks
+#   make benchmarks  run every benchmark deck (2-D and 3-D)
 #   make study       run the aerospace parametric design study
-#   make scaling     run the runtime scaling benchmark
+#   make scaling     run the runtime scaling benchmarks (2-D and 3-D)
 #   make figures     regenerate every figure and the animation
 #   make results     refresh the result tables committed under docs/results
 #   make all         build, test, verify, benchmarks, study, scaling, figures
@@ -28,11 +29,11 @@ PYTHON      ?= python3
 
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 
-.PHONY: all configure build test verify benchmark benchmarks study scaling \
-        figures results clean distclean help
+.PHONY: all configure build test verify cross-validation benchmark benchmarks \
+        study scaling figures results clean distclean help
 
 help:
-	@sed -n '3,25p' Makefile
+	@sed -n '3,30p' Makefile
 
 configure:
 	cmake -S . -B $(BUILD_DIR) -G "$(GENERATOR)" $(CMAKE_FLAGS)
@@ -45,6 +46,9 @@ test: build
 
 verify: build
 	./scripts/run_verification.sh $(RESULTS_DIR)/verification
+
+cross-validation: build
+	./scripts/run_cross_validation.sh $(RESULTS_DIR)
 
 benchmark: build
 	./scripts/run_benchmark.sh $(CASE) $(RESULTS_DIR)

@@ -50,7 +50,8 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
   out.stiffness_factors = simp_stiffness_factors(out.physical_density, simp_);
 
   Timer timer;
-  StaticAnalysis analysis(model_, assembler_, analysis_options_);
+  analysis_ = std::make_unique<StaticAnalysis>(model_, assembler_, analysis_options_);
+  StaticAnalysis& analysis = *analysis_;
   analysis.prepare(&out.stiffness_factors);
   out.assemble_seconds = timer.elapsed_seconds();
 
@@ -114,6 +115,14 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
     throw SolverError("the compliance objective evaluated to a non-finite value");
   }
   return out;
+}
+
+Vector ComplianceObjective::solve_adjoint(const Vector& rhs) {
+  if (!analysis_) {
+    throw ModelError("solve_adjoint called before the objective was evaluated");
+  }
+  ++num_solves_;
+  return analysis_->solve_homogeneous(rhs);
 }
 
 Scalar ComplianceObjective::compliance_at(const Vector& x) {

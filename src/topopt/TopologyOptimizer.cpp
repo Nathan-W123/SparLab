@@ -7,9 +7,24 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 
 namespace sparlab {
+
+std::string to_string(OptimizerMethod method) {
+  switch (method) {
+    case OptimizerMethod::OptimalityCriteria: return "oc";
+    case OptimizerMethod::MMA: return "mma";
+  }
+  return "unknown";
+}
+
+OptimizerMethod parse_optimizer_method(const std::string& text) {
+  if (text == "oc" || text == "optimality_criteria") return OptimizerMethod::OptimalityCriteria;
+  if (text == "mma") return OptimizerMethod::MMA;
+  throw ConfigError("unknown optimizer method '" + text + "' (expected oc|mma)");
+}
 
 Scalar gray_level(const Vector& density) {
   if (density.size() == 0) return 0.0;
@@ -56,6 +71,18 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
         options_.interpretation_threshold < 1.0)) {
     throw ConfigError("optimizer.interpretation_threshold must lie in (0, 1)");
   }
+  if (options_.stress.enabled && options_.method != OptimizerMethod::MMA) {
+    throw ConfigError(
+        "stress constraints need optimizer.method = \"mma\"; the optimality-criteria "
+        "update handles the volume constraint only");
+  }
+  if (options_.method == OptimizerMethod::MMA) {
+    options_.mma.validate();
+    if (!(options_.constraint_tolerance > 0.0)) {
+      throw ConfigError("optimizer.constraint_tolerance must be positive");
+    }
+  }
+  options_.stress.validate(options_.simp);
 }
 
 Scalar TopologyOptimizer::penalty_for_iteration(int iteration) const {
@@ -69,8 +96,118 @@ Scalar TopologyOptimizer::penalty_for_iteration(int iteration) const {
 }
 
 TopologyOptimizationResult TopologyOptimizer::run() {
+  return options_.method == OptimizerMethod::MMA ? run_mma() : run_oc();
+}
+
+// ----------------------------------------------------------------------------
+// Shared final evaluation
+// ----------------------------------------------------------------------------
+
+void TopologyOptimizer::finish(TopologyOptimizationResult& result,
+                               ComplianceObjective& objective, const Vector& x,
+                               int performed, const std::vector<Scalar>& stress_scales,
+                               const StressConstraint* stress) const {
+  result.iterations = performed;
+
+  // Final evaluation at the converged design so the reported fields match x.
+  const ObjectiveEvaluation eval = objective.evaluate(x, /*need_gradients=*/true);
+  result.design = x;
+  result.physical_density = eval.physical_density;
+  result.stiffness_factors = eval.stiffness_factors;
+  result.compliance = eval.compliance;
+  result.load_case_compliance = eval.load_case_compliance;
+  result.volume = eval.volume;
+  result.volume_fraction = eval.volume_fraction;
+  result.gray_level = gray_level(eval.physical_density);
+  result.displacements = eval.displacements;
+  result.element_strain_energy = eval.element_strain_energy;
+
+  const Scalar target = domain_.volume_target();
+  result.volume_constraint_violation = (result.volume - target) / target;
+  result.constraint_violation = result.volume_constraint_violation;
+
+  if (stress != nullptr) {
+    result.stress_constrained = true;
+    const std::vector<LoadCaseSpec>& specs = model_.load_case_specs();
+    for (std::size_t l = 0; l < eval.displacements.size(); ++l) {
+      const StressEvaluation se =
+          stress->evaluate(objective, eval, l, stress_scales[l], /*need_gradients=*/false);
+      StressConstraintRecord rec;
+      rec.load_case = specs[l].name;
+      rec.max_relaxed_stress_Pa = se.max_relaxed_ratio * options_.stress.limit;
+      rec.max_relaxed_ratio = se.max_relaxed_ratio;
+      rec.max_element = se.max_element;
+      rec.p_norm_ratio = se.p_norm_ratio;
+      rec.scale = se.scale;
+      rec.constraint = se.constraint;
+      for (Index e = 0; e < model_.mesh().num_elements(); ++e) {
+        if (eval.physical_density(e) >= options_.interpretation_threshold) {
+          rec.max_solid_ratio_retained = std::max(
+              rec.max_solid_ratio_retained, se.solid_von_mises(e) / options_.stress.limit);
+        }
+      }
+      result.max_stress_ratio = std::max(result.max_stress_ratio, rec.max_relaxed_ratio);
+      result.constraint_violation = std::max(result.constraint_violation, rec.constraint);
+      result.stress.push_back(rec);
+    }
+  }
+  result.feasible = result.constraint_violation <= options_.constraint_tolerance;
+  result.linear_solves = objective.num_solves();
+
+  if (options_.history_stride > 0 &&
+      (result.snapshot_iterations.empty() ||
+       result.snapshot_iterations.back() != performed)) {
+    result.snapshot_iterations.push_back(performed);
+    result.snapshots.push_back(result.physical_density);
+  }
+
+  if (!result.converged) {
+    std::ostringstream os;
+    os << "the optimiser reached the iteration cap (" << options_.max_iterations
+       << ") without meeting either convergence criterion: the last design change was "
+       << result.final_design_change << " against a tolerance of "
+       << options_.change_tolerance << ", and the relative compliance change over "
+       << options_.objective_window << " iterations was "
+       << result.final_objective_change << " against a tolerance of "
+       << options_.objective_tolerance;
+    if (result.method == OptimizerMethod::MMA) {
+      os << " (largest constraint value " << result.constraint_violation
+         << " against the feasibility tolerance " << options_.constraint_tolerance << ")";
+    }
+    os << ". The returned design is the last iterate, not a converged optimum";
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
+
+  const Scalar volume_tolerance =
+      result.method == OptimizerMethod::MMA ? options_.constraint_tolerance : 1.0e-6;
+  if (result.volume_constraint_violation > volume_tolerance) {
+    std::ostringstream os;
+    os << "the volume constraint is violated: final volume " << result.volume
+       << " m^3 exceeds the target " << target << " m^3 by a relative "
+       << result.volume_constraint_violation;
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
+  if (result.stress_constrained && !result.feasible) {
+    std::ostringstream os;
+    os << "the stress constraint is violated at the final design: the largest aggregated "
+          "constraint value is "
+       << result.constraint_violation << " (max relaxed stress ratio "
+       << result.max_stress_ratio << "); the design is infeasible, not optimal";
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Optimality criteria
+// ----------------------------------------------------------------------------
+
+TopologyOptimizationResult TopologyOptimizer::run_oc() {
   Timer total_timer;
   TopologyOptimizationResult result;
+  result.method = OptimizerMethod::OptimalityCriteria;
 
   ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
                                 options_.analysis);
@@ -189,60 +326,215 @@ TopologyOptimizationResult TopologyOptimizer::run() {
   }
 
   const int performed = std::min(iteration, options_.max_iterations);
-  result.iterations = performed;
-
-  // Final evaluation at the converged design so the reported fields match x.
-  eval = objective.evaluate(x, /*need_gradients=*/true);
-  result.design = x;
-  result.physical_density = eval.physical_density;
-  result.stiffness_factors = eval.stiffness_factors;
-  result.compliance = eval.compliance;
-  result.load_case_compliance = eval.load_case_compliance;
-  result.volume = eval.volume;
-  result.volume_fraction = eval.volume_fraction;
-  result.gray_level = gray_level(eval.physical_density);
-  result.displacements = eval.displacements;
-  result.element_strain_energy = eval.element_strain_energy;
-  result.linear_solves = objective.num_solves();
-
-  const Scalar target = domain_.volume_target();
-  result.volume_constraint_violation = (result.volume - target) / target;
-
-  if (options_.history_stride > 0 &&
-      (result.snapshot_iterations.empty() ||
-       result.snapshot_iterations.back() != performed)) {
-    result.snapshot_iterations.push_back(performed);
-    result.snapshots.push_back(result.physical_density);
-  }
-
-  if (!result.converged) {
-    std::ostringstream os;
-    os << "the optimiser reached the iteration cap (" << options_.max_iterations
-       << ") without meeting either convergence criterion: the last design change was "
-       << result.final_design_change << " against a tolerance of "
-       << options_.change_tolerance << ", and the relative compliance change over "
-       << options_.objective_window << " iterations was "
-       << result.final_objective_change << " against a tolerance of "
-       << options_.objective_tolerance
-       << ". The returned design is the last iterate, not a converged optimum";
-    result.warnings.push_back(os.str());
-    log::warn(os.str());
-  }
-
-  if (result.volume_constraint_violation > 1.0e-6) {
-    std::ostringstream os;
-    os << "the volume constraint is violated: final volume " << result.volume
-       << " m^3 exceeds the target " << target << " m^3 by a relative "
-       << result.volume_constraint_violation;
-    result.warnings.push_back(os.str());
-    log::warn(os.str());
-  }
+  finish(result, objective, x, performed, {}, nullptr);
 
   result.total_seconds = total_timer.elapsed_seconds();
   log::info("topology optimisation finished: ", result.iterations, " iterations, ",
             result.linear_solves, " linear solves, compliance ", result.compliance,
             " J, volume fraction ", result.volume_fraction, " (target ",
             domain_.volume_fraction(), "), grey level ", result.gray_level, ", ",
+            result.total_seconds, " s");
+  return result;
+}
+
+// ----------------------------------------------------------------------------
+// MMA
+// ----------------------------------------------------------------------------
+
+TopologyOptimizationResult TopologyOptimizer::run_mma() {
+  Timer total_timer;
+  TopologyOptimizationResult result;
+  result.method = OptimizerMethod::MMA;
+
+  ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
+                                options_.analysis);
+  std::unique_ptr<StressConstraint> stress;
+  if (options_.stress.enabled) {
+    stress = std::make_unique<StressConstraint>(model_, assembler_, filter_,
+                                                options_.stress);
+  }
+
+  // MMA works on the free variables only; passive ones keep their value.
+  std::vector<Index> free_ids;
+  for (Index e = 0; e < domain_.num_elements(); ++e) {
+    if (domain_.is_free(e)) free_ids.push_back(e);
+  }
+  const Index nf = static_cast<Index>(free_ids.size());
+  Vector lower(nf);
+  Vector upper(nf);
+  for (Index i = 0; i < nf; ++i) {
+    lower(i) = domain_.lower_bounds()(free_ids[static_cast<std::size_t>(i)]);
+    upper(i) = domain_.upper_bounds()(free_ids[static_cast<std::size_t>(i)]);
+  }
+  const auto pack = [&](const Vector& full) {
+    Vector out(nf);
+    for (Index i = 0; i < nf; ++i) out(i) = full(free_ids[static_cast<std::size_t>(i)]);
+    return out;
+  };
+
+  const std::size_t num_cases = model_.load_case_specs().size();
+  const Index m = 1 + (stress ? static_cast<Index>(num_cases) : 0);
+  MmaOptimizer mma(nf, m, lower, upper, options_.mma);
+  std::vector<Scalar> scales(num_cases, 1.0);
+
+  Vector x = domain_.initial_design();
+  domain_.clamp(x);
+  const Scalar target = domain_.volume_target();
+
+  log::info("topology optimisation (MMA): ", domain_.describe());
+  log::info("  filter ", to_string(filter_.type()), " radius ", filter_.radius(),
+            " m (support ", filter_.average_support(), " elements), penalty ",
+            options_.simp.penalty, ", emin_ratio ", options_.simp.emin_ratio,
+            ", move limit ", options_.mma.move_limit, ", ", m, " constraint(s)");
+  if (stress) {
+    log::info("  stress constraint: limit ", options_.stress.limit, " Pa, P = ",
+              options_.stress.p_norm, ", q = ", options_.stress.relaxation,
+              ", one aggregated constraint per load case");
+  }
+  if (options_.continuation_steps > 1) {
+    log::info("  continuation: penalty ", options_.penalty_start, " -> ",
+              options_.simp.penalty, " in ", options_.continuation_steps, " stages of ",
+              options_.continuation_iterations, " iterations");
+  }
+
+  std::vector<Scalar> compliance_history;
+  int iteration = 0;
+  Scalar previous_penalty = -1.0;
+  Scalar c_ref = 0.0;
+
+  for (iteration = 1; iteration <= options_.max_iterations; ++iteration) {
+    Timer iter_timer;
+
+    const Scalar penalty = penalty_for_iteration(iteration - 1);
+    if (penalty != previous_penalty) {
+      objective.simp().penalty = penalty;
+      if (previous_penalty > 0.0) {
+        log::info("continuation: SIMP penalty raised to ", penalty, " at iteration ",
+                  iteration);
+      }
+      previous_penalty = penalty;
+    }
+
+    const ObjectiveEvaluation eval = objective.evaluate(x, /*need_gradients=*/true);
+    if (iteration == 1) {
+      c_ref = eval.compliance;
+      if (!(c_ref > 0.0)) {
+        throw SolverError("the initial compliance is not positive; MMA cannot scale it");
+      }
+    }
+
+    // Objective and constraints in MMA form (all O(1)).
+    const Scalar f0 = eval.compliance / c_ref;
+    const Vector df0 = pack(eval.dc_dx) / c_ref;
+    Vector fval(m);
+    Matrix dfdx(m, nf);
+    fval(0) = eval.volume / target - 1.0;
+    dfdx.row(0) = (pack(eval.dv_dx) / target).transpose();
+
+    std::vector<StressEvaluation> stress_evals;
+    Scalar max_stress_ratio = 0.0;
+    Scalar max_stress_constraint = -std::numeric_limits<Scalar>::infinity();
+    if (stress) {
+      for (std::size_t l = 0; l < num_cases; ++l) {
+        stress_evals.push_back(
+            stress->evaluate(objective, eval, l, scales[l], /*need_gradients=*/true));
+        const StressEvaluation& se = stress_evals.back();
+        fval(1 + static_cast<Index>(l)) = se.constraint;
+        dfdx.row(1 + static_cast<Index>(l)) = pack(se.dg_dx).transpose();
+        max_stress_ratio = std::max(max_stress_ratio, se.max_relaxed_ratio);
+        max_stress_constraint = std::max(max_stress_constraint, se.constraint);
+      }
+    }
+
+    const MmaStep step = mma.update(pack(x), f0, df0, fval, dfdx);
+    Vector x_new = x;
+    for (Index i = 0; i < nf; ++i) x_new(free_ids[static_cast<std::size_t>(i)]) = step.x(i);
+    domain_.clamp(x_new);
+
+    TopologyIteration record;
+    record.iteration = iteration;
+    record.penalty = penalty;
+    record.compliance = eval.compliance;
+    record.volume = eval.volume;
+    record.volume_fraction = eval.volume_fraction;
+    record.max_change = step.max_change;
+    record.lambda = step.lambda(0);
+    record.gray_level = gray_level(eval.physical_density);
+    record.bisections = step.subproblem_iterations;
+    record.volume_converged = fval(0) <= options_.constraint_tolerance;
+    record.max_stress_ratio = max_stress_ratio;
+    record.stress_constraint = stress ? max_stress_constraint : 0.0;
+    record.constraint_violation = fval.maxCoeff();
+    record.seconds = iter_timer.elapsed_seconds();
+    result.history.push_back(record);
+    compliance_history.push_back(eval.compliance);
+
+    if (options_.history_stride > 0 &&
+        (iteration == 1 || iteration % options_.history_stride == 0)) {
+      result.snapshot_iterations.push_back(iteration);
+      result.snapshots.push_back(eval.physical_density);
+    }
+
+    log::info("iter ", iteration, ": c = ", eval.compliance, " J, vf = ",
+              eval.volume_fraction, ", dx = ", step.max_change, ", p = ", penalty,
+              ", grey = ", record.gray_level, ", g_max = ", record.constraint_violation,
+              (stress ? ", stress ratio = " : ""), (stress ? max_stress_ratio : 0.0),
+              ", mma iters = ", step.subproblem_iterations);
+
+    const bool at_final_penalty =
+        options_.continuation_steps <= 1 ||
+        iteration >= options_.continuation_iterations *
+                         (options_.continuation_steps - 1);
+    const bool feasible = fval.maxCoeff() <= options_.constraint_tolerance;
+    const bool change_ok = step.max_change <= options_.change_tolerance;
+    bool objective_ok = false;
+    Scalar objective_change = std::numeric_limits<Scalar>::infinity();
+    {
+      const int w = std::max(options_.objective_window, 1);
+      if (static_cast<int>(compliance_history.size()) > w) {
+        const Scalar recent = compliance_history.back();
+        const Scalar older = compliance_history[compliance_history.size() - 1 - w];
+        objective_change =
+            std::abs(recent - older) / std::max(std::abs(recent), 1.0e-30);
+        objective_ok = options_.objective_tolerance > 0.0 &&
+                       objective_change <= options_.objective_tolerance;
+      }
+    }
+    result.final_design_change = step.max_change;
+    result.final_objective_change = objective_change;
+
+    // Convergence is judged on the iterate that was just evaluated, so that
+    // iterate is the design returned: the feasibility and stationarity it
+    // reports would not be guaranteed for the (unevaluated) update, which under
+    // the objective-stall criterion can still differ by up to the move limit.
+    if (at_final_penalty && feasible && (change_ok || objective_ok)) {
+      result.converged = true;
+      result.stop_reason = change_ok ? "design_change" : "objective_stall";
+      log::info("converged after ", iteration, " iterations (", result.stop_reason,
+                "): max |dx| = ", step.max_change, ", relative compliance change = ",
+                objective_change, ", largest constraint value = ", fval.maxCoeff(),
+                "; the returned design is this evaluated iterate");
+      break;
+    }
+
+    // Not converged: advance the design and the adaptive stress scales.
+    for (std::size_t l = 0; l < stress_evals.size(); ++l) {
+      scales[l] = stress->next_scale(scales[l], stress_evals[l]);
+    }
+    x = x_new;
+  }
+
+  // Converged runs return the last evaluated iterate; a run that hit the
+  // iteration cap returns its last update, which finish() evaluates.
+  const int performed = std::min(iteration, options_.max_iterations);
+  finish(result, objective, x, performed, scales, stress.get());
+
+  result.total_seconds = total_timer.elapsed_seconds();
+  log::info("topology optimisation finished (MMA): ", result.iterations, " iterations, ",
+            result.linear_solves, " linear solves, compliance ", result.compliance,
+            " J, volume fraction ", result.volume_fraction, " (target ",
+            domain_.volume_fraction(), "), grey level ", result.gray_level,
+            ", largest constraint value ", result.constraint_violation, ", ",
             result.total_seconds, " s");
   return result;
 }
