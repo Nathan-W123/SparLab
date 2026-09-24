@@ -50,11 +50,10 @@ PatchResult run_patch_test(Scalar perturbation) {
   FemModel model(make_perturbed_quad_mesh(spec, perturbation, 7u), material, 0.02,
                  StressState::PlaneStress, IntegrationOptions());
 
-  const std::vector<Mesh::BoundaryEdge> edges = model.mesh().boundary_edges();
+  const std::vector<Mesh::BoundaryFace> edges = model.mesh().boundary_faces();
   std::vector<char> on_boundary(static_cast<std::size_t>(model.mesh().num_nodes()), 0);
-  for (const Mesh::BoundaryEdge& e : edges) {
-    on_boundary[static_cast<std::size_t>(e.node_a)] = 1;
-    on_boundary[static_cast<std::size_t>(e.node_b)] = 1;
+  for (const Mesh::BoundaryFace& e : edges) {
+    for (Index n : e.nodes) on_boundary[static_cast<std::size_t>(n)] = 1;
   }
   std::vector<Index> boundary_nodes;
   for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
@@ -79,7 +78,7 @@ PatchResult run_patch_test(Scalar perturbation) {
   model.finalize();
 
   for (Index n : boundary_nodes) {
-    const Vector2 x = model.mesh().node(n);
+    const Vector2 x = model.mesh().node(n).head<2>();
     const Vector2 u = offset + gradient * x;
     model.dofs().prescribe(n, 0, u.x());
     model.dofs().prescribe(n, 1, u.y());
@@ -94,12 +93,12 @@ PatchResult run_patch_test(Scalar perturbation) {
   PatchResult result;
   Scalar u_scale = 0.0;
   for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-    const Vector2 x = model.mesh().node(n);
+    const Vector2 x = model.mesh().node(n).head<2>();
     const Vector2 expected = offset + gradient * x;
     result.displacement_error =
         std::max(result.displacement_error,
-                 std::max(std::abs(u(n * kDofsPerNode + 0) - expected.x()),
-                          std::abs(u(n * kDofsPerNode + 1) - expected.y())));
+                 std::max(std::abs(u(n * 2 + 0) - expected.x()),
+                          std::abs(u(n * 2 + 1) - expected.y())));
     u_scale = std::max(u_scale, expected.cwiseAbs().maxCoeff());
   }
   result.displacement_error /= u_scale;
@@ -159,9 +158,9 @@ TEST_CASE("stress recovery reproduces a known displacement field",
   PointLoadSpec p;
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx, 0.0);
+  nearest.point = Vector3(spec.lx, 0.0, 0.0);
   p.region.members.push_back(nearest);
-  p.force = Vector2(1.0, 0.0);
+  p.force = Vector3(1.0, 0.0, 0.0);
   load.point_loads.push_back(p);
   model.load_case_specs().push_back(load);
   model.finalize();
@@ -171,9 +170,9 @@ TEST_CASE("stress recovery reproduces a known displacement field",
   const Scalar gxy = 2.0e-4;
   Vector u = Vector::Zero(model.dofs().num_dofs());
   for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-    const Vector2 x = model.mesh().node(n);
-    u(n * kDofsPerNode + 0) = exx * x.x() + 0.5 * gxy * x.y();
-    u(n * kDofsPerNode + 1) = 0.5 * gxy * x.x() + eyy * x.y();
+    const Vector3 x = model.mesh().node(n);
+    u(n * 2 + 0) = exx * x.x() + 0.5 * gxy * x.y();
+    u(n * 2 + 1) = 0.5 * gxy * x.x() + eyy * x.y();
   }
 
   Assembler assembler(model);
@@ -341,7 +340,7 @@ TEST_CASE("plane strain is stiffer than plane stress for the same beam",
     tip_box.kind = SelectorKind::Box;
     tip_box.xmin = c.length;
     tip.region.members.push_back(tip_box);
-    tip.force = Vector2(0.0, c.tip_load);
+    tip.force = Vector3(0.0, c.tip_load, 0.0);
     load.point_loads.push_back(tip);
     model.load_case_specs().push_back(load);
     model.finalize();
@@ -388,7 +387,7 @@ TEST_CASE("distributed tractions give a mesh-independent resultant",
     top.kind = SelectorKind::Box;
     top.ymin = spec.ly;
     traction.region.members.push_back(top);
-    traction.traction = Vector2(0.0, pressure);
+    traction.traction = Vector3(0.0, pressure, 0.0);
     load.tractions.push_back(traction);
     model.load_case_specs().push_back(load);
     model.finalize();
@@ -397,7 +396,7 @@ TEST_CASE("distributed tractions give a mesh-independent resultant",
     const Vector& f = model.load_vectors().front();
     Scalar total = 0.0;
     for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-      total += f(n * kDofsPerNode + 1);
+      total += f(n * 2 + 1);
     }
     REQUIRE(total == Approx(pressure * length * thickness).epsilon(1.0e-12));
 

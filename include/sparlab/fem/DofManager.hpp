@@ -1,7 +1,8 @@
 /// \file DofManager.hpp
 /// \brief Global degree-of-freedom numbering and Dirichlet partitioning.
 ///
-/// DOF numbering is node-major: node `n` owns DOFs `2n` (u_x) and `2n+1` (u_y).
+/// DOF numbering is node-major with `dofs_per_node` translational components:
+/// node `n` owns DOFs `d n + k` for component `k` (u_x, u_y and, in 3-D, u_z).
 /// Constraints are handled by *partitioning* rather than by penalty terms: the
 /// DOF set is split into free (f) and prescribed (p) blocks and the system
 /// \f[
@@ -24,12 +25,14 @@ namespace sparlab {
 class DofManager {
  public:
   DofManager() = default;
-  explicit DofManager(Index num_nodes);
+  /// \param dofs_per_node translational components per node (2 or 3).
+  explicit DofManager(Index num_nodes, int dofs_per_node = 2);
 
   Index num_nodes() const { return num_nodes_; }
-  Index num_dofs() const { return num_nodes_ * kDofsPerNode; }
+  int dofs_per_node() const { return dofs_per_node_; }
+  Index num_dofs() const { return num_nodes_ * dofs_per_node_; }
 
-  /// Global DOF index of `component` (0 = x, 1 = y) at `node`.
+  /// Global DOF index of `component` (0 = x, 1 = y, 2 = z) at `node`.
   /// \throws ModelError for out-of-range input.
   Index dof(Index node, int component) const;
 
@@ -67,7 +70,7 @@ class DofManager {
   /// Gather the free-DOF entries of a full-length vector.
   Vector restrict_to_free(const Vector& full) const;
 
-  /// Fill `out` with the `nodes_per_elem * kDofsPerNode` global DOFs of an
+  /// Fill `out` with the `nodes_per_elem * dofs_per_node` global DOFs of an
   /// element, in node-major order matching the element kernels.
   void element_dofs(const Index* nodes, int nodes_per_elem, Index* out) const;
 
@@ -75,6 +78,7 @@ class DofManager {
   void rebuild() const;
 
   Index num_nodes_ = 0;
+  int dofs_per_node_ = 2;
   std::vector<char> constrained_;
   std::vector<Scalar> values_;
 

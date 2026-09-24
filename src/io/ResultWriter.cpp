@@ -30,21 +30,36 @@ std::string sanitise(const std::string& name) {
   return out;
 }
 
-json::Value vector2_json(const Vector2& v) {
+/// [x, y] on a 2-D model, [x, y, z] on a 3-D one.
+json::Value point_json(const Vector3& v, int dim) {
   json::Value out = json::Value::make_array();
-  out.push_back(json::Value::make_number(v.x()));
-  out.push_back(json::Value::make_number(v.y()));
+  for (int i = 0; i < dim; ++i) out.push_back(json::Value::make_number(v(i)));
   return out;
 }
 
-json::Value equilibrium_json(const EquilibriumCheck& eq) {
+const char* component_name(int k) { return k == 0 ? "x" : k == 1 ? "y" : "z"; }
+
+/// Vector magnitude over the model's components only.
+Scalar magnitude(const Vector& full, Index n, int dim) {
+  return dim == 2 ? std::hypot(full(n * dim + 0), full(n * dim + 1))
+                  : std::hypot(full(n * dim + 0), full(n * dim + 1), full(n * dim + 2));
+}
+
+json::Value equilibrium_json(const EquilibriumCheck& eq, int dim) {
   json::Value out = json::Value::make_object();
-  out.set("applied_force_N", vector2_json(eq.applied_force));
-  out.set("reaction_force_N", vector2_json(eq.reaction_force));
-  out.set("force_residual_N", vector2_json(eq.force_residual));
-  out.set("applied_moment_Nm", json::Value::make_number(eq.applied_moment));
-  out.set("reaction_moment_Nm", json::Value::make_number(eq.reaction_moment));
-  out.set("moment_residual_Nm", json::Value::make_number(eq.moment_residual));
+  out.set("applied_force_N", point_json(eq.applied_force, dim));
+  out.set("reaction_force_N", point_json(eq.reaction_force, dim));
+  out.set("force_residual_N", point_json(eq.force_residual, dim));
+  if (dim == 2) {
+    // A plane model has a single moment component, about z.
+    out.set("applied_moment_Nm", json::Value::make_number(eq.applied_moment.z()));
+    out.set("reaction_moment_Nm", json::Value::make_number(eq.reaction_moment.z()));
+    out.set("moment_residual_Nm", json::Value::make_number(eq.moment_residual.z()));
+  } else {
+    out.set("applied_moment_Nm", point_json(eq.applied_moment, 3));
+    out.set("reaction_moment_Nm", point_json(eq.reaction_moment, 3));
+    out.set("moment_residual_Nm", point_json(eq.moment_residual, 3));
+  }
   out.set("relative_force_error", json::Value::make_number(eq.relative_force_error));
   out.set("relative_moment_error", json::Value::make_number(eq.relative_moment_error));
   return out;
@@ -80,18 +95,23 @@ json::Value timings_json(const TimingLedger& timings) {
 
 json::Value mesh_stats_json(const FemModel& model) {
   const Mesh& mesh = model.mesh();
+  const int dim = mesh.dim();
   json::Value out = json::Value::make_object();
   out.set("element_type", json::Value::make_string(to_string(mesh.element_type())));
+  out.set("dim", json::Value::make_number(dim));
   out.set("num_nodes", json::Value::make_number(mesh.num_nodes()));
   out.set("num_elements", json::Value::make_number(mesh.num_elements()));
   out.set("num_dofs", json::Value::make_number(model.dofs().num_dofs()));
   out.set("num_free_dofs", json::Value::make_number(model.dofs().num_free()));
   out.set("num_prescribed_dofs",
           json::Value::make_number(model.dofs().num_constrained()));
-  const Eigen::Vector4d bb = mesh.bounding_box();
+  const BoundingBox bb = mesh.bounding_box();
   json::Value box = json::Value::make_array();
-  for (int i = 0; i < 4; ++i) box.push_back(json::Value::make_number(bb(i)));
-  out.set("bounding_box_xmin_ymin_xmax_ymax_m", box);
+  for (int i = 0; i < dim; ++i) box.push_back(json::Value::make_number(bb.lower(i)));
+  for (int i = 0; i < dim; ++i) box.push_back(json::Value::make_number(bb.upper(i)));
+  out.set(dim == 2 ? "bounding_box_xmin_ymin_xmax_ymax_m"
+                   : "bounding_box_xmin_ymin_zmin_xmax_ymax_zmax_m",
+          box);
   out.set("thickness_m", json::Value::make_number(model.thickness()));
   out.set("domain_volume_m3", json::Value::make_number(model.domain_volume()));
   if (mesh.structured_info().has_value()) {
@@ -99,8 +119,10 @@ json::Value mesh_stats_json(const FemModel& model) {
     json::Value grid = json::Value::make_object();
     grid.set("nx", json::Value::make_number(info.nx));
     grid.set("ny", json::Value::make_number(info.ny));
+    if (dim == 3) grid.set("nz", json::Value::make_number(info.nz));
     grid.set("lx_m", json::Value::make_number(info.lx));
     grid.set("ly_m", json::Value::make_number(info.ly));
+    if (dim == 3) grid.set("lz_m", json::Value::make_number(info.lz));
     grid.set("uniform", json::Value::make_bool(info.uniform));
     out.set("structured_grid", grid);
   }
@@ -114,9 +136,7 @@ json::Value material_json(const IsotropicMaterial& m, StressState state) {
   out.set("poisson_ratio", json::Value::make_number(m.poisson_ratio()));
   out.set("density_kg_per_m3", json::Value::make_number(m.density()));
   out.set("shear_modulus_Pa", json::Value::make_number(m.shear_modulus()));
-  out.set("stress_state", json::Value::make_string(
-                              state == StressState::PlaneStress ? "plane_stress"
-                                                                : "plane_strain"));
+  out.set("stress_state", json::Value::make_string(to_string(state)));
   return out;
 }
 
@@ -137,6 +157,30 @@ json::Value diagnostics_json(const ModelDiagnostics& diag) {
   }
   out.set("element_groups", groups);
   return out;
+}
+
+/// Coordinate column headers for a node or centroid table.
+std::vector<std::string> coordinate_headers(int dim, const char* prefix) {
+  std::vector<std::string> out;
+  for (int k = 0; k < dim; ++k) {
+    out.push_back(std::string(prefix) + component_name(k) + "[m]");
+  }
+  return out;
+}
+
+/// Per-component headers such as ux[m], uy[m](, uz[m]).
+std::vector<std::string> component_headers(int dim, const char* stem, const char* unit) {
+  std::vector<std::string> out;
+  for (int k = 0; k < dim; ++k) {
+    out.push_back(std::string(stem) + component_name(k) + "[" + unit + "]");
+  }
+  return out;
+}
+
+std::vector<std::string> concat(std::vector<std::string> a,
+                                const std::vector<std::string>& b) {
+  a.insert(a.end(), b.begin(), b.end());
+  return a;
 }
 
 }  // namespace
@@ -167,14 +211,16 @@ void ResultWriter::write_config() const {
 
 void ResultWriter::write_mesh(const FemModel& model) const {
   const Mesh& mesh = model.mesh();
+  const int dim = mesh.dim();
   json::Value doc = json::Value::make_object();
   doc.set("case", json::Value::make_string(config_.name));
   doc.set("element_type", json::Value::make_string(to_string(mesh.element_type())));
+  doc.set("dim", json::Value::make_number(dim));
   doc.set("nodes_per_element", json::Value::make_number(mesh.nodes_per_elem()));
 
   json::Value nodes = json::Value::make_array();
   for (Index n = 0; n < mesh.num_nodes(); ++n) {
-    nodes.push_back(vector2_json(mesh.node(n)));
+    nodes.push_back(point_json(mesh.node(n), dim));
   }
   doc.set("nodes_m", nodes);
 
@@ -193,9 +239,8 @@ void ResultWriter::write_mesh(const FemModel& model) const {
   json::Value constraints = json::Value::make_array();
   for (Index d : model.dofs().constrained_dofs()) {
     json::Value entry = json::Value::make_object();
-    entry.set("node", json::Value::make_number(d / kDofsPerNode));
-    entry.set("component",
-              json::Value::make_string(d % kDofsPerNode == 0 ? "x" : "y"));
+    entry.set("node", json::Value::make_number(d / dim));
+    entry.set("component", json::Value::make_string(component_name(d % dim)));
     entry.set("value_m", json::Value::make_number(model.dofs().prescribed_value(d)));
     constraints.push_back(entry);
   }
@@ -211,13 +256,15 @@ void ResultWriter::write_mesh(const FemModel& model) const {
               json::Value::make_number(model.load_case_specs()[l].weight));
     json::Value forces = json::Value::make_array();
     for (Index n = 0; n < mesh.num_nodes(); ++n) {
-      const Scalar fx = loads[l](n * kDofsPerNode + 0);
-      const Scalar fy = loads[l](n * kDofsPerNode + 1);
-      if (fx == 0.0 && fy == 0.0) continue;
+      bool nonzero = false;
+      for (int k = 0; k < dim; ++k) nonzero = nonzero || loads[l](n * dim + k) != 0.0;
+      if (!nonzero) continue;
       json::Value f = json::Value::make_object();
       f.set("node", json::Value::make_number(n));
-      f.set("fx_N", json::Value::make_number(fx));
-      f.set("fy_N", json::Value::make_number(fy));
+      for (int k = 0; k < dim; ++k) {
+        f.set(std::string("f") + component_name(k) + "_N",
+              json::Value::make_number(loads[l](n * dim + k)));
+      }
       forces.push_back(f);
     }
     entry.set("nodal_forces", forces);
@@ -230,33 +277,56 @@ void ResultWriter::write_mesh(const FemModel& model) const {
 
 void ResultWriter::write_displacement(const Mesh& mesh, const std::string& load_case,
                                       const Vector& displacement) const {
-  CsvWriter csv(file("displacement_" + sanitise(load_case) + ".csv"),
-                {"node", "x[m]", "y[m]", "ux[m]", "uy[m]", "umag[m]"});
+  const int dim = mesh.dim();
+  std::vector<std::string> header{"node"};
+  header = concat(header, coordinate_headers(dim, ""));
+  header = concat(header, component_headers(dim, "u", "m"));
+  header.push_back("umag[m]");
+  CsvWriter csv(file("displacement_" + sanitise(load_case) + ".csv"), header);
   for (Index n = 0; n < mesh.num_nodes(); ++n) {
-    const Vector2 x = mesh.node(n);
-    const Scalar ux = displacement(n * kDofsPerNode + 0);
-    const Scalar uy = displacement(n * kDofsPerNode + 1);
-    csv.row(n, {x.x(), x.y(), ux, uy, std::hypot(ux, uy)});
+    const Vector3 x = mesh.node(n);
+    std::vector<Scalar> row;
+    for (int k = 0; k < dim; ++k) row.push_back(x(k));
+    for (int k = 0; k < dim; ++k) row.push_back(displacement(n * dim + k));
+    row.push_back(magnitude(displacement, n, dim));
+    csv.row(n, row);
   }
   csv.close();
 }
 
 void ResultWriter::write_stress(const Mesh& mesh, const std::string& load_case,
                                 const StressField& field, const Vector* density) const {
-  CsvWriter csv(file("stress_" + sanitise(load_case) + ".csv"),
-                {"element", "cx[m]", "cy[m]", "area[m2]", "density[-]", "exx[-]",
-                 "eyy[-]", "gxy[-]", "sxx[Pa]", "syy[Pa]", "sxy[Pa]", "von_mises[Pa]",
-                 "solid_von_mises[Pa]", "principal_max[Pa]", "principal_min[Pa]",
-                 "strain_energy[J]"});
+  const int dim = mesh.dim();
+  std::vector<std::string> header;
+  if (dim == 2) {
+    header = {"element", "cx[m]", "cy[m]", "area[m2]", "density[-]", "exx[-]",
+              "eyy[-]", "gxy[-]", "sxx[Pa]", "syy[Pa]", "sxy[Pa]", "von_mises[Pa]",
+              "solid_von_mises[Pa]", "principal_max[Pa]", "principal_min[Pa]",
+              "strain_energy[J]"};
+  } else {
+    header = {"element", "cx[m]", "cy[m]", "cz[m]", "volume[m3]", "density[-]",
+              "exx[-]", "eyy[-]", "ezz[-]", "gxy[-]", "gyz[-]", "gzx[-]",
+              "sxx[Pa]", "syy[Pa]", "szz[Pa]", "sxy[Pa]", "syz[Pa]", "szx[Pa]",
+              "von_mises[Pa]", "solid_von_mises[Pa]", "principal_max[Pa]",
+              "principal_mid[Pa]", "principal_min[Pa]", "strain_energy[J]"};
+  }
+  CsvWriter csv(file("stress_" + sanitise(load_case) + ".csv"), header);
+  const Eigen::Index nv = field.element_strain.rows();
   for (Index e = 0; e < mesh.num_elements(); ++e) {
-    const Vector2 c = mesh.element_centroid(e);
-    csv.row(e, {c.x(), c.y(), mesh.element_area(e), density ? (*density)(e) : 1.0,
-                field.element_strain(0, e), field.element_strain(1, e),
-                field.element_strain(2, e), field.element_stress(0, e),
-                field.element_stress(1, e), field.element_stress(2, e),
-                field.element_von_mises(e), field.element_solid_von_mises(e),
-                field.element_principal_max(e), field.element_principal_min(e),
-                field.element_strain_energy(e)});
+    const Vector3 c = mesh.element_centroid(e);
+    std::vector<Scalar> row;
+    for (int k = 0; k < dim; ++k) row.push_back(c(k));
+    row.push_back(mesh.element_measure(e));
+    row.push_back(density ? (*density)(e) : 1.0);
+    for (Eigen::Index i = 0; i < nv; ++i) row.push_back(field.element_strain(i, e));
+    for (Eigen::Index i = 0; i < nv; ++i) row.push_back(field.element_stress(i, e));
+    row.push_back(field.element_von_mises(e));
+    row.push_back(field.element_solid_von_mises(e));
+    row.push_back(field.element_principal_max(e));
+    if (dim == 3) row.push_back(field.element_principal_mid(e));
+    row.push_back(field.element_principal_min(e));
+    row.push_back(field.element_strain_energy(e));
+    csv.row(e, row);
   }
   csv.close();
 }
@@ -264,16 +334,22 @@ void ResultWriter::write_stress(const Mesh& mesh, const std::string& load_case,
 void ResultWriter::write_reactions(const Mesh& mesh, const DofManager& dofs,
                                    const std::string& load_case,
                                    const Vector& reactions) const {
-  CsvWriter csv(file("reactions_" + sanitise(load_case) + ".csv"),
-                {"node", "x[m]", "y[m]", "rx[N]", "ry[N]", "rmag[N]"});
+  const int dim = mesh.dim();
+  std::vector<std::string> header{"node"};
+  header = concat(header, coordinate_headers(dim, ""));
+  header = concat(header, component_headers(dim, "r", "N"));
+  header.push_back("rmag[N]");
+  CsvWriter csv(file("reactions_" + sanitise(load_case) + ".csv"), header);
   for (Index n = 0; n < mesh.num_nodes(); ++n) {
-    const bool cx = dofs.is_constrained(n * kDofsPerNode + 0);
-    const bool cy = dofs.is_constrained(n * kDofsPerNode + 1);
-    if (!cx && !cy) continue;
-    const Vector2 x = mesh.node(n);
-    const Scalar rx = reactions(n * kDofsPerNode + 0);
-    const Scalar ry = reactions(n * kDofsPerNode + 1);
-    csv.row(n, {x.x(), x.y(), rx, ry, std::hypot(rx, ry)});
+    bool constrained = false;
+    for (int k = 0; k < dim; ++k) constrained = constrained || dofs.is_constrained(n * dim + k);
+    if (!constrained) continue;
+    const Vector3 x = mesh.node(n);
+    std::vector<Scalar> row;
+    for (int k = 0; k < dim; ++k) row.push_back(x(k));
+    for (int k = 0; k < dim; ++k) row.push_back(reactions(n * dim + k));
+    row.push_back(magnitude(reactions, n, dim));
+    csv.row(n, row);
   }
   csv.close();
 }
@@ -282,18 +358,25 @@ void ResultWriter::write_static_vtk(const Mesh& mesh, const std::string& load_ca
                                     const Vector& displacement,
                                     const StressField& field, const Vector* density,
                                     const Vector* stiffness_factor) const {
+  const int dim = mesh.dim();
   VtkWriter writer(mesh, "SparLab static solution: " + config_.name + " / " + load_case);
-  Vector magnitude(mesh.num_nodes());
-  for (Index n = 0; n < mesh.num_nodes(); ++n) {
-    magnitude(n) = std::hypot(displacement(n * kDofsPerNode + 0),
-                              displacement(n * kDofsPerNode + 1));
-  }
+  Vector mag(mesh.num_nodes());
+  for (Index n = 0; n < mesh.num_nodes(); ++n) mag(n) = magnitude(displacement, n, dim);
   writer.add_point_vectors("displacement", displacement);
-  writer.add_point_scalars("displacement_magnitude", magnitude);
+  writer.add_point_scalars("displacement_magnitude", mag);
   writer.add_point_scalars("nodal_von_mises", field.nodal_von_mises);
-  writer.add_cell_scalars("sigma_xx", field.element_stress.row(0).transpose());
-  writer.add_cell_scalars("sigma_yy", field.element_stress.row(1).transpose());
-  writer.add_cell_scalars("sigma_xy", field.element_stress.row(2).transpose());
+  if (dim == 2) {
+    writer.add_cell_scalars("sigma_xx", field.element_stress.row(0).transpose());
+    writer.add_cell_scalars("sigma_yy", field.element_stress.row(1).transpose());
+    writer.add_cell_scalars("sigma_xy", field.element_stress.row(2).transpose());
+  } else {
+    writer.add_cell_scalars("sigma_xx", field.element_stress.row(0).transpose());
+    writer.add_cell_scalars("sigma_yy", field.element_stress.row(1).transpose());
+    writer.add_cell_scalars("sigma_zz", field.element_stress.row(2).transpose());
+    writer.add_cell_scalars("sigma_xy", field.element_stress.row(3).transpose());
+    writer.add_cell_scalars("sigma_yz", field.element_stress.row(4).transpose());
+    writer.add_cell_scalars("sigma_zx", field.element_stress.row(5).transpose());
+  }
   writer.add_cell_scalars("von_mises", field.element_von_mises);
   writer.add_cell_scalars("principal_max", field.element_principal_max);
   writer.add_cell_scalars("principal_min", field.element_principal_min);
@@ -305,6 +388,7 @@ void ResultWriter::write_static_vtk(const Mesh& mesh, const std::string& load_ca
 
 void ResultWriter::write_modal(const Mesh& mesh, const ModalResult& modal,
                                const std::string& tag) const {
+  const int dim = mesh.dim();
   const std::string suffix = tag.empty() ? "" : "_" + sanitise(tag);
   {
     CsvWriter csv(file("modes" + suffix + ".csv"),
@@ -322,21 +406,22 @@ void ResultWriter::write_modal(const Mesh& mesh, const ModalResult& modal,
 
   if (!config_.output.write_mode_shapes) return;
 
-  std::vector<std::string> header{"node", "x[m]", "y[m]"};
+  std::vector<std::string> header{"node"};
+  header = concat(header, coordinate_headers(dim, ""));
   for (Eigen::Index i = 0; i < modal.mode_shapes.cols(); ++i) {
-    std::ostringstream ux;
-    std::ostringstream uy;
-    ux << "ux_mode" << i << "[m]";
-    uy << "uy_mode" << i << "[m]";
-    header.push_back(ux.str());
-    header.push_back(uy.str());
+    for (int k = 0; k < dim; ++k) {
+      std::ostringstream name;
+      name << "u" << component_name(k) << "_mode" << i << "[m]";
+      header.push_back(name.str());
+    }
   }
   CsvWriter csv(file("mode_shapes" + suffix + ".csv"), header);
   for (Index n = 0; n < mesh.num_nodes(); ++n) {
-    std::vector<Scalar> row{mesh.node(n).x(), mesh.node(n).y()};
+    const Vector3 x = mesh.node(n);
+    std::vector<Scalar> row;
+    for (int k = 0; k < dim; ++k) row.push_back(x(k));
     for (Eigen::Index i = 0; i < modal.mode_shapes.cols(); ++i) {
-      row.push_back(modal.mode_shapes(n * kDofsPerNode + 0, i));
-      row.push_back(modal.mode_shapes(n * kDofsPerNode + 1, i));
+      for (int k = 0; k < dim; ++k) row.push_back(modal.mode_shapes(n * dim + k, i));
     }
     csv.row(n, row);
   }
@@ -347,13 +432,11 @@ void ResultWriter::write_modal(const Mesh& mesh, const ModalResult& modal,
       std::ostringstream title;
       title << "SparLab mode " << i << " at " << modal.frequencies_hz(i) << " Hz";
       VtkWriter writer(mesh, title.str());
-      writer.add_point_vectors("mode_shape", modal.mode_shapes.col(i));
-      Vector magnitude(mesh.num_nodes());
-      for (Index n = 0; n < mesh.num_nodes(); ++n) {
-        magnitude(n) = std::hypot(modal.mode_shapes(n * kDofsPerNode + 0, i),
-                                  modal.mode_shapes(n * kDofsPerNode + 1, i));
-      }
-      writer.add_point_scalars("mode_shape_magnitude", magnitude);
+      const Vector shape = modal.mode_shapes.col(i);
+      writer.add_point_vectors("mode_shape", shape);
+      Vector mag(mesh.num_nodes());
+      for (Index n = 0; n < mesh.num_nodes(); ++n) mag(n) = magnitude(shape, n, dim);
+      writer.add_point_scalars("mode_shape_magnitude", mag);
       std::ostringstream name;
       name << "mode" << suffix << "_" << i << ".vtk";
       writer.write(file(name.str()));
@@ -378,19 +461,28 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
 
 void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
                                  const TopologyOptimizationResult& result) const {
-  CsvWriter csv(file("density_final.csv"),
-                {"element", "cx[m]", "cy[m]", "area[m2]", "volume[m3]", "design_x[-]",
-                 "physical_density[-]", "stiffness_factor[-]", "passive_tag[-]",
-                 "strain_energy[J]"});
+  const int dim = mesh.dim();
+  std::vector<std::string> header{"element"};
+  header = concat(header, coordinate_headers(dim, "c"));
+  if (dim == 2) header.push_back("area[m2]");
+  header = concat(header, {"volume[m3]", "design_x[-]", "physical_density[-]",
+                           "stiffness_factor[-]", "passive_tag[-]", "strain_energy[J]"});
+  CsvWriter csv(file("density_final.csv"), header);
   for (Index e = 0; e < mesh.num_elements(); ++e) {
-    const Vector2 c = mesh.element_centroid(e);
-    csv.row(e, {c.x(), c.y(), mesh.element_area(e), domain.element_volumes()(e),
-                result.design(e), result.physical_density(e),
-                result.stiffness_factors(e),
-                static_cast<Scalar>(static_cast<int>(domain.tags()[static_cast<std::size_t>(e)])),
-                result.element_strain_energy.size() > e
-                    ? result.element_strain_energy(e)
-                    : 0.0});
+    const Vector3 c = mesh.element_centroid(e);
+    std::vector<Scalar> row;
+    for (int k = 0; k < dim; ++k) row.push_back(c(k));
+    if (dim == 2) row.push_back(mesh.element_measure(e));
+    row.push_back(domain.element_volumes()(e));
+    row.push_back(result.design(e));
+    row.push_back(result.physical_density(e));
+    row.push_back(result.stiffness_factors(e));
+    row.push_back(static_cast<Scalar>(
+        static_cast<int>(domain.tags()[static_cast<std::size_t>(e)])));
+    row.push_back(result.element_strain_energy.size() > e
+                      ? result.element_strain_energy(e)
+                      : 0.0);
+    csv.row(e, row);
   }
   csv.close();
 }
@@ -514,7 +606,7 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
               json::Value::make_number(sol.max_displacement_node));
     entry.set("scaled_residual", json::Value::make_number(sol.scaled_residual));
     entry.set("solver_iterations", json::Value::make_number(sol.solver_iterations));
-    entry.set("equilibrium", equilibrium_json(sol.equilibrium));
+    entry.set("equilibrium", equilibrium_json(sol.equilibrium, model.dim()));
     if (l < stresses.size()) {
       entry.set("max_von_mises_Pa",
                 json::Value::make_number(stresses[l].element_von_mises.maxCoeff()));

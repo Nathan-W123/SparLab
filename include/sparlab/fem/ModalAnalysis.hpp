@@ -68,7 +68,7 @@ struct ModalResult {
   Vector modal_residuals;          ///< per mode, ||K phi - lambda M phi|| / ||lambda M phi||
   Vector modal_mass_fraction;      ///< fraction of the mode's kinetic energy
                                    ///< carried by low-density elements (topology runs)
-  Scalar total_mass = 0.0;         ///< sum of the assembled mass matrix / 2 per direction [kg]
+  Scalar total_mass = 0.0;         ///< sum of the assembled mass matrix / dim [kg]
   int iterations = 0;
   int subspace_size = 0;
   bool converged = false;

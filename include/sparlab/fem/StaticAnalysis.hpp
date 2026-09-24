@@ -26,14 +26,15 @@
 
 namespace sparlab {
 
-/// Global force / moment balance of a solved load case.
+/// Global force / moment balance of a solved load case. Moments are taken
+/// about the origin; on a 2-D model only the z component is non-zero.
 struct EquilibriumCheck {
-  Vector2 applied_force = Vector2::Zero();    ///< sum of applied nodal forces [N]
-  Vector2 reaction_force = Vector2::Zero();   ///< sum of support reactions [N]
-  Vector2 force_residual = Vector2::Zero();   ///< applied + reaction [N]
-  Scalar applied_moment = 0.0;                ///< about the origin [N m]
-  Scalar reaction_moment = 0.0;               ///< about the origin [N m]
-  Scalar moment_residual = 0.0;               ///< applied + reaction [N m]
+  Vector3 applied_force = Vector3::Zero();    ///< sum of applied nodal forces [N]
+  Vector3 reaction_force = Vector3::Zero();   ///< sum of support reactions [N]
+  Vector3 force_residual = Vector3::Zero();   ///< applied + reaction [N]
+  Vector3 applied_moment = Vector3::Zero();   ///< about the origin [N m]
+  Vector3 reaction_moment = Vector3::Zero();  ///< about the origin [N m]
+  Vector3 moment_residual = Vector3::Zero();  ///< applied + reaction [N m]
   Scalar relative_force_error = 0.0;          ///< |residual| / max(|applied|, tiny)
   Scalar relative_moment_error = 0.0;         ///< normalised by |applied moment| scale
 };

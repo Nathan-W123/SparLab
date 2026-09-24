@@ -133,11 +133,14 @@ int main(int argc, char** argv) {
                 << app::format(s.max_displacement_magnitude) << " m, max von Mises "
                 << app::format(stresses[l].element_von_mises.maxCoeff())
                 << " Pa\n";
-      std::cout << "      equilibrium: applied (" << app::format(s.equilibrium.applied_force.x())
-                << ", " << app::format(s.equilibrium.applied_force.y())
-                << ") N, reactions (" << app::format(s.equilibrium.reaction_force.x())
-                << ", " << app::format(s.equilibrium.reaction_force.y())
-                << ") N, relative error "
+      const auto vec = [&](const Vector3& v) {
+        std::string text = "(" + app::format(v.x()) + ", " + app::format(v.y());
+        if (model.dim() == 3) text += ", " + app::format(v.z());
+        return text + ")";
+      };
+      std::cout << "      equilibrium: applied " << vec(s.equilibrium.applied_force)
+                << " N, reactions " << vec(s.equilibrium.reaction_force)
+                << " N, relative error "
                 << app::format(s.equilibrium.relative_force_error) << "\n";
     }
     if (modal) {

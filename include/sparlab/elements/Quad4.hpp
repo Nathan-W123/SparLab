@@ -31,18 +31,17 @@ Eigen::Matrix<Scalar, 4, 2> quad4_shape_gradients_natural(Scalar xi, Scalar eta)
 class Quad4Element final : public Element {
  public:
   ElementType type() const override { return ElementType::Quad4; }
+  int dim() const override { return 2; }
   int num_nodes() const override { return 4; }
-  int num_edges() const override { return 4; }
+  int num_faces() const override { return 4; }
 
-  Matrix stiffness(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-                   const Matrix3& d, Scalar thickness,
+  Matrix stiffness(const Matrix& coords, const Matrix& d, Scalar thickness,
                    const IntegrationOptions& opts) const override;
 
-  Matrix consistent_mass(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-                         Scalar density, Scalar thickness,
+  Matrix consistent_mass(const Matrix& coords, Scalar density, Scalar thickness,
                          const IntegrationOptions& opts) const override;
 
-  StrainOperator strain_operator(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
+  StrainOperator strain_operator(const Matrix& coords,
                                  const NaturalPoint& point) const override;
 
   Vector shape_functions(const NaturalPoint& point) const override;
@@ -50,11 +49,8 @@ class Quad4Element final : public Element {
   std::vector<NaturalPoint> stress_evaluation_points(
       const IntegrationOptions& opts) const override;
 
-  Vector edge_traction(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-                       int local_edge, const Vector2& traction, Scalar thickness,
-                       const IntegrationOptions& opts) const override;
-
-  std::array<int, 2> edge_nodes(int local_edge) const override;
+  Vector boundary_traction(const Matrix& coords, int local_face, const Vector3& traction,
+                           Scalar thickness, const IntegrationOptions& opts) const override;
 };
 
 }  // namespace sparlab

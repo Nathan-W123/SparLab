@@ -131,7 +131,7 @@ FemModel build_cantilever(const CantileverSpec& spec, Index nx, Index ny) {
   tip_box.kind = SelectorKind::Box;
   tip_box.xmin = spec.length;
   tip.region.members.push_back(tip_box);
-  tip.force = Vector2(0.0, spec.tip_load);
+  tip.force = Vector3(0.0, spec.tip_load, 0.0);
   tip.distribute_total = true;
   load.point_loads.push_back(tip);
   model.load_case_specs().push_back(load);
@@ -169,11 +169,11 @@ CantileverResult solve_cantilever(const CantileverSpec& spec, Index nx, Index ny
   Scalar sum = 0.0;
   for (Index j = 0; j <= ny; ++j) {
     const Index node = structured_node_index(info, nx, j);
-    sum += sol.displacement(node * kDofsPerNode + 1);
+    sum += sol.displacement(node * 2 + 1);
   }
   out.tip_deflection_mean = sum / static_cast<Scalar>(ny + 1);
   const Index mid = structured_node_index(info, nx, ny / 2);
-  out.tip_deflection_mid = sol.displacement(mid * kDofsPerNode + 1);
+  out.tip_deflection_mid = sol.displacement(mid * 2 + 1);
   return out;
 }
 
@@ -234,7 +234,7 @@ StudyOutcome study_sensitivity(const std::string& out_dir, json::Value& summary,
     hole.region.name = "passive_void_patch";
     Selector c;
     c.kind = SelectorKind::Circle;
-    c.center = Vector2(0.30, 0.15);
+    c.center = Vector3(0.30, 0.15, 0.0);
     c.radius = 0.04;
     hole.region.members.push_back(c);
     hole.solid = false;
@@ -260,7 +260,7 @@ StudyOutcome study_sensitivity(const std::string& out_dir, json::Value& summary,
   Vector x = domain.initial_design();
   for (Index e = 0; e < domain.num_elements(); ++e) {
     if (!domain.is_free(e)) continue;
-    const Vector2 c = model.mesh().element_centroid(e);
+    const Vector3 c = model.mesh().element_centroid(e);
     x(e) = 0.35 + 0.30 * std::sin(7.0 * c.x()) * std::cos(5.0 * c.y());
   }
   domain.clamp(x);
@@ -299,7 +299,7 @@ StudyOutcome study_sensitivity(const std::string& out_dir, json::Value& summary,
                   check.directional_relative_error, check.gradient_infinity_norm,
                   check.passed ? 1.0 : 0.0});
     for (const SensitivityCheckEntry& entry : check.entries) {
-      const Vector2 c = model.mesh().element_centroid(entry.element);
+      const Vector3 c = model.mesh().element_centroid(entry.element);
       element_csv.row({step, static_cast<Scalar>(entry.element), c.x(), c.y(),
                        entry.analytical, entry.finite_difference, entry.absolute_error,
                        entry.relative_error, entry.excluded ? 1.0 : 0.0});
@@ -546,8 +546,8 @@ StudyOutcome study_modal(const std::string& out_dir, json::Value& summary) {
       Scalar ex = 0.0;
       Scalar ey = 0.0;
       for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-        const Scalar ux = modal.mode_shapes(n * kDofsPerNode + 0, mode);
-        const Scalar uy = modal.mode_shapes(n * kDofsPerNode + 1, mode);
+        const Scalar ux = modal.mode_shapes(n * 2 + 0, mode);
+        const Scalar uy = modal.mode_shapes(n * 2 + 1, mode);
         ex += ux * ux;
         ey += uy * uy;
       }
@@ -744,12 +744,11 @@ StudyOutcome study_patch_test(const std::string& out_dir, json::Value& summary) 
                    IntegrationOptions());
 
     // Prescribe the exact field on every boundary node.
-    const std::vector<Mesh::BoundaryEdge> edges = model.mesh().boundary_edges();
+    const std::vector<Mesh::BoundaryFace> edges = model.mesh().boundary_faces();
     std::vector<char> on_boundary(
         static_cast<std::size_t>(model.mesh().num_nodes()), 0);
-    for (const Mesh::BoundaryEdge& e : edges) {
-      on_boundary[static_cast<std::size_t>(e.node_a)] = 1;
-      on_boundary[static_cast<std::size_t>(e.node_b)] = 1;
+    for (const Mesh::BoundaryFace& e : edges) {
+      for (Index n : e.nodes) on_boundary[static_cast<std::size_t>(n)] = 1;
     }
     std::vector<Index> boundary_nodes;
     for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
@@ -777,7 +776,7 @@ StudyOutcome study_patch_test(const std::string& out_dir, json::Value& summary) 
 
     // Overwrite the prescribed values with the exact field.
     for (Index n : boundary_nodes) {
-      const Vector2 x = model.mesh().node(n);
+      const Vector2 x = model.mesh().node(n).head<2>();
       const Vector2 u = offset + gradient * x;
       model.dofs().prescribe(n, 0, u.x());
       model.dofs().prescribe(n, 1, u.y());
@@ -793,11 +792,11 @@ StudyOutcome study_patch_test(const std::string& out_dir, json::Value& summary) 
     Scalar max_u_error = 0.0;
     Scalar u_scale = 0.0;
     for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-      const Vector2 x = model.mesh().node(n);
+      const Vector2 x = model.mesh().node(n).head<2>();
       const Vector2 expected = offset + gradient * x;
       max_u_error = std::max(
-          max_u_error, std::max(std::abs(u(n * kDofsPerNode + 0) - expected.x()),
-                                std::abs(u(n * kDofsPerNode + 1) - expected.y())));
+          max_u_error, std::max(std::abs(u(n * 2 + 0) - expected.x()),
+                                std::abs(u(n * 2 + 1) - expected.y())));
       u_scale = std::max(u_scale, expected.cwiseAbs().maxCoeff());
     }
 
@@ -806,12 +805,12 @@ StudyOutcome study_patch_test(const std::string& out_dir, json::Value& summary) 
     Scalar max_strain_error = 0.0;
     Scalar max_stress_error = 0.0;
     for (Index e = 0; e < model.mesh().num_elements(); ++e) {
-      max_strain_error = std::max(
-          max_strain_error,
-          (field.element_strain.col(e) - exact_strain).cwiseAbs().maxCoeff());
-      max_stress_error = std::max(
-          max_stress_error,
-          (field.element_stress.col(e) - exact_stress).cwiseAbs().maxCoeff());
+      const Vector3 strain_e = field.element_strain.col(e);
+      const Vector3 stress_e = field.element_stress.col(e);
+      max_strain_error =
+          std::max(max_strain_error, (strain_e - exact_strain).cwiseAbs().maxCoeff());
+      max_stress_error =
+          std::max(max_stress_error, (stress_e - exact_stress).cwiseAbs().maxCoeff());
     }
 
     const Scalar rel_u = max_u_error / std::max(u_scale, 1.0e-300);

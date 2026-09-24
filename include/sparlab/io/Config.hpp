@@ -7,6 +7,7 @@
 /// {
 ///   "name": "cantilever_beam",
 ///   "mesh":     { "type": "structured_quad", "nx":.., "ny":.., "lx":.., "ly":.. },
+///               // or { "type": "structured_hex", "nx","ny","nz", "lx","ly","lz" }
 ///   "material": { "youngs_modulus":.., "poisson_ratio":.., "density":.. },
 ///   "model":    { "thickness":.., "stress_state": "plane_stress" },
 ///   "boundary_conditions": [ { "fix": ["x","y"], "region": {..} } ],
@@ -17,6 +18,12 @@
 ///   "output":   { "vtk": true, "csv": true }
 /// }
 /// \endcode
+///
+/// The mesh type fixes the spatial dimension of the whole deck: a
+/// `structured_hex` mesh takes three-entry vectors, may fix `z`, and uses the
+/// three-dimensional constitutive law; a `structured_quad` mesh takes
+/// two-entry vectors and a plane stress state. Mixing the two is an error
+/// rather than a silently truncated component.
 ///
 /// Every numeric field is in SI units. Unknown keys are reported (not ignored),
 /// because a misspelled key that silently takes its default is a direct route
@@ -40,12 +47,21 @@
 
 namespace sparlab {
 
+/// Mesh generators a deck can name.
+enum class MeshKind {
+  StructuredQuad,  ///< "structured_quad": 2-D Q4 grid
+  StructuredHex    ///< "structured_hex": 3-D Hex8 grid
+};
+
+std::string to_string(MeshKind kind);
+
 struct ModalConfig {
   bool enabled = false;
   ModalAnalysisOptions options;
   /// Also run modal analysis on the density-thresholded topology (topopt runs).
   bool analyse_optimised_topology = true;
-  /// Compare against a uniformly thinned domain of the same mass.
+  /// Compare against a uniformly thinned domain of the same mass (2-D only:
+  /// the argument rests on thickness scaling and has no 3-D counterpart).
   bool compare_mass_matched_baseline = true;
 };
 
@@ -77,6 +93,7 @@ class Configuration {
   std::string description;
   std::string source_path;
 
+  MeshKind mesh_kind = MeshKind::StructuredQuad;
   StructuredMeshSpec mesh_spec;
   Scalar thickness = 1.0;
   StressState stress_state = StressState::PlaneStress;
@@ -93,6 +110,9 @@ class Configuration {
   /// The parsed document, retained so run summaries can record exactly what
   /// was requested.
   json::Value document;
+
+  /// Spatial dimension implied by the mesh type (2 or 3).
+  int dim() const { return mesh_kind == MeshKind::StructuredHex ? 3 : 2; }
 
   const IsotropicMaterial& material() const;
   void set_material(IsotropicMaterial material);
@@ -113,6 +133,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
 /// Read and parse a configuration file.
 Configuration load_configuration(const std::string& path, bool strict = false);
 
+/// Build the mesh described by a configuration (without the model).
+Mesh build_mesh(const Configuration& config);
+
 /// Build the mesh, material, boundary conditions and load cases described by a
 /// configuration and finalise the model.
 FemModel build_model(const Configuration& config);
@@ -121,6 +144,9 @@ FemModel build_model(const Configuration& config);
 DesignDomain build_design_domain(const Configuration& config, const FemModel& model);
 
 /// Parse a region specification (used by tests and by the config parser).
-SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name);
+/// \param dim mesh dimension (2 or 3), which decides how many entries the
+///        vector-valued fields must carry; 0 accepts either form.
+SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name,
+                           int dim = 0);
 
 }  // namespace sparlab

@@ -35,18 +35,21 @@ class DisjointSet {
   std::vector<Index> parent_;
 };
 
-/// Components of an element subset connected through shared edges.
-std::vector<std::vector<Index>> components_by_edge(const Mesh& mesh,
+/// Components of an element subset connected through shared faces (edges in
+/// 2-D). A face is identified by its sorted node list.
+std::vector<std::vector<Index>> components_by_face(const Mesh& mesh,
                                                    const std::vector<Index>& subset) {
-  static const int quad_edges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
-  std::map<std::pair<Index, Index>, Index> first_owner;  // edge -> local subset index
+  const std::vector<std::vector<int>>& local = element_local_faces(mesh.element_type());
+  std::map<std::vector<Index>, Index> first_owner;  // face -> local subset index
   DisjointSet ds(subset.size());
 
+  std::vector<Index> key;
   for (std::size_t s = 0; s < subset.size(); ++s) {
     const Index* nodes = mesh.element_nodes(subset[s]);
-    for (int le = 0; le < 4; ++le) {
-      const auto pr = std::minmax(nodes[quad_edges[le][0]], nodes[quad_edges[le][1]]);
-      const std::pair<Index, Index> key(pr.first, pr.second);
+    for (const std::vector<int>& face : local) {
+      key.clear();
+      for (int a : face) key.push_back(nodes[a]);
+      std::sort(key.begin(), key.end());
       const auto it = first_owner.find(key);
       if (it == first_owner.end()) {
         first_owner.emplace(key, static_cast<Index>(s));
@@ -72,13 +75,10 @@ std::vector<std::vector<Index>> components_by_edge(const Mesh& mesh,
 
 }  // namespace
 
-std::vector<std::vector<Index>> element_components_by_edge(const Mesh& mesh) {
-  if (mesh.element_type() != ElementType::Quad4) {
-    throw MeshError("element_components_by_edge currently supports Quad4 meshes only");
-  }
+std::vector<std::vector<Index>> element_components_by_face(const Mesh& mesh) {
   std::vector<Index> all(static_cast<std::size_t>(mesh.num_elements()));
   std::iota(all.begin(), all.end(), static_cast<Index>(0));
-  return components_by_edge(mesh, all);
+  return components_by_face(mesh, all);
 }
 
 SubMeshResult extract_element_subset(const Mesh& mesh,
@@ -112,9 +112,9 @@ SubMeshResult extract_element_subset(const Mesh& mesh,
     }
   }
 
-  Eigen::Matrix2Xd coords(2, static_cast<Eigen::Index>(out.node_map.size()));
+  Matrix coords(mesh.dim(), static_cast<Eigen::Index>(out.node_map.size()));
   for (std::size_t n = 0; n < out.node_map.size(); ++n) {
-    coords.col(static_cast<Eigen::Index>(n)) = mesh.node(out.node_map[n]);
+    coords.col(static_cast<Eigen::Index>(n)) = mesh.coordinates().col(out.node_map[n]);
   }
 
   out.mesh = Mesh(std::move(coords), std::move(connectivity), mesh.element_type());
@@ -160,7 +160,7 @@ TopologyInterpretation interpret_density_as_solid(const Mesh& mesh, const Vector
     throw MeshError(os.str());
   }
 
-  const auto components = components_by_edge(mesh, kept);
+  const auto components = components_by_face(mesh, kept);
   report.components_above_threshold = static_cast<Index>(components.size());
 
   std::vector<Index> retained = kept;

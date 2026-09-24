@@ -3,9 +3,13 @@
 ///
 /// The mesh owns nodal coordinates and element connectivity and nothing else:
 /// materials, loads and degrees of freedom live in separate components. A mesh
-/// carries a single element type today (Q4) but the connectivity is stored as a
-/// flat array with an explicit stride, so mixed-topology meshes only require
-/// replacing the stride with a per-element offset table.
+/// is either two-dimensional (Q4 cells, coordinates are 2 x n) or
+/// three-dimensional (Hex8 cells, coordinates are 3 x n); the dimension is a
+/// runtime property read from the coordinate array, and every consumer keys on
+/// `dim()` rather than on a compile-time constant. A mesh carries a single
+/// element type, but the connectivity is stored as a flat array with an
+/// explicit stride, so mixed-topology meshes only require replacing the stride
+/// with a per-element offset table.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -18,14 +22,24 @@ namespace sparlab {
 
 /// Supported element topologies.
 enum class ElementType {
-  Quad4  ///< Four-node bilinear isoparametric quadrilateral.
+  Quad4,  ///< Four-node bilinear isoparametric quadrilateral (2-D).
+  Hex8    ///< Eight-node trilinear isoparametric hexahedron (3-D).
 };
 
 /// Number of nodes carried by an element topology.
 int nodes_per_element(ElementType type);
 
+/// Spatial dimension of an element topology (2 or 3).
+int element_dimension(ElementType type);
+
 /// Human-readable name, also used in VTK output.
 std::string to_string(ElementType type);
+
+/// Local node lists of the boundary entities of a topology: the four edges of
+/// a Q4 (two nodes each, counter-clockwise) or the six faces of a Hex8 (four
+/// nodes each, in the VTK hexahedron face convention). "Face" is used for both
+/// throughout the code base; in 2-D a face is an edge.
+const std::vector<std::vector<int>>& element_local_faces(ElementType type);
 
 /// Metadata retained when a mesh came from the structured generator. Presence
 /// of this record allows the assembler to reuse a single element stiffness
@@ -33,33 +47,51 @@ std::string to_string(ElementType type);
 struct StructuredGridInfo {
   Index nx = 0;       ///< elements along x
   Index ny = 0;       ///< elements along y
+  Index nz = 0;       ///< elements along z (0 for a 2-D grid)
   Scalar lx = 0.0;    ///< domain length along x [m]
   Scalar ly = 0.0;    ///< domain length along y [m]
-  bool uniform = false;  ///< true when every cell is the same rectangle
+  Scalar lz = 0.0;    ///< domain length along z [m] (0 for a 2-D grid)
+  bool uniform = false;  ///< true when every cell is the same box
 };
 
-/// Node coordinates + element connectivity for a 2-D mesh.
+/// Axis-aligned bounding box. In 2-D the z entries are zero.
+struct BoundingBox {
+  Vector3 lower = Vector3::Zero();  ///< [m]
+  Vector3 upper = Vector3::Zero();  ///< [m]
+  Vector3 extent() const { return upper - lower; }
+};
+
+/// Node coordinates + element connectivity for a 2-D or 3-D mesh.
 class Mesh {
  public:
   Mesh() = default;
 
-  /// \param coords 2 x num_nodes matrix of nodal coordinates [m].
+  /// \param coords dim x num_nodes matrix of nodal coordinates [m], with dim
+  ///        equal to 2 or 3 and matching the element type.
   /// \param connectivity flat, row-major connectivity with
-  ///        `nodes_per_element(type)` entries per element, counter-clockwise.
-  Mesh(Eigen::Matrix2Xd coords, std::vector<Index> connectivity, ElementType type);
+  ///        `nodes_per_element(type)` entries per element: counter-clockwise
+  ///        for Q4, VTK hexahedron ordering for Hex8.
+  Mesh(Matrix coords, std::vector<Index> connectivity, ElementType type);
 
   Index num_nodes() const { return static_cast<Index>(coords_.cols()); }
   Index num_elements() const {
     return static_cast<Index>(connectivity_.size()) / nodes_per_element_;
   }
   int nodes_per_elem() const { return nodes_per_element_; }
-  int dim() const { return kDim; }
+  /// Spatial dimension: 2 or 3.
+  int dim() const { return dim_; }
   ElementType element_type() const { return type_; }
 
-  /// Coordinates of node `n` [m].
-  Vector2 node(Index n) const { return coords_.col(n); }
+  /// Coordinates of node `n` [m]. In 2-D the z component is zero, so callers
+  /// that only need the plane can read `.x()` and `.y()` unchanged.
+  Vector3 node(Index n) const {
+    Vector3 x = Vector3::Zero();
+    x.head(dim_) = coords_.col(n);
+    return x;
+  }
 
-  const Eigen::Matrix2Xd& coordinates() const { return coords_; }
+  /// dim x num_nodes coordinate array [m].
+  const Matrix& coordinates() const { return coords_; }
 
   /// Global node indices of element `e` (pointer to `nodes_per_elem()` values).
   const Index* element_nodes(Index e) const {
@@ -68,43 +100,49 @@ class Mesh {
 
   const std::vector<Index>& connectivity() const { return connectivity_; }
 
-  /// 2 x nodes_per_elem matrix of the element's nodal coordinates [m].
-  Eigen::Matrix<Scalar, 2, Eigen::Dynamic> element_coordinates(Index e) const;
+  /// dim x nodes_per_elem matrix of the element's nodal coordinates [m].
+  Matrix element_coordinates(Index e) const;
 
-  /// Geometric centroid of element `e` (average of its nodes) [m].
-  Vector2 element_centroid(Index e) const;
+  /// Geometric centroid of element `e` (average of its nodes) [m]; z = 0 in 2-D.
+  Vector3 element_centroid(Index e) const;
 
-  /// Signed area of element `e` [m^2] via the shoelace formula. Positive for
-  /// counter-clockwise node ordering.
-  Scalar element_area(Index e) const;
+  /// Measure of element `e`: signed area [m^2] via the shoelace formula in
+  /// 2-D (positive for counter-clockwise node ordering), volume [m^3] from the
+  /// trilinear Jacobian in 3-D (positive for a correctly ordered hexahedron).
+  Scalar element_measure(Index e) const;
 
-  /// Axis-aligned bounding box of the mesh: (xmin, ymin, xmax, ymax) [m].
-  Eigen::Vector4d bounding_box() const;
+  /// Axis-aligned bounding box of the mesh [m].
+  BoundingBox bounding_box() const;
 
   void set_structured_info(const StructuredGridInfo& info) { structured_ = info; }
   const std::optional<StructuredGridInfo>& structured_info() const { return structured_; }
 
-  /// Validate connectivity ranges, element areas and node degeneracy.
+  /// Validate connectivity ranges, element measures and node degeneracy.
   /// \throws MeshError with an actionable message on the first problem found.
   void validate() const;
 
-  /// Boundary edge of the mesh: the two node indices plus the owning element.
-  struct BoundaryEdge {
-    Index node_a = 0;
-    Index node_b = 0;
+  /// Boundary entity of the mesh: an edge (2-D) or a face (3-D) referenced by
+  /// exactly one element, with its nodes in the element's local order.
+  struct BoundaryFace {
+    std::vector<Index> nodes;
     Index element = 0;
-    int local_edge = 0;  ///< local edge id within the element (0..3 for Q4)
+    int local_face = 0;  ///< local face id within the element
   };
 
-  /// Edges referenced by exactly one element, i.e. the mesh boundary.
-  /// Computed on demand; O(num_elements * nodes_per_elem).
-  std::vector<BoundaryEdge> boundary_edges() const;
+  /// Faces referenced by exactly one element, i.e. the mesh boundary.
+  /// Computed on demand; O(num_elements * faces per element * log).
+  std::vector<BoundaryFace> boundary_faces() const;
+
+  /// Length [m] of a boundary edge (2-D) or area [m^2] of a boundary face
+  /// (3-D, bilinear quadrilateral integrated with a 2 x 2 rule).
+  Scalar face_measure(const BoundaryFace& face) const;
 
  private:
-  Eigen::Matrix2Xd coords_;
+  Matrix coords_;
   std::vector<Index> connectivity_;
   ElementType type_ = ElementType::Quad4;
   int nodes_per_element_ = 4;
+  int dim_ = 2;
   std::optional<StructuredGridInfo> structured_;
 };
 

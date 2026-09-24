@@ -610,6 +610,41 @@ Vector2 ConfigNode::vector2() const {
   return out;
 }
 
+Vector3 ConfigNode::vector3(int dim) const {
+  if (!exists()) throw ConfigError("required vector key '" + path_ + "' is missing");
+  const std::size_t count = value_->is_array() ? value_->array_items().size() : 0;
+  const bool ok = value_->is_array() && (count == 2 || count == 3);
+  if (!ok) {
+    std::ostringstream os;
+    os << "'" << path_ << "' must be an array of two or three numbers [x, y] or [x, y, z]";
+    if (value_->is_array()) os << ", got " << count << " entries";
+    throw ConfigError(os.str());
+  }
+  if (dim == 2 && count == 3) {
+    std::ostringstream os;
+    os << "'" << path_
+       << "' has three entries but the mesh is two-dimensional; give [x, y] only";
+    throw ConfigError(os.str());
+  }
+  if (dim == 3 && count == 2) {
+    std::ostringstream os;
+    os << "'" << path_
+       << "' has two entries but the mesh is three-dimensional; give [x, y, z]";
+    throw ConfigError(os.str());
+  }
+  Vector3 out = Vector3::Zero();
+  for (std::size_t i = 0; i < count; ++i) {
+    const json::Value& item = value_->array_items()[i];
+    if (!item.is_number()) {
+      std::ostringstream os;
+      os << "'" << path_ << "[" << i << "]' must be a number, got " << item.type_name();
+      throw ConfigError(os.str());
+    }
+    out(static_cast<Eigen::Index>(i)) = item.number_value();
+  }
+  return out;
+}
+
 std::vector<Scalar> ConfigNode::number_list() const {
   if (!exists()) return {};
   if (!value_->is_array()) {
@@ -671,6 +706,12 @@ std::string ConfigNode::string_or(const std::string& key,
 Vector2 ConfigNode::vector2_or(const std::string& key, const Vector2& fallback) const {
   ConfigNode node = child(key);
   return node.exists() ? node.vector2() : fallback;
+}
+
+Vector3 ConfigNode::vector3_or(const std::string& key, const Vector3& fallback,
+                               int dim) const {
+  ConfigNode node = child(key);
+  return node.exists() ? node.vector3(dim) : fallback;
 }
 
 Scalar ConfigNode::positive_number(const std::string& key) const {

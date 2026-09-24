@@ -1,6 +1,6 @@
 /// \file test_element.cpp
 /// \brief Element-level verification: symmetry, rigid-body modes, exact
-///        integration, mass conservation and consistent edge loads.
+///        integration, mass conservation and consistent edge loads (Q4).
 #include "TestSupport.hpp"
 
 #include "sparlab/core/Exceptions.hpp"
@@ -146,7 +146,7 @@ TEST_CASE("strain operator reproduces a linear displacement field exactly",
     np.eta = p[1];
     const StrainOperator op = element.strain_operator(coords, np);
     REQUIRE(op.detJ > 0.0);
-    const Vector3 strain = op.b * ue;
+    const Vector strain = op.b * ue;
     REQUIRE((strain - expected).cwiseAbs().maxCoeff() ==
             Approx(0.0).margin(1.0e-17));
   }
@@ -251,11 +251,11 @@ TEST_CASE("edge traction produces the exact consistent nodal load",
   Quad4Element element;
   const auto coords = unit_square_coords(2.0, 0.5);
   const Scalar thickness = 0.01;
-  const Vector2 traction(0.0, -1.0e5);  // Pa, downward
+  const Vector3 traction(0.0, -1.0e5, 0.0);  // Pa, downward
   IntegrationOptions opts;
 
   // Local edge 2 runs from node 2 (2, 0.5) to node 3 (0, 0.5): length 2 m.
-  const Vector fe = element.edge_traction(coords, 2, traction, thickness, opts);
+  const Vector fe = element.boundary_traction(coords, 2, traction, thickness, opts);
   const Scalar expected_total = traction.y() * 2.0 * thickness;
   REQUIRE(fe.sum() == Approx(expected_total));
 
@@ -267,9 +267,9 @@ TEST_CASE("edge traction produces the exact consistent nodal load",
   REQUIRE(fe(1) == Approx(0.0));
   REQUIRE(fe(2 * 1 + 1) == Approx(0.0));
 
-  REQUIRE_THROWS_AS(element.edge_traction(coords, 4, traction, thickness, opts),
+  REQUIRE_THROWS_AS(element.boundary_traction(coords, 4, traction, thickness, opts),
                     MeshError);
-  REQUIRE_THROWS_AS(element.edge_traction(coords, -1, traction, thickness, opts),
+  REQUIRE_THROWS_AS(element.boundary_traction(coords, -1, traction, thickness, opts),
                     MeshError);
 }
 
@@ -279,7 +279,9 @@ TEST_CASE("element factory returns the requested topology", "[element]") {
   REQUIRE(element->type() == ElementType::Quad4);
   REQUIRE(element->num_nodes() == 4);
   REQUIRE(element->num_dofs() == 8);
-  REQUIRE(element->num_edges() == 4);
-  REQUIRE(element->edge_nodes(0)[0] == 0);
-  REQUIRE(element->edge_nodes(3)[1] == 0);
+  REQUIRE(element->dim() == 2);
+  REQUIRE(element->num_faces() == 4);
+  REQUIRE(element->face_nodes(0)[0] == 0);
+  REQUIRE(element->face_nodes(3)[1] == 0);
+  REQUIRE_THROWS_AS(element->face_nodes(4), MeshError);
 }

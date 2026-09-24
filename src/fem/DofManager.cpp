@@ -7,8 +7,15 @@
 
 namespace sparlab {
 
-DofManager::DofManager(Index num_nodes) : num_nodes_(num_nodes) {
+DofManager::DofManager(Index num_nodes, int dofs_per_node)
+    : num_nodes_(num_nodes), dofs_per_node_(dofs_per_node) {
   if (num_nodes_ < 0) throw ModelError("DofManager requires a non-negative node count");
+  if (dofs_per_node_ != 2 && dofs_per_node_ != 3) {
+    std::ostringstream os;
+    os << "DofManager supports 2 or 3 translational DOFs per node (got " << dofs_per_node_
+       << ")";
+    throw ModelError(os.str());
+  }
   constrained_.assign(static_cast<std::size_t>(num_dofs()), 0);
   values_.assign(static_cast<std::size_t>(num_dofs()), 0.0);
 }
@@ -19,13 +26,13 @@ Index DofManager::dof(Index node, int component) const {
     os << "node index " << node << " is outside [0, " << num_nodes_ - 1 << "]";
     throw ModelError(os.str());
   }
-  if (component < 0 || component >= kDofsPerNode) {
+  if (component < 0 || component >= dofs_per_node_) {
     std::ostringstream os;
-    os << "DOF component " << component << " is outside [0, " << kDofsPerNode - 1
-       << "] (0 = x, 1 = y)";
+    os << "DOF component " << component << " is outside [0, " << dofs_per_node_ - 1
+       << "] (0 = x, 1 = y" << (dofs_per_node_ == 3 ? ", 2 = z)" : ")");
     throw ModelError(os.str());
   }
-  return node * kDofsPerNode + component;
+  return node * dofs_per_node_ + component;
 }
 
 void DofManager::prescribe(Index node, int component, Scalar value) {
@@ -130,8 +137,9 @@ Vector DofManager::restrict_to_free(const Vector& full) const {
 
 void DofManager::element_dofs(const Index* nodes, int nodes_per_elem, Index* out) const {
   for (int a = 0; a < nodes_per_elem; ++a) {
-    out[kDofsPerNode * a + 0] = nodes[a] * kDofsPerNode + 0;
-    out[kDofsPerNode * a + 1] = nodes[a] * kDofsPerNode + 1;
+    for (int k = 0; k < dofs_per_node_; ++k) {
+      out[dofs_per_node_ * a + k] = nodes[a] * dofs_per_node_ + k;
+    }
   }
 }
 

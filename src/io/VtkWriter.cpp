@@ -12,7 +12,8 @@ namespace {
 
 int vtk_cell_type(ElementType type) {
   switch (type) {
-    case ElementType::Quad4: return 9;  // VTK_QUAD
+    case ElementType::Quad4: return 9;   // VTK_QUAD
+    case ElementType::Hex8: return 12;   // VTK_HEXAHEDRON
   }
   throw IoError("no VTK cell type registered for this element type");
 }
@@ -39,7 +40,7 @@ VtkWriter& VtkWriter::add_point_scalars(const std::string& name, const Vector& v
 }
 
 VtkWriter& VtkWriter::add_point_vectors(const std::string& name, const Vector& values) {
-  check_length(name, values.size(), mesh_.num_nodes() * kDofsPerNode, "DOFs");
+  check_length(name, values.size(), mesh_.num_nodes() * mesh_.dim(), "DOFs");
   point_vectors_.emplace_back(name, values);
   return *this;
 }
@@ -58,6 +59,7 @@ void VtkWriter::write(const std::string& path) const {
   const Index nn = mesh_.num_nodes();
   const Index ne = mesh_.num_elements();
   const int npe = mesh_.nodes_per_elem();
+  const int dim = mesh_.dim();
 
   out << "# vtk DataFile Version 3.0\n";
   out << title_ << "\n";
@@ -66,8 +68,13 @@ void VtkWriter::write(const std::string& path) const {
 
   out << "POINTS " << nn << " double\n";
   for (Index n = 0; n < nn; ++n) {
-    const Vector2 x = mesh_.node(n);
-    out << x.x() << ' ' << x.y() << " 0\n";
+    const Vector3 x = mesh_.node(n);
+    out << x.x() << ' ' << x.y() << ' ';
+    if (dim == 3) {
+      out << x.z() << '\n';
+    } else {
+      out << "0\n";
+    }
   }
 
   out << "CELLS " << ne << ' ' << ne * (npe + 1) << "\n";
@@ -91,8 +98,12 @@ void VtkWriter::write(const std::string& path) const {
     for (const auto& field : point_vectors_) {
       out << "VECTORS " << field.first << " double\n";
       for (Index n = 0; n < nn; ++n) {
-        out << field.second(n * kDofsPerNode + 0) << ' '
-            << field.second(n * kDofsPerNode + 1) << " 0\n";
+        out << field.second(n * dim + 0) << ' ' << field.second(n * dim + 1) << ' ';
+        if (dim == 3) {
+          out << field.second(n * dim + 2) << '\n';
+        } else {
+          out << "0\n";
+        }
       }
     }
   }

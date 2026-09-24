@@ -19,7 +19,7 @@ IsotropicMaterial::IsotropicMaterial(Scalar youngs_modulus, Scalar poisson_ratio
   if (!(nu_ > -1.0 && nu_ < 0.5)) {
     std::ostringstream os;
     os << "material '" << name_ << "' needs a Poisson ratio in (-1, 0.5) for a "
-       << "positive-definite 2-D constitutive matrix (got " << nu_ << ")";
+       << "positive-definite constitutive matrix (got " << nu_ << ")";
     throw ConfigError(os.str());
   }
   if (!(rho_ >= 0.0)) {
@@ -52,12 +52,25 @@ Matrix3 IsotropicMaterial::plane_strain_matrix() const {
   return d;
 }
 
-Matrix3 IsotropicMaterial::constitutive(StressState state) const {
+Matrix6 IsotropicMaterial::three_dimensional_matrix() const {
+  Matrix6 d = Matrix6::Zero();
+  const Scalar lambda = lame_lambda();
+  const Scalar g = shear_modulus();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) d(i, j) = lambda;
+    d(i, i) = lambda + 2.0 * g;
+    d(3 + i, 3 + i) = g;
+  }
+  return d;
+}
+
+Matrix IsotropicMaterial::constitutive(StressState state) const {
   switch (state) {
     case StressState::PlaneStress: return plane_stress_matrix();
     case StressState::PlaneStrain: return plane_strain_matrix();
+    case StressState::ThreeDimensional: return three_dimensional_matrix();
   }
-  throw ConfigError("unhandled 2-D stress state");
+  throw ConfigError("unhandled stress state");
 }
 
 }  // namespace sparlab

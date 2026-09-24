@@ -27,10 +27,11 @@ TEST_CASE("structured generator produces the documented numbering", "[mesh]") {
   REQUIRE(mesh.nodes_per_elem() == 4);
 
   // node(i, j) = j * (nx + 1) + i
-  REQUIRE(mesh.node(0).isApprox(Vector2(0.0, 0.0)));
-  REQUIRE(mesh.node(3).isApprox(Vector2(3.0, 0.0)));
-  REQUIRE(mesh.node(4).isApprox(Vector2(0.0, 1.0)));
-  REQUIRE(mesh.node(11).isApprox(Vector2(3.0, 2.0)));
+  REQUIRE(mesh.dim() == 2);
+  REQUIRE(mesh.node(0).isApprox(Vector3(0.0, 0.0, 0.0)));
+  REQUIRE(mesh.node(3).isApprox(Vector3(3.0, 0.0, 0.0)));
+  REQUIRE(mesh.node(4).isApprox(Vector3(0.0, 1.0, 0.0)));
+  REQUIRE(mesh.node(11).isApprox(Vector3(3.0, 2.0, 0.0)));
 
   // element(0) is the lower-left cell with counter-clockwise nodes 0,1,5,4
   const Index* e0 = mesh.element_nodes(0);
@@ -40,15 +41,16 @@ TEST_CASE("structured generator produces the documented numbering", "[mesh]") {
   REQUIRE(e0[3] == 4);
 
   for (Index e = 0; e < mesh.num_elements(); ++e) {
-    REQUIRE(mesh.element_area(e) == Approx(1.0));
+    REQUIRE(mesh.element_measure(e) == Approx(1.0));
   }
-  REQUIRE(mesh.element_centroid(0).isApprox(Vector2(0.5, 0.5)));
+  REQUIRE(mesh.element_centroid(0).isApprox(Vector3(0.5, 0.5, 0.0)));
 
-  const Eigen::Vector4d bb = mesh.bounding_box();
-  REQUIRE(bb(0) == Approx(0.0));
-  REQUIRE(bb(1) == Approx(0.0));
-  REQUIRE(bb(2) == Approx(3.0));
-  REQUIRE(bb(3) == Approx(2.0));
+  const BoundingBox bb = mesh.bounding_box();
+  REQUIRE(bb.lower.x() == Approx(0.0));
+  REQUIRE(bb.lower.y() == Approx(0.0));
+  REQUIRE(bb.upper.x() == Approx(3.0));
+  REQUIRE(bb.upper.y() == Approx(2.0));
+  REQUIRE(bb.extent().z() == Approx(0.0));
 
   REQUIRE(mesh.structured_info().has_value());
   REQUIRE(mesh.structured_info()->uniform);
@@ -77,7 +79,7 @@ TEST_CASE("structured generator rejects degenerate specifications",
 
 TEST_CASE("mesh validation catches invalid connectivity and geometry",
           "[mesh][diagnostics]") {
-  Eigen::Matrix2Xd coords(2, 4);
+  Matrix coords(2, 4);
   coords << 0, 1, 1, 0,
             0, 0, 1, 1;
 
@@ -101,7 +103,7 @@ TEST_CASE("mesh validation catches invalid connectivity and geometry",
   }
 
   SECTION("orphan nodes are reported") {
-    Eigen::Matrix2Xd five(2, 5);
+    Matrix five(2, 5);
     five << 0, 1, 1, 0, 5,
             0, 0, 1, 1, 5;
     const Mesh mesh(five, {0, 1, 2, 3}, ElementType::Quad4);
@@ -114,16 +116,21 @@ TEST_CASE("boundary edges are the edges owned by one element", "[mesh]") {
   spec.nx = 3;
   spec.ny = 2;
   const Mesh mesh = make_structured_quad_mesh(spec);
-  const std::vector<Mesh::BoundaryEdge> edges = mesh.boundary_edges();
+  const std::vector<Mesh::BoundaryFace> edges = mesh.boundary_faces();
 
-  // A 3 x 2 grid has 2*(3+2) = 10 boundary edges.
+  // A 3 x 2 grid has 2*(3+2) = 10 boundary edges whose lengths add up to the
+  // perimeter of the unit square.
   REQUIRE(edges.size() == 10);
-  for (const Mesh::BoundaryEdge& edge : edges) {
+  Scalar perimeter = 0.0;
+  for (const Mesh::BoundaryFace& edge : edges) {
+    REQUIRE(edge.nodes.size() == 2);
     REQUIRE(edge.element >= 0);
     REQUIRE(edge.element < mesh.num_elements());
-    REQUIRE(edge.local_edge >= 0);
-    REQUIRE(edge.local_edge < 4);
+    REQUIRE(edge.local_face >= 0);
+    REQUIRE(edge.local_face < 4);
+    perimeter += mesh.face_measure(edge);
   }
+  REQUIRE(perimeter == Approx(2.0 * (spec.lx + spec.ly)));
 }
 
 TEST_CASE("perturbed mesh keeps the boundary and stays valid", "[mesh]") {
@@ -144,13 +151,14 @@ TEST_CASE("perturbed mesh keeps the boundary and stays valid", "[mesh]") {
   Scalar area_uniform = 0.0;
   Scalar area_perturbed = 0.0;
   for (Index e = 0; e < uniform.num_elements(); ++e) {
-    area_uniform += uniform.element_area(e);
-    area_perturbed += perturbed.element_area(e);
+    area_uniform += uniform.element_measure(e);
+    area_perturbed += perturbed.element_measure(e);
   }
   REQUIRE(area_perturbed == Approx(area_uniform));
 
   // The bounding box is unchanged.
-  REQUIRE(perturbed.bounding_box().isApprox(uniform.bounding_box()));
+  REQUIRE(perturbed.bounding_box().lower.isApprox(uniform.bounding_box().lower));
+  REQUIRE(perturbed.bounding_box().upper.isApprox(uniform.bounding_box().upper));
 
   // Deterministic for a fixed seed.
   const Mesh again = make_perturbed_quad_mesh(spec, 0.3, 42u);
@@ -183,7 +191,7 @@ TEST_CASE("selectors pick the expected nodes and elements", "[selector]") {
     group.name = "hole";
     Selector circle;
     circle.kind = SelectorKind::Circle;
-    circle.center = Vector2(0.5, 0.5);
+    circle.center = Vector3(0.5, 0.5, 0.0);
     circle.radius = 0.2;
     group.members.push_back(circle);
     const std::vector<Index> elements = group.select_elements(mesh);
@@ -197,7 +205,7 @@ TEST_CASE("selectors pick the expected nodes and elements", "[selector]") {
     SelectorGroup group;
     Selector annulus;
     annulus.kind = SelectorKind::Annulus;
-    annulus.center = Vector2(0.5, 0.5);
+    annulus.center = Vector3(0.5, 0.5, 0.0);
     annulus.inner_radius = 0.2;
     annulus.radius = 0.4;
     group.members.push_back(annulus);
@@ -229,11 +237,11 @@ TEST_CASE("selectors pick the expected nodes and elements", "[selector]") {
     SelectorGroup group;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(0.99, 0.01);
+    nearest.point = Vector3(0.99, 0.01, 0.0);
     group.members.push_back(nearest);
     const std::vector<Index> nodes = group.select_nodes(mesh);
     REQUIRE(nodes.size() == 1);
-    REQUIRE(mesh.node(nodes.front()).isApprox(Vector2(1.0, 0.0)));
+    REQUIRE(mesh.node(nodes.front()).isApprox(Vector3(1.0, 0.0, 0.0)));
   }
 
   SECTION("explicit ids are range-checked") {
@@ -250,7 +258,7 @@ TEST_CASE("selectors pick the expected nodes and elements", "[selector]") {
     SelectorGroup group;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2::Zero();
+    nearest.point = Vector3::Zero();
     group.members.push_back(nearest);
     REQUIRE_THROWS_AS(group.select_elements(mesh), ConfigError);
   }
@@ -337,7 +345,7 @@ TEST_CASE("element components are found for a fully connected mesh",
   spec.nx = 5;
   spec.ny = 4;
   const Mesh mesh = make_structured_quad_mesh(spec);
-  const auto components = element_components_by_edge(mesh);
+  const auto components = element_components_by_face(mesh);
   REQUIRE(components.size() == 1);
   REQUIRE(components.front().size() == static_cast<std::size_t>(mesh.num_elements()));
 }

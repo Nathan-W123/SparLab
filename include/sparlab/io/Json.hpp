@@ -121,6 +121,11 @@ class ConfigNode {
   bool boolean() const;
   std::string string() const;
   Vector2 vector2() const;
+  /// Two- or three-entry numeric array as a 3-vector (z = 0 when two entries
+  /// are given). `dim`, when 2 or 3, requires the entry count to match the
+  /// mesh dimension so a component is never silently dropped or invented;
+  /// 0 accepts either form.
+  Vector3 vector3(int dim = 0) const;
   std::vector<Scalar> number_list() const;
   std::vector<Index> index_list() const;
   /// \}
@@ -132,6 +137,7 @@ class ConfigNode {
   bool boolean_or(const std::string& key, bool fallback) const;
   std::string string_or(const std::string& key, const std::string& fallback) const;
   Vector2 vector2_or(const std::string& key, const Vector2& fallback) const;
+  Vector3 vector3_or(const std::string& key, const Vector3& fallback, int dim = 0) const;
   /// \}
 
   /// Required number that must be strictly positive.

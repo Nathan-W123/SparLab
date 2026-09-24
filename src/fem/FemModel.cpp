@@ -26,10 +26,24 @@ FemModel::FemModel(Mesh mesh, IsotropicMaterial material, Scalar thickness,
       integration_(integration),
       element_(make_element(mesh_.element_type())),
       d_(material_.constitutive(stress_state)),
-      dofs_(mesh_.num_nodes()) {
+      dofs_(mesh_.num_nodes(), mesh_.dim()) {
+  if (stress_state_dimension(stress_state_) != mesh_.dim()) {
+    std::ostringstream os;
+    os << "stress state '" << to_string(stress_state_) << "' belongs to a "
+       << stress_state_dimension(stress_state_) << "-D model but the mesh is "
+       << mesh_.dim() << "-D (" << to_string(mesh_.element_type()) << " elements); use "
+       << (mesh_.dim() == 3 ? "'three_dimensional'" : "'plane_stress' or 'plane_strain'");
+    throw ConfigError(os.str());
+  }
   if (!(thickness_ > 0.0)) {
     std::ostringstream os;
     os << "model thickness must be positive (got " << thickness_ << " m)";
+    throw ConfigError(os.str());
+  }
+  if (mesh_.dim() == 3 && thickness_ != 1.0) {
+    std::ostringstream os;
+    os << "a 3-D model has no thickness (got " << thickness_
+       << " m); leave model.thickness at its default of 1 for a solid mesh";
     throw ConfigError(os.str());
   }
   mesh_.validate();
@@ -104,7 +118,11 @@ std::vector<Scalar> FemModel::normalised_weights() const {
 Vector FemModel::element_volumes() const {
   const Index ne = mesh_.num_elements();
   Vector v(ne);
-  for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_area(e) * thickness_;
+  if (mesh_.dim() == 2) {
+    for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e) * thickness_;
+  } else {
+    for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e);
+  }
   return v;
 }
 

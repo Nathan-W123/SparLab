@@ -42,9 +42,9 @@ TEST_CASE("global mass matrix is symmetric, positive definite and conserves mass
   PointLoadSpec p;
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx, 0.0);
+  nearest.point = Vector3(spec.lx, 0.0, 0.0);
   p.region.members.push_back(nearest);
-  p.force = Vector2(0.0, -1.0);
+  p.force = Vector3(0.0, -1.0, 0.0);
   load.point_loads.push_back(p);
   model.load_case_specs().push_back(load);
   model.finalize();
@@ -69,7 +69,7 @@ TEST_CASE("global mass matrix is symmetric, positive definite and conserves mass
 
     // Rigid translation kinetic energy equals the total mass.
     Vector tx = Vector::Zero(model.dofs().num_dofs());
-    for (Index n = 0; n < model.mesh().num_nodes(); ++n) tx(n * kDofsPerNode) = 1.0;
+    for (Index n = 0; n < model.mesh().num_nodes(); ++n) tx(n * 2) = 1.0;
     REQUIRE(tx.dot(m * tx) == Approx(expected_mass).epsilon(1.0e-11));
   }
 
@@ -219,8 +219,8 @@ TEST_CASE("the first axial mode matches fixed-free rod theory",
     Scalar ex = 0.0;
     Scalar ey = 0.0;
     for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
-      const Scalar ux = modal.mode_shapes(n * kDofsPerNode + 0, m);
-      const Scalar uy = modal.mode_shapes(n * kDofsPerNode + 1, m);
+      const Scalar ux = modal.mode_shapes(n * 2 + 0, m);
+      const Scalar uy = modal.mode_shapes(n * 2 + 1, m);
       ex += ux * ux;
       ey += uy * uy;
     }

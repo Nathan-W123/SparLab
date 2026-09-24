@@ -6,39 +6,42 @@
 #include <sstream>
 
 namespace sparlab {
+namespace {
 
-Eigen::Vector4d quad4_shape_functions(Scalar xi, Scalar eta) {
-  Eigen::Vector4d n;
-  n << 0.25 * (1.0 - xi) * (1.0 - eta),
-       0.25 * (1.0 + xi) * (1.0 - eta),
-       0.25 * (1.0 + xi) * (1.0 + eta),
-       0.25 * (1.0 - xi) * (1.0 + eta);
-  return n;
-}
+/// Nodal coordinates in the fixed-row layout the kernels below are written
+/// for. The kernels keep their original fixed-size Eigen types deliberately:
+/// the products are then evaluated by exactly the same code paths as before
+/// the interface became dimension-generic, which is what keeps every 2-D
+/// result bit-for-bit reproducible.
+using Quad4Coords = Eigen::Matrix<Scalar, 2, Eigen::Dynamic>;
 
-Eigen::Matrix<Scalar, 4, 2> quad4_shape_gradients_natural(Scalar xi, Scalar eta) {
-  Eigen::Matrix<Scalar, 4, 2> g;
-  // dN/dxi                          dN/deta
-  g(0, 0) = -0.25 * (1.0 - eta);  g(0, 1) = -0.25 * (1.0 - xi);
-  g(1, 0) =  0.25 * (1.0 - eta);  g(1, 1) = -0.25 * (1.0 + xi);
-  g(2, 0) =  0.25 * (1.0 + eta);  g(2, 1) =  0.25 * (1.0 + xi);
-  g(3, 0) = -0.25 * (1.0 + eta);  g(3, 1) =  0.25 * (1.0 - xi);
-  return g;
-}
-
-Vector Quad4Element::shape_functions(const NaturalPoint& point) const {
-  return quad4_shape_functions(point.xi, point.eta);
-}
-
-StrainOperator Quad4Element::strain_operator(
-    const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-    const NaturalPoint& point) const {
-  if (coords.cols() != 4) {
+Quad4Coords quad4_coords(const Matrix& coords) {
+  if (coords.rows() != 2 || coords.cols() != 4) {
     std::ostringstream os;
-    os << "Quad4 expects 4 nodal coordinate columns, received " << coords.cols();
+    os << "Quad4 expects a 2 x 4 nodal coordinate matrix, received " << coords.rows()
+       << " x " << coords.cols();
     throw MeshError(os.str());
   }
+  return coords;
+}
 
+Matrix3 quad4_constitutive(const Matrix& d) {
+  if (d.rows() != 3 || d.cols() != 3) {
+    std::ostringstream os;
+    os << "Quad4 expects a 3 x 3 constitutive matrix, received " << d.rows() << " x "
+       << d.cols();
+    throw ModelError(os.str());
+  }
+  return d;
+}
+
+/// Strain operator in the element's native fixed-size layout.
+struct Quad4Kernel {
+  Eigen::Matrix<Scalar, 3, Eigen::Dynamic> b;  ///< 3 x 8
+  Scalar detJ = 0.0;
+};
+
+Quad4Kernel quad4_kernel(const Quad4Coords& coords, const NaturalPoint& point) {
   const Eigen::Matrix<Scalar, 4, 2> dn_dxi =
       quad4_shape_gradients_natural(point.xi, point.eta);
 
@@ -63,9 +66,9 @@ StrainOperator Quad4Element::strain_operator(
   jinv(1, 1) = jac(0, 0) / det;
   const Eigen::Matrix<Scalar, 4, 2> dn_dx = dn_dxi * jinv;
 
-  StrainOperator op;
+  Quad4Kernel op;
   op.detJ = det;
-  op.b.setZero(kVoigt, num_dofs());
+  op.b.setZero(3, 8);
   for (int a = 0; a < 4; ++a) {
     const Scalar dx = dn_dx(a, 0);
     const Scalar dy = dn_dx(a, 1);
@@ -77,20 +80,55 @@ StrainOperator Quad4Element::strain_operator(
   return op;
 }
 
-Matrix Quad4Element::stiffness(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-                               const Matrix3& d, Scalar thickness,
-                               const IntegrationOptions& opts) const {
+}  // namespace
+
+Eigen::Vector4d quad4_shape_functions(Scalar xi, Scalar eta) {
+  Eigen::Vector4d n;
+  n << 0.25 * (1.0 - xi) * (1.0 - eta),
+       0.25 * (1.0 + xi) * (1.0 - eta),
+       0.25 * (1.0 + xi) * (1.0 + eta),
+       0.25 * (1.0 - xi) * (1.0 + eta);
+  return n;
+}
+
+Eigen::Matrix<Scalar, 4, 2> quad4_shape_gradients_natural(Scalar xi, Scalar eta) {
+  Eigen::Matrix<Scalar, 4, 2> g;
+  // dN/dxi                          dN/deta
+  g(0, 0) = -0.25 * (1.0 - eta);  g(0, 1) = -0.25 * (1.0 - xi);
+  g(1, 0) =  0.25 * (1.0 - eta);  g(1, 1) = -0.25 * (1.0 + xi);
+  g(2, 0) =  0.25 * (1.0 + eta);  g(2, 1) =  0.25 * (1.0 + xi);
+  g(3, 0) = -0.25 * (1.0 + eta);  g(3, 1) =  0.25 * (1.0 - xi);
+  return g;
+}
+
+Vector Quad4Element::shape_functions(const NaturalPoint& point) const {
+  return quad4_shape_functions(point.xi, point.eta);
+}
+
+StrainOperator Quad4Element::strain_operator(const Matrix& coords,
+                                             const NaturalPoint& point) const {
+  const Quad4Kernel kernel = quad4_kernel(quad4_coords(coords), point);
+  StrainOperator op;
+  op.b = kernel.b;
+  op.detJ = kernel.detJ;
+  return op;
+}
+
+Matrix Quad4Element::stiffness(const Matrix& coords_in, const Matrix& d_in,
+                               Scalar thickness, const IntegrationOptions& opts) const {
   if (!(thickness > 0.0)) {
     std::ostringstream os;
     os << "element thickness must be positive (got " << thickness << " m)";
     throw ConfigError(os.str());
   }
+  const Quad4Coords coords = quad4_coords(coords_in);
+  const Matrix3 d = quad4_constitutive(d_in);
   Matrix ke = Matrix::Zero(num_dofs(), num_dofs());
   for (const auto& gp : gauss_legendre_square(opts.stiffness_points)) {
     NaturalPoint p;
     p.xi = gp.xi;
     p.eta = gp.eta;
-    const StrainOperator op = strain_operator(coords, p);
+    const Quad4Kernel op = quad4_kernel(coords, p);
     ke.noalias() += (thickness * op.detJ * gp.weight) * (op.b.transpose() * d * op.b);
   }
   // Enforce exact symmetry: the integrand is symmetric, so any asymmetry is
@@ -98,14 +136,15 @@ Matrix Quad4Element::stiffness(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& c
   return 0.5 * (ke + ke.transpose());
 }
 
-Matrix Quad4Element::consistent_mass(
-    const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords, Scalar density,
-    Scalar thickness, const IntegrationOptions& opts) const {
+Matrix Quad4Element::consistent_mass(const Matrix& coords_in, Scalar density,
+                                     Scalar thickness,
+                                     const IntegrationOptions& opts) const {
   if (!(thickness > 0.0)) {
     std::ostringstream os;
     os << "element thickness must be positive (got " << thickness << " m)";
     throw ConfigError(os.str());
   }
+  const Quad4Coords coords = quad4_coords(coords_in);
   Matrix me = Matrix::Zero(num_dofs(), num_dofs());
   for (const auto& gp : gauss_legendre_square(opts.mass_points)) {
     NaturalPoint p;
@@ -146,22 +185,17 @@ std::vector<NaturalPoint> Quad4Element::stress_evaluation_points(
   return points;
 }
 
-std::array<int, 2> Quad4Element::edge_nodes(int local_edge) const {
-  static const std::array<std::array<int, 2>, 4> table = {
-      {{0, 1}, {1, 2}, {2, 3}, {3, 0}}};
-  if (local_edge < 0 || local_edge > 3) {
+Vector Quad4Element::boundary_traction(const Matrix& coords_in, int local_face,
+                                       const Vector3& traction, Scalar thickness,
+                                       const IntegrationOptions& opts) const {
+  const std::vector<int>& en = face_nodes(local_face);
+  if (traction.z() != 0.0) {
     std::ostringstream os;
-    os << "Quad4 local edge index " << local_edge << " is outside [0, 3]";
-    throw MeshError(os.str());
+    os << "a plane element cannot carry an out-of-plane traction (t_z = " << traction.z()
+       << " Pa); use a 3-D mesh or drop the z component";
+    throw ConfigError(os.str());
   }
-  return table[static_cast<std::size_t>(local_edge)];
-}
-
-Vector Quad4Element::edge_traction(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic>& coords,
-                                  int local_edge, const Vector2& traction,
-                                  Scalar thickness,
-                                  const IntegrationOptions& opts) const {
-  const std::array<int, 2> en = edge_nodes(local_edge);
+  const Quad4Coords coords = quad4_coords(coords_in);
   const Vector2 xa = coords.col(en[0]);
   const Vector2 xb = coords.col(en[1]);
 
@@ -181,13 +215,6 @@ Vector Quad4Element::edge_traction(const Eigen::Matrix<Scalar, 2, Eigen::Dynamic
     fe(2 * en[1] + 1) += scale * nb * traction.y();
   }
   return fe;
-}
-
-std::unique_ptr<Element> make_element(ElementType type) {
-  switch (type) {
-    case ElementType::Quad4: return std::make_unique<Quad4Element>();
-  }
-  throw ConfigError("no element implementation registered for the requested type");
 }
 
 }  // namespace sparlab

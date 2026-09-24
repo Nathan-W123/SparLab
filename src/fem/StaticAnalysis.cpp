@@ -4,11 +4,45 @@
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/fem/ModelDiagnostics.hpp"
 
+#include <Eigen/Dense>
+
 #include <algorithm>
 #include <cmath>
 #include <sstream>
 
 namespace sparlab {
+namespace {
+
+/// Nodal vector (force, reaction, ...) at node `n` of a full-length vector,
+/// padded with a zero z component on a 2-D model.
+Vector3 nodal_vector(const Vector& full, Index n, int dim) {
+  Vector3 v = Vector3::Zero();
+  for (int k = 0; k < dim; ++k) v(k) = full(n * dim + k);
+  return v;
+}
+
+/// Moment of `f` acting at `x` about the origin. The 2-D branch keeps the
+/// scalar expression of the plane formulation, which is the z component of
+/// the cross product written out.
+Vector3 moment_about_origin(const Vector3& x, const Vector3& f, int dim) {
+  if (dim == 2) return Vector3(0.0, 0.0, x.x() * f.y() - x.y() * f.x());
+  return x.cross(f);
+}
+
+Scalar magnitude(const Vector3& v, int dim) {
+  return dim == 2 ? std::hypot(v.x(), v.y()) : std::hypot(v.x(), v.y(), v.z());
+}
+
+std::string vector_text(const Vector3& v, int dim) {
+  std::ostringstream os;
+  os << "(" << v.x() << ", " << v.y();
+  if (dim == 3) os << ", " << v.z();
+  os << ")";
+  return os.str();
+}
+
+}  // namespace
+
 StaticAnalysis::StaticAnalysis(const FemModel& model, const Assembler& assembler,
                                StaticAnalysisOptions options)
     : model_(model), assembler_(assembler), options_(options) {
@@ -63,6 +97,7 @@ Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
 
 StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar weight,
                                               const Vector& applied_force) {
+  const int dim = model_.dim();
   StaticSolution sol;
   sol.load_case_name = name;
   sol.weight = weight;
@@ -102,8 +137,7 @@ StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar we
   // Peak displacement magnitude and its node.
   const Index nn = model_.mesh().num_nodes();
   for (Index n = 0; n < nn; ++n) {
-    const Scalar mag = std::hypot(sol.displacement(n * kDofsPerNode + 0),
-                                  sol.displacement(n * kDofsPerNode + 1));
+    const Scalar mag = magnitude(nodal_vector(sol.displacement, n, dim), dim);
     if (mag > sol.max_displacement_magnitude) {
       sol.max_displacement_magnitude = mag;
       sol.max_displacement_node = n;
@@ -114,15 +148,13 @@ StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar we
   EquilibriumCheck& eq = sol.equilibrium;
   Scalar applied_moment_scale = 0.0;
   for (Index n = 0; n < nn; ++n) {
-    const Vector2 x = model_.mesh().node(n);
-    const Vector2 fa(applied_force(n * kDofsPerNode + 0),
-                     applied_force(n * kDofsPerNode + 1));
-    const Vector2 fr(sol.reactions(n * kDofsPerNode + 0),
-                     sol.reactions(n * kDofsPerNode + 1));
+    const Vector3 x = model_.mesh().node(n);
+    const Vector3 fa = nodal_vector(applied_force, n, dim);
+    const Vector3 fr = nodal_vector(sol.reactions, n, dim);
     eq.applied_force += fa;
     eq.reaction_force += fr;
-    eq.applied_moment += x.x() * fa.y() - x.y() * fa.x();
-    eq.reaction_moment += x.x() * fr.y() - x.y() * fr.x();
+    eq.applied_moment += moment_about_origin(x, fa, dim);
+    eq.reaction_moment += moment_about_origin(x, fr, dim);
     applied_moment_scale += x.norm() * fa.norm();
   }
   eq.force_residual = eq.applied_force + eq.reaction_force;
@@ -130,21 +162,22 @@ StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar we
   eq.relative_force_error =
       eq.force_residual.norm() / std::max(eq.applied_force.norm(), 1.0e-30);
   eq.relative_moment_error =
-      std::abs(eq.moment_residual) / std::max(applied_moment_scale, 1.0e-30);
+      eq.moment_residual.norm() / std::max(applied_moment_scale, 1.0e-30);
 
   if (eq.applied_force.norm() > 0.0 &&
       eq.relative_force_error > options_.equilibrium_tolerance) {
     std::ostringstream os;
-    os << "load case '" << name << "': global force balance is violated. Applied ("
-       << eq.applied_force.x() << ", " << eq.applied_force.y() << ") N, reactions ("
-       << eq.reaction_force.x() << ", " << eq.reaction_force.y() << ") N, relative error "
+    os << "load case '" << name << "': global force balance is violated. Applied "
+       << vector_text(eq.applied_force, dim) << " N, reactions "
+       << vector_text(eq.reaction_force, dim) << " N, relative error "
        << eq.relative_force_error << " exceeds the tolerance "
        << options_.equilibrium_tolerance;
     throw SolverError(os.str());
   }
   if (applied_moment_scale > 0.0 &&
       eq.relative_moment_error > options_.equilibrium_tolerance) {
-    log::warn("load case '", name, "': moment balance residual ", eq.moment_residual,
+    log::warn("load case '", name, "': moment balance residual ",
+              (dim == 2 ? eq.moment_residual.z() : eq.moment_residual.norm()),
               " N m (relative ", eq.relative_moment_error,
               ") exceeds the equilibrium tolerance ", options_.equilibrium_tolerance);
   }

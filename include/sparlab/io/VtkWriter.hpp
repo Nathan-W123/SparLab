@@ -4,14 +4,15 @@
 /// The legacy format is used deliberately: it is a single self-describing text
 /// file with no XML or compression dependencies, and ParaView, VisIt and
 /// pyvista all read it. Q4 elements are written as VTK_QUAD (cell type 9) with
-/// z = 0.
+/// z = 0; Hex8 elements as VTK_HEXAHEDRON (cell type 12).
 ///
 /// Field naming convention in the output file:
-///   * point data: `displacement` (3-vector, z = 0), `displacement_magnitude`,
-///     `nodal_von_mises`, and `mode_<k>` for mode shapes;
+///   * point data: `displacement` (3-vector, z = 0 in 2-D),
+///     `displacement_magnitude`, `nodal_von_mises`, and `mode_<k>` for mode
+///     shapes;
 ///   * cell data: `density`, `stiffness_factor`, `sigma_xx`, `sigma_yy`,
-///     `sigma_xy`, `von_mises`, `principal_max`, `principal_min`,
-///     `strain_energy`.
+///     `sigma_xy` (plus `sigma_zz`, `sigma_yz`, `sigma_zx` in 3-D),
+///     `von_mises`, `principal_max`, `principal_min`, `strain_energy`.
 ///
 /// A density field written to VTK is the SIMP *material distribution*, not a
 /// solid body; docs/limitations.md states how it should be read.
@@ -34,8 +35,8 @@ class VtkWriter {
   /// Add a scalar array over nodes (length num_nodes).
   VtkWriter& add_point_scalars(const std::string& name, const Vector& values);
 
-  /// Add a 2-D vector array over nodes; written as a 3-vector with z = 0.
-  /// \param values length 2*num_nodes in node-major DOF ordering.
+  /// Add a vector array over nodes; written as a 3-vector (z = 0 in 2-D).
+  /// \param values length dim*num_nodes in node-major DOF ordering.
   VtkWriter& add_point_vectors(const std::string& name, const Vector& values);
 
   /// Add a scalar array over elements (length num_elements).

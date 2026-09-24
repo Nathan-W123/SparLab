@@ -74,7 +74,7 @@ inline FemModel make_cantilever(const CantileverCase& c, Index nx, Index ny) {
   tip_box.kind = SelectorKind::Box;
   tip_box.xmin = c.length;
   tip.region.members.push_back(tip_box);
-  tip.force = Vector2(0.0, c.tip_load);
+  tip.force = Vector3(0.0, c.tip_load, 0.0);
   tip.distribute_total = true;
   load.point_loads.push_back(tip);
   model.load_case_specs().push_back(load);
@@ -89,7 +89,7 @@ inline Scalar tip_deflection(const FemModel& model, const Vector& u) {
   Scalar sum = 0.0;
   for (Index j = 0; j <= info.ny; ++j) {
     const Index node = structured_node_index(info, info.nx, j);
-    sum += u(node * kDofsPerNode + 1);
+    sum += u(node * 2 + 1);
   }
   return sum / static_cast<Scalar>(info.ny + 1);
 }
@@ -121,9 +121,9 @@ inline FemModel make_small_plate(Index nx = 4, Index ny = 3, Scalar poisson = 0.
   p.region.name = "corner_node";
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx, 0.0);
+  nearest.point = Vector3(spec.lx, 0.0, 0.0);
   p.region.members.push_back(nearest);
-  p.force = Vector2(500.0, -2000.0);
+  p.force = Vector3(500.0, -2000.0, 0.0);
   load.point_loads.push_back(p);
   model.load_case_specs().push_back(load);
 
@@ -135,33 +135,32 @@ inline FemModel make_small_plate(Index nx = 4, Index ny = 3, Scalar poisson = 0.
 /// Columns: x-translation, y-translation, rotation.
 inline Matrix rigid_body_modes(const Mesh& mesh) {
   const Index nn = mesh.num_nodes();
-  Vector2 centroid = Vector2::Zero();
+  Vector3 centroid = Vector3::Zero();
   for (Index n = 0; n < nn; ++n) centroid += mesh.node(n);
   centroid /= static_cast<Scalar>(nn);
 
-  Matrix modes = Matrix::Zero(nn * kDofsPerNode, 3);
+  Matrix modes = Matrix::Zero(nn * 2, 3);
   for (Index n = 0; n < nn; ++n) {
-    const Vector2 r = mesh.node(n) - centroid;
-    modes(n * kDofsPerNode + 0, 0) = 1.0;
-    modes(n * kDofsPerNode + 1, 1) = 1.0;
-    modes(n * kDofsPerNode + 0, 2) = -r.y();
-    modes(n * kDofsPerNode + 1, 2) = r.x();
+    const Vector3 r = mesh.node(n) - centroid;
+    modes(n * 2 + 0, 0) = 1.0;
+    modes(n * 2 + 1, 1) = 1.0;
+    modes(n * 2 + 0, 2) = -r.y();
+    modes(n * 2 + 1, 2) = r.x();
   }
   return modes;
 }
 
 /// Nodal coordinates of a single unit square Q4, counter-clockwise.
-inline Eigen::Matrix<Scalar, 2, Eigen::Dynamic> unit_square_coords(Scalar a = 1.0,
-                                                                   Scalar b = 1.0) {
-  Eigen::Matrix<Scalar, 2, Eigen::Dynamic> coords(2, 4);
+inline Matrix unit_square_coords(Scalar a = 1.0, Scalar b = 1.0) {
+  Matrix coords(2, 4);
   coords << 0.0, a, a, 0.0,
             0.0, 0.0, b, b;
   return coords;
 }
 
 /// A distorted (but convex) quadrilateral for isoparametric-mapping tests.
-inline Eigen::Matrix<Scalar, 2, Eigen::Dynamic> distorted_quad_coords() {
-  Eigen::Matrix<Scalar, 2, Eigen::Dynamic> coords(2, 4);
+inline Matrix distorted_quad_coords() {
+  Matrix coords(2, 4);
   coords << 0.10, 2.05, 1.80, 0.35,
             0.05, 0.20, 1.35, 1.10;
   return coords;

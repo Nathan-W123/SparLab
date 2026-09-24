@@ -12,8 +12,9 @@ namespace {
 StressState parse_stress_state(const std::string& text) {
   if (text == "plane_stress") return StressState::PlaneStress;
   if (text == "plane_strain") return StressState::PlaneStrain;
+  if (text == "three_dimensional" || text == "3d") return StressState::ThreeDimensional;
   throw ConfigError("unknown stress state '" + text +
-                    "' (expected plane_stress|plane_strain)");
+                    "' (expected plane_stress|plane_strain|three_dimensional)");
 }
 
 MassType parse_mass_type(const std::string& text) {
@@ -22,7 +23,16 @@ MassType parse_mass_type(const std::string& text) {
   throw ConfigError("unknown mass type '" + text + "' (expected consistent|lumped)");
 }
 
-Selector parse_selector_primitive(const ConfigNode& node) {
+int parse_axis(const ConfigNode& node, const std::string& key) {
+  const std::string text = node.string_or(key, "z");
+  if (text == "x") return 0;
+  if (text == "y") return 1;
+  if (text == "z") return 2;
+  throw ConfigError("'" + node.path() + "." + key + "' must be \"x\", \"y\" or \"z\", got \"" +
+                    text + "\"");
+}
+
+Selector parse_selector_primitive(const ConfigNode& node, int dim) {
   Selector sel;
   sel.tolerance = node.number_or("tolerance", 0.0);
 
@@ -38,10 +48,17 @@ Selector parse_selector_primitive(const ConfigNode& node) {
     sel.xmax = box.number_or("xmax", std::numeric_limits<Scalar>::infinity());
     sel.ymin = box.number_or("ymin", -std::numeric_limits<Scalar>::infinity());
     sel.ymax = box.number_or("ymax", std::numeric_limits<Scalar>::infinity());
-    if (sel.xmin > sel.xmax || sel.ymin > sel.ymax) {
+    sel.zmin = box.number_or("zmin", -std::numeric_limits<Scalar>::infinity());
+    sel.zmax = box.number_or("zmax", std::numeric_limits<Scalar>::infinity());
+    if (dim == 2 && (box.child("zmin").exists() || box.child("zmax").exists())) {
+      throw ConfigError("'" + box.path() +
+                        "' sets zmin/zmax but the mesh is two-dimensional");
+    }
+    if (sel.xmin > sel.xmax || sel.ymin > sel.ymax || sel.zmin > sel.zmax) {
       std::ostringstream os;
       os << "'" << box.path() << "' has an empty interval: x in [" << sel.xmin << ", "
          << sel.xmax << "], y in [" << sel.ymin << ", " << sel.ymax << "]";
+      if (dim == 3) os << ", z in [" << sel.zmin << ", " << sel.zmax << "]";
       throw ConfigError(os.str());
     }
     ++matched;
@@ -49,22 +66,37 @@ Selector parse_selector_primitive(const ConfigNode& node) {
   if (node.child("circle").exists()) {
     const ConfigNode c = node.child("circle");
     sel.kind = SelectorKind::Circle;
-    sel.center = c.require("center").vector2();
+    sel.center = c.require("center").vector3(dim);
     sel.radius = c.positive_number("radius");
+    sel.axis = parse_axis(c, "axis");
+    if (dim == 2 && sel.axis != 2) {
+      throw ConfigError("'" + c.path() + ".axis' must be \"z\" on a two-dimensional mesh");
+    }
     ++matched;
   }
   if (node.child("annulus").exists()) {
     const ConfigNode c = node.child("annulus");
     sel.kind = SelectorKind::Annulus;
-    sel.center = c.require("center").vector2();
+    sel.center = c.require("center").vector3(dim);
     sel.inner_radius = c.number_or("inner_radius", 0.0);
     sel.radius = c.positive_number("radius");
+    sel.axis = parse_axis(c, "axis");
+    if (dim == 2 && sel.axis != 2) {
+      throw ConfigError("'" + c.path() + ".axis' must be \"z\" on a two-dimensional mesh");
+    }
     if (sel.inner_radius >= sel.radius) {
       std::ostringstream os;
       os << "'" << c.path() << "' needs inner_radius (" << sel.inner_radius
          << " m) strictly below radius (" << sel.radius << " m)";
       throw ConfigError(os.str());
     }
+    ++matched;
+  }
+  if (node.child("sphere").exists()) {
+    const ConfigNode c = node.child("sphere");
+    sel.kind = SelectorKind::Sphere;
+    sel.center = c.require("center").vector3(dim);
+    sel.radius = c.positive_number("radius");
     ++matched;
   }
   if (node.child("node_ids").exists()) {
@@ -85,7 +117,7 @@ Selector parse_selector_primitive(const ConfigNode& node) {
   }
   if (node.child("nearest_node").exists()) {
     sel.kind = SelectorKind::NearestNode;
-    sel.point = node.child("nearest_node").vector2();
+    sel.point = node.child("nearest_node").vector3(dim);
     ++matched;
   }
 
@@ -93,7 +125,7 @@ Selector parse_selector_primitive(const ConfigNode& node) {
     throw ConfigError(
         "'" + node.path() +
         "' does not name a region primitive; expected one of all, box, circle, "
-        "annulus, node_ids, element_ids, nearest_node (or an 'any_of' list)");
+        "annulus, sphere, node_ids, element_ids, nearest_node (or an 'any_of' list)");
   }
   if (matched > 1) {
     throw ConfigError("'" + node.path() +
@@ -105,7 +137,16 @@ Selector parse_selector_primitive(const ConfigNode& node) {
 
 }  // namespace
 
-SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name) {
+std::string to_string(MeshKind kind) {
+  switch (kind) {
+    case MeshKind::StructuredQuad: return "structured_quad";
+    case MeshKind::StructuredHex: return "structured_hex";
+  }
+  return "unknown";
+}
+
+SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name,
+                           int dim) {
   if (!node.exists()) {
     throw ConfigError("required region '" + node.path() + "' is missing");
   }
@@ -116,10 +157,10 @@ SelectorGroup parse_region(const ConfigNode& node, const std::string& default_na
   const std::vector<ConfigNode> any_of = node.array("any_of");
   if (!any_of.empty()) {
     for (const ConfigNode& item : any_of) {
-      group.members.push_back(parse_selector_primitive(item));
+      group.members.push_back(parse_selector_primitive(item, dim));
     }
   } else {
-    group.members.push_back(parse_selector_primitive(node));
+    group.members.push_back(parse_selector_primitive(node, dim));
   }
   return group;
 }
@@ -142,10 +183,13 @@ Scalar Configuration::resolved_filter_radius(const Mesh& mesh) const {
         "topology.filter needs either 'radius' (metres) or a positive "
         "'radius_elements'");
   }
-  Scalar area_sum = 0.0;
-  for (Index e = 0; e < mesh.num_elements(); ++e) area_sum += mesh.element_area(e);
+  // Mean element size: the side of the square (2-D) or cube (3-D) with the
+  // mean cell measure.
+  Scalar measure_sum = 0.0;
+  for (Index e = 0; e < mesh.num_elements(); ++e) measure_sum += mesh.element_measure(e);
+  const Scalar mean_measure = measure_sum / static_cast<Scalar>(mesh.num_elements());
   const Scalar mean_size =
-      std::sqrt(area_sum / static_cast<Scalar>(mesh.num_elements()));
+      mesh.dim() == 2 ? std::sqrt(mean_measure) : std::cbrt(mean_measure);
   return topology.filter_radius_elements * mean_size;
 }
 
@@ -168,9 +212,13 @@ Configuration parse_configuration(const json::Value& document, const std::string
   {
     const ConfigNode mesh = root.require("mesh");
     const std::string type = mesh.string_or("type", "structured_quad");
-    if (type != "structured_quad") {
-      throw ConfigError("'" + mesh.path() + ".type' must be 'structured_quad'; '" +
-                        type +
+    if (type == "structured_quad") {
+      config.mesh_kind = MeshKind::StructuredQuad;
+    } else if (type == "structured_hex") {
+      config.mesh_kind = MeshKind::StructuredHex;
+    } else {
+      throw ConfigError("'" + mesh.path() +
+                        ".type' must be 'structured_quad' or 'structured_hex'; '" + type +
                         "' is not implemented (the mesh layer is designed to accept "
                         "further generators)");
     }
@@ -180,7 +228,18 @@ Configuration parse_configuration(const json::Value& document, const std::string
     config.mesh_spec.ly = mesh.positive_number("ly");
     config.mesh_spec.x0 = mesh.number_or("x0", 0.0);
     config.mesh_spec.y0 = mesh.number_or("y0", 0.0);
+    if (config.mesh_kind == MeshKind::StructuredHex) {
+      config.mesh_spec.nz = mesh.require("nz").integer();
+      config.mesh_spec.lz = mesh.positive_number("lz");
+      config.mesh_spec.z0 = mesh.number_or("z0", 0.0);
+    } else if (mesh.child("nz").exists() || mesh.child("lz").exists() ||
+               mesh.child("z0").exists()) {
+      throw ConfigError("'" + mesh.path() +
+                        "' gives nz/lz/z0 for a structured_quad mesh; use "
+                        "\"type\": \"structured_hex\" for a solid mesh");
+    }
   }
+  const int dim = config.dim();
 
   // --- material -----------------------------------------------------------
   {
@@ -196,18 +255,35 @@ Configuration parse_configuration(const json::Value& document, const std::string
     const ConfigNode model = root.child("model");
     // A unit out-of-plane thickness is the conventional default for a 2-D
     // plane problem; it applies whether or not a "model" section is present.
+    // A solid mesh has no thickness and rejects any other value.
     config.thickness = model.number_or("thickness", 1.0);
     if (!(config.thickness > 0.0)) {
       std::ostringstream os;
       os << "'model.thickness' must be positive, got " << config.thickness << " m";
       throw ConfigError(os.str());
     }
-    config.stress_state =
-        parse_stress_state(model.string_or("stress_state", "plane_stress"));
+    if (dim == 3 && config.thickness != 1.0) {
+      std::ostringstream os;
+      os << "'model.thickness' is " << config.thickness
+         << " m but a structured_hex mesh is a solid with no thickness; remove the key";
+      throw ConfigError(os.str());
+    }
+    config.stress_state = parse_stress_state(
+        model.string_or("stress_state", dim == 3 ? "three_dimensional" : "plane_stress"));
+    if (stress_state_dimension(config.stress_state) != dim) {
+      std::ostringstream os;
+      os << "'model.stress_state' = \"" << to_string(config.stress_state) << "\" is a "
+         << stress_state_dimension(config.stress_state) << "-D idealisation but the mesh "
+         << "type '" << to_string(config.mesh_kind) << "' is " << dim << "-D";
+      throw ConfigError(os.str());
+    }
     const ConfigNode integ = model.child("integration");
     config.integration.stiffness_points = integ.integer_or("stiffness_points", 2);
     config.integration.mass_points = integ.integer_or("mass_points", 3);
-    config.integration.edge_points = integ.integer_or("edge_points", 2);
+    // "face_points" is the dimension-neutral name; "edge_points" is kept for
+    // the existing 2-D decks.
+    config.integration.edge_points =
+        integ.integer_or("face_points", integ.integer_or("edge_points", 2));
   }
 
   // --- boundary conditions ------------------------------------------------
@@ -224,7 +300,7 @@ Configuration parse_configuration(const json::Value& document, const std::string
       std::ostringstream default_name;
       default_name << "bc" << index++;
       constraint.region = parse_region(bc.require("region"),
-                                       bc.string_or("name", default_name.str()));
+                                       bc.string_or("name", default_name.str()), dim);
       const std::vector<ConfigNode> fix = bc.array("fix");
       if (fix.empty()) {
         throw ConfigError("'" + bc.path() +
@@ -237,14 +313,20 @@ Configuration parse_configuration(const json::Value& document, const std::string
           constraint.fix_x = true;
         } else if (c == "y") {
           constraint.fix_y = true;
+        } else if (c == "z" && dim == 3) {
+          constraint.fix_z = true;
+        } else if (c == "z") {
+          throw ConfigError("'" + component.path() +
+                            "' fixes \"z\" but the mesh is two-dimensional");
         } else {
-          throw ConfigError("'" + component.path() + "' must be \"x\" or \"y\", got \"" +
-                            c + "\"");
+          throw ConfigError("'" + component.path() + "' must be \"x\", \"y\"" +
+                            (dim == 3 ? " or \"z\"" : "") + ", got \"" + c + "\"");
         }
       }
-      const Vector2 values = bc.vector2_or("value", Vector2::Zero());
+      const Vector3 values = bc.vector3_or("value", Vector3::Zero(), dim);
       constraint.value_x = values.x();
       constraint.value_y = values.y();
+      constraint.value_z = values.z();
       config.constraints.push_back(std::move(constraint));
     }
   }
@@ -273,8 +355,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
         PointLoadSpec load;
         std::ostringstream ln;
         ln << spec.name << "_point" << load_index++;
-        load.region = parse_region(pl.require("region"), pl.string_or("name", ln.str()));
-        load.force = pl.require("force").vector2();
+        load.region =
+            parse_region(pl.require("region"), pl.string_or("name", ln.str()), dim);
+        load.force = pl.require("force").vector3(dim);
         const std::string distribution = pl.string_or("distribution", "total");
         if (distribution == "total") {
           load.distribute_total = true;
@@ -292,8 +375,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
         TractionLoadSpec load;
         std::ostringstream ln;
         ln << spec.name << "_traction" << traction_index++;
-        load.region = parse_region(tr.require("region"), tr.string_or("name", ln.str()));
-        load.traction = tr.require("traction").vector2();
+        load.region =
+            parse_region(tr.require("region"), tr.string_or("name", ln.str()), dim);
+        load.traction = tr.require("traction").vector3(dim);
         spec.tractions.push_back(std::move(load));
       }
 
@@ -395,9 +479,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
       PassiveRegionSpec spec;
       std::ostringstream default_name;
       default_name << "passive" << passive_index++;
-      spec.region =
-          parse_region(region.require("region"),
-                       region.string_or("name", default_name.str()));
+      spec.region = parse_region(region.require("region"),
+                                 region.string_or("name", default_name.str()), dim);
       const std::string kind = region.string_or("type", "solid");
       if (kind == "solid") {
         spec.solid = true;
@@ -441,8 +524,16 @@ Configuration load_configuration(const std::string& path, bool strict) {
   return parse_configuration(document, path, strict);
 }
 
+Mesh build_mesh(const Configuration& config) {
+  switch (config.mesh_kind) {
+    case MeshKind::StructuredQuad: return make_structured_quad_mesh(config.mesh_spec);
+    case MeshKind::StructuredHex: return make_structured_hex_mesh(config.mesh_spec);
+  }
+  throw ConfigError("unhandled mesh type");
+}
+
 FemModel build_model(const Configuration& config) {
-  Mesh mesh = make_structured_quad_mesh(config.mesh_spec);
+  Mesh mesh = build_mesh(config);
   FemModel model(std::move(mesh), config.material(), config.thickness,
                  config.stress_state, config.integration);
   model.constraints() = config.constraints;

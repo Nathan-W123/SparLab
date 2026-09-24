@@ -10,27 +10,38 @@ namespace sparlab {
 namespace {
 
 Scalar default_tolerance(const Mesh& mesh) {
-  const Eigen::Vector4d bb = mesh.bounding_box();
-  const Scalar diag = std::hypot(bb(2) - bb(0), bb(3) - bb(1));
+  const BoundingBox bb = mesh.bounding_box();
+  const Vector3 extent = bb.extent();
+  const Scalar diag = mesh.dim() == 2 ? std::hypot(extent.x(), extent.y())
+                                      : std::hypot(extent.x(), extent.y(), extent.z());
   return 1.0e-9 * std::max(diag, 1.0e-30);
+}
+
+/// Distance from `center` measured in the plane normal to `axis`.
+Scalar radial_distance(const Vector3& x, const Vector3& center, int axis) {
+  Vector3 d = x - center;
+  d(axis) = 0.0;
+  return d.norm();
 }
 
 }  // namespace
 
-bool Selector::contains(const Vector2& x, Scalar tol) const {
+bool Selector::contains(const Vector3& x, Scalar tol) const {
   const Scalar t = tolerance > 0.0 ? tolerance : tol;
   switch (kind) {
     case SelectorKind::All:
       return true;
     case SelectorKind::Box:
       return x.x() >= xmin - t && x.x() <= xmax + t && x.y() >= ymin - t &&
-             x.y() <= ymax + t;
+             x.y() <= ymax + t && x.z() >= zmin - t && x.z() <= zmax + t;
     case SelectorKind::Circle:
-      return (x - center).norm() <= radius + t;
+      return radial_distance(x, center, axis) <= radius + t;
     case SelectorKind::Annulus: {
-      const Scalar r = (x - center).norm();
+      const Scalar r = radial_distance(x, center, axis);
       return r >= inner_radius - t && r <= radius + t;
     }
+    case SelectorKind::Sphere:
+      return (x - center).norm() <= radius + t;
     case SelectorKind::NodeIds:
     case SelectorKind::ElementIds:
     case SelectorKind::NearestNode:
@@ -48,6 +59,10 @@ std::vector<Index> SelectorGroup::select_nodes(const Mesh& mesh) const {
     if (sel.kind == SelectorKind::ElementIds) {
       throw ConfigError("region '" + name +
                         "' uses element_ids where a node region is expected");
+    }
+    if ((sel.kind == SelectorKind::Circle || sel.kind == SelectorKind::Annulus) &&
+        (sel.axis < 0 || sel.axis > 2)) {
+      throw ConfigError("region '" + name + "' has a circle/annulus axis outside 0..2");
     }
     if (sel.kind == SelectorKind::NodeIds) {
       for (Index id : sel.ids) {
@@ -97,6 +112,10 @@ std::vector<Index> SelectorGroup::select_elements(const Mesh& mesh) const {
       throw ConfigError("region '" + name +
                         "' uses a node-only selector where an element region is "
                         "expected");
+    }
+    if ((sel.kind == SelectorKind::Circle || sel.kind == SelectorKind::Annulus) &&
+        (sel.axis < 0 || sel.axis > 2)) {
+      throw ConfigError("region '" + name + "' has a circle/annulus axis outside 0..2");
     }
     if (sel.kind == SelectorKind::ElementIds) {
       for (Index id : sel.ids) {

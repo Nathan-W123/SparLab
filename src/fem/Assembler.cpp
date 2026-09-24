@@ -86,7 +86,7 @@ SparseMatrix Assembler::assemble_stiffness(const Vector* scale) const {
   check_scale(scale, ne, "stiffness");
 
   const int npe = mesh.nodes_per_elem();
-  const int edofs = npe * kDofsPerNode;
+  const int edofs = npe * mesh.dim();
   TripletList triplets;
   triplets.reserve(static_cast<std::size_t>(ne) * edofs * edofs);
 
@@ -121,7 +121,7 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
   }
 
   const int npe = mesh.nodes_per_elem();
-  const int edofs = npe * kDofsPerNode;
+  const int edofs = npe * mesh.dim();
   TripletList triplets;
   triplets.reserve(static_cast<std::size_t>(ne) * edofs * edofs);
 
@@ -139,9 +139,9 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
         }
       }
     } else {
-      // Row-sum (Hinton-Rock-Zienkiewicz style) lumping. For the Q4 with a
-      // consistent mass matrix the row sums reproduce the element mass exactly,
-      // so total mass is conserved.
+      // Row-sum (Hinton-Rock-Zienkiewicz style) lumping. For the Q4 and Hex8
+      // with a consistent mass matrix the row sums reproduce the element mass
+      // exactly, so total mass is conserved.
       for (int i = 0; i < edofs; ++i) {
         const Scalar lumped = me.row(i).sum();
         triplets.emplace_back(gdofs[static_cast<std::size_t>(i)],
@@ -159,10 +159,12 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
 Scalar Assembler::total_mass(const Vector* scale) const {
   const Mesh& mesh = model_.mesh();
   check_scale(scale, mesh.num_elements(), "mass");
+  // The thickness factor is 1 for a solid mesh, which leaves the product exact.
+  const Scalar thickness = mesh.dim() == 2 ? model_.thickness() : 1.0;
   Scalar mass = 0.0;
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     const Scalar s = scale ? (*scale)(e) : 1.0;
-    mass += s * model_.material().density() * mesh.element_area(e) * model_.thickness();
+    mass += s * model_.material().density() * mesh.element_measure(e) * thickness;
   }
   return mass;
 }

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(SparLab
         VERSION 1.0.0
-        DESCRIPTION "2-D finite-element structural solver with SIMP topology optimization"
+        DESCRIPTION "2-D/3-D finite-element structural solver with SIMP topology optimization"
         LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
@@ -51,7 +51,9 @@ add_library(sparlab STATIC
   src/mesh/SubMesh.cpp
   src/material/IsotropicMaterial.cpp
   src/elements/Quadrature.cpp
+  src/elements/Element.cpp
   src/elements/Quad4.cpp
+  src/elements/Hex8.cpp
   src/fem/DofManager.cpp
   src/fem/Selector.cpp
   src/fem/BoundaryConditions.cpp

@@ -6,14 +6,15 @@
 /// 1. **Per-component rigid-body check.** The element graph is split into
 ///    connected components (elements sharing a node). For a component with
 ///    node set \f$\mathcal{N}\f$ the space of infinitesimal rigid-body motions
-///    is spanned by
-///    \f$ r_1 = (1,0),\ r_2 = (0,1),\ r_3 = (-(y-y_c),\ x-x_c) \f$.
-///    Because the Q4 space contains all linear fields exactly, each \f$r_i\f$
-///    produces exactly zero strain, hence zero energy. A component is properly
-///    constrained only if no non-trivial combination \f$\sum_i c_i r_i\f$
-///    vanishes on every prescribed DOF of that component; equivalently the
-///    matrix of rigid modes evaluated at the component's prescribed DOFs must
-///    have rank 3.
+///    is spanned in 2-D by
+///    \f$ r_1 = (1,0),\ r_2 = (0,1),\ r_3 = (-(y-y_c),\ x-x_c) \f$
+///    and in 3-D by the three translations plus the three rotations
+///    \f$ e_j \times (x - x_c) \f$. Because the Q4 and Hex8 spaces contain all
+///    linear fields exactly, each \f$r_i\f$ produces exactly zero strain, hence
+///    zero energy. A component is properly constrained only if no non-trivial
+///    combination \f$\sum_i c_i r_i\f$ vanishes on every prescribed DOF of that
+///    component; equivalently the matrix of rigid modes evaluated at the
+///    component's prescribed DOFs must have full rank (3 in 2-D, 6 in 3-D).
 ///
 /// 2. **Floating-component check.** A component with no prescribed DOF at all
 ///    is reported explicitly, since that is the most common authoring mistake.
@@ -38,7 +39,7 @@ struct MeshComponent {
   std::vector<Index> nodes;
   Index prescribed_dofs = 0;
   /// Dimension of the rigid-body null space left by the constraints (0 = ok,
-  /// 3 = completely free).
+  /// 3 in 2-D / 6 in 3-D = completely free).
   int rigid_null_dimension = 0;
 };
 
@@ -53,6 +54,9 @@ struct ModelDiagnostics {
 
   bool well_posed() const { return problems.empty(); }
 };
+
+/// Number of rigid-body modes of an unconstrained body: 3 in 2-D, 6 in 3-D.
+int rigid_body_mode_count(int dim);
 
 /// Run the checks above. Never throws for an ill-posed model - the caller
 /// decides what to do.

@@ -37,7 +37,34 @@ class DisjointSet {
   std::vector<Index> parent_;
 };
 
+/// Row of the rigid-mode matrix for component `k` of a node at offset `x`
+/// from the reference point: translations first, then the rotation(s). In 2-D
+/// the single rotation is about z, u = theta (-y, x); in 3-D the three
+/// rotations are u = omega x r.
+Vector rigid_mode_row(const Vector3& x, int k, int dim) {
+  if (dim == 2) {
+    Vector row(3);
+    if (k == 0) {
+      row << 1.0, 0.0, -x.y();  // u_x of (tx, ty, theta)
+    } else {
+      row << 0.0, 1.0, x.x();   // u_y of (tx, ty, theta)
+    }
+    return row;
+  }
+  Vector row = Vector::Zero(6);
+  row(k) = 1.0;
+  // (omega x r)_k for omega = e_j, j = 0..2
+  for (int j = 0; j < 3; ++j) {
+    Vector3 omega = Vector3::Zero();
+    omega(j) = 1.0;
+    row(3 + j) = omega.cross(x)(k);
+  }
+  return row;
+}
+
 }  // namespace
+
+int rigid_body_mode_count(int dim) { return dim == 2 ? 3 : 6; }
 
 std::vector<std::vector<Index>> element_connected_components(const Mesh& mesh) {
   const Index ne = mesh.num_elements();
@@ -76,6 +103,8 @@ std::vector<std::vector<Index>> element_connected_components(const Mesh& mesh) {
 ModelDiagnostics diagnose_model(const FemModel& model) {
   const Mesh& mesh = model.mesh();
   const DofManager& dofs = model.dofs();
+  const int dim = mesh.dim();
+  const int num_rigid = rigid_body_mode_count(dim);
 
   ModelDiagnostics diag;
   diag.num_dofs = dofs.num_dofs();
@@ -83,10 +112,12 @@ ModelDiagnostics diagnose_model(const FemModel& model) {
   diag.num_prescribed_dofs = dofs.num_constrained();
 
   if (diag.num_prescribed_dofs == 0) {
-    diag.problems.push_back(
-        "no displacement boundary condition is prescribed: the model can translate and "
-        "rotate freely, so the stiffness matrix has a three-dimensional null space. "
-        "Add at least three independent constraints.");
+    std::ostringstream os;
+    os << "no displacement boundary condition is prescribed: the model can translate and "
+          "rotate freely, so the stiffness matrix has a "
+       << (dim == 2 ? "three" : "six") << "-dimensional null space. Add at least "
+       << (dim == 2 ? "three" : "six") << " independent constraints.";
+    diag.problems.push_back(os.str());
   }
 
   const auto components = element_connected_components(mesh);
@@ -107,38 +138,34 @@ ModelDiagnostics diagnose_model(const FemModel& model) {
     nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
     comp.nodes = nodes;
 
-    // Reference point for the rotation mode: the component's node centroid.
-    Vector2 centroid = Vector2::Zero();
+    // Reference point for the rotation modes: the component's node centroid.
+    Vector3 centroid = Vector3::Zero();
     for (Index n : nodes) centroid += mesh.node(n);
     centroid /= static_cast<Scalar>(nodes.size());
 
-    // Rows: prescribed DOFs of this component. Columns: the three rigid modes.
-    std::vector<Eigen::Vector3d> rows;
+    // Rows: prescribed DOFs of this component. Columns: the rigid modes.
+    std::vector<Vector> rows;
     for (Index n : nodes) {
-      const Vector2 x = mesh.node(n) - centroid;
-      for (int k = 0; k < kDofsPerNode; ++k) {
+      const Vector3 x = mesh.node(n) - centroid;
+      for (int k = 0; k < dim; ++k) {
         const Index d = dofs.dof(n, k);
         if (!dofs.is_constrained(d)) continue;
-        Eigen::Vector3d row;
-        if (k == 0) {
-          row << 1.0, 0.0, -x.y();  // u_x of (tx, ty, theta)
-        } else {
-          row << 0.0, 1.0, x.x();   // u_y of (tx, ty, theta)
-        }
-        rows.push_back(row);
+        rows.push_back(rigid_mode_row(x, k, dim));
       }
     }
     comp.prescribed_dofs = static_cast<Index>(rows.size());
 
     if (rows.empty()) {
-      comp.rigid_null_dimension = 3;
+      comp.rigid_null_dimension = num_rigid;
     } else {
-      Eigen::MatrixXd r(static_cast<Eigen::Index>(rows.size()), 3);
+      Eigen::MatrixXd r(static_cast<Eigen::Index>(rows.size()), num_rigid);
       for (std::size_t i = 0; i < rows.size(); ++i) r.row(static_cast<Eigen::Index>(i)) = rows[i];
-      // Scale the rotation column so the rank test is dimensionally sensible:
-      // translations are O(1) while the rotation column is O(length).
-      const Scalar rot_scale = r.col(2).cwiseAbs().maxCoeff();
-      if (rot_scale > 0.0) r.col(2) /= rot_scale;
+      // Scale each rotation column so the rank test is dimensionally sensible:
+      // translations are O(1) while the rotation columns are O(length).
+      for (int j = dim; j < num_rigid; ++j) {
+        const Scalar rot_scale = r.col(j).cwiseAbs().maxCoeff();
+        if (rot_scale > 0.0) r.col(j) /= rot_scale;
+      }
       Eigen::JacobiSVD<Eigen::MatrixXd> svd(r);
       const Eigen::VectorXd sv = svd.singularValues();
       const Scalar tol = 1.0e-10 * std::max(sv(0), 1.0);
@@ -146,21 +173,24 @@ ModelDiagnostics diagnose_model(const FemModel& model) {
       for (Eigen::Index i = 0; i < sv.size(); ++i) {
         if (sv(i) > tol) ++rank;
       }
-      comp.rigid_null_dimension = 3 - rank;
+      comp.rigid_null_dimension = num_rigid - rank;
     }
 
     if (comp.rigid_null_dimension > 0) {
       std::ostringstream os;
       os << "element group " << c << " (" << comp.elements.size() << " elements, "
          << comp.nodes.size() << " nodes, centroid at (" << centroid.x() << ", "
-         << centroid.y() << ") m) retains " << comp.rigid_null_dimension
+         << centroid.y();
+      if (dim == 3) os << ", " << centroid.z();
+      os << ") m) retains " << comp.rigid_null_dimension
          << " rigid-body degree(s) of freedom";
       if (comp.prescribed_dofs == 0) {
         os << " because it has no prescribed DOF at all (a floating region)";
       } else {
         os << " despite " << comp.prescribed_dofs
-           << " prescribed DOF(s); the prescribed DOFs do not suppress translation in "
-              "both directions plus rotation";
+           << " prescribed DOF(s); the prescribed DOFs do not suppress "
+           << (dim == 2 ? "translation in both directions plus rotation"
+                        : "all three translations and all three rotations");
       }
       os << ". Add displacement constraints to that region.";
       diag.problems.push_back(os.str());

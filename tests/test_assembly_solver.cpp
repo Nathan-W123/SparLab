@@ -31,9 +31,9 @@ TEST_CASE("global stiffness is symmetric and annihilates rigid-body modes",
   PointLoadSpec p;
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx, spec.ly);
+  nearest.point = Vector3(spec.lx, spec.ly, 0.0);
   p.region.members.push_back(nearest);
-  p.force = Vector2(1.0, 0.0);
+  p.force = Vector3(1.0, 0.0, 0.0);
   load.point_loads.push_back(p);
   model.load_case_specs().push_back(load);
   // Deliberately unconstrained so the free-free block is the full matrix.
@@ -92,9 +92,9 @@ TEST_CASE("the element-matrix cache agrees with per-element integration",
     PointLoadSpec p;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(spec.lx, 0.0);
+    nearest.point = Vector3(spec.lx, 0.0, 0.0);
     p.region.members.push_back(nearest);
-    p.force = Vector2(0.0, -100.0);
+    p.force = Vector3(0.0, -100.0, 0.0);
     load.point_loads.push_back(p);
     model.load_case_specs().push_back(load);
     model.finalize();
@@ -273,8 +273,10 @@ TEST_CASE("reactions balance the applied load exactly",
   REQUIRE(sol.equilibrium.relative_force_error == Approx(0.0).margin(1.0e-10));
 
   // Moment balance about the origin: the root moment must equal P * L.
-  REQUIRE(sol.equilibrium.applied_moment ==
+  REQUIRE(sol.equilibrium.applied_moment.z() ==
           Approx(c.tip_load * c.length).epsilon(1.0e-10));
+  REQUIRE(sol.equilibrium.applied_moment.x() == 0.0);
+  REQUIRE(sol.equilibrium.applied_moment.y() == 0.0);
   REQUIRE(sol.equilibrium.relative_moment_error == Approx(0.0).margin(1.0e-10));
 
   // Reactions vanish at free DOFs.
@@ -328,9 +330,9 @@ TEST_CASE("non-zero prescribed displacements are handled by condensation",
   PointLoadSpec zero;
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx * 0.5, spec.ly * 0.5);
+  nearest.point = Vector3(spec.lx * 0.5, spec.ly * 0.5, 0.0);
   zero.region.members.push_back(nearest);
-  zero.force = Vector2::Zero();
+  zero.force = Vector3::Zero();
   load.point_loads.push_back(zero);
   model.load_case_specs().push_back(load);
   model.finalize();
@@ -349,7 +351,7 @@ TEST_CASE("non-zero prescribed displacements are handled by condensation",
   Scalar right_reaction = 0.0;
   for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
     if (std::abs(model.mesh().node(n).x() - spec.lx) < 1.0e-12) {
-      right_reaction += sol.reactions(n * kDofsPerNode + 0);
+      right_reaction += sol.reactions(n * 2 + 0);
     }
   }
   REQUIRE(right_reaction == Approx(expected).epsilon(1.0e-9));
@@ -379,9 +381,9 @@ TEST_CASE("under-constrained models are detected before solving",
     PointLoadSpec p;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(1.0, 0.0);
+    nearest.point = Vector3(1.0, 0.0, 0.0);
     p.region.members.push_back(nearest);
-    p.force = Vector2(0.0, -10.0);
+    p.force = Vector3(0.0, -10.0, 0.0);
     load.point_loads.push_back(p);
     model.load_case_specs().push_back(load);
     model.finalize();
@@ -406,7 +408,7 @@ TEST_CASE("under-constrained models are detected before solving",
     bc.region.name = "one_node";
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(0.0, 0.0);
+    nearest.point = Vector3(0.0, 0.0, 0.0);
     bc.region.members.push_back(nearest);
     bc.fix_x = true;
     bc.fix_y = true;
@@ -451,7 +453,7 @@ TEST_CASE("under-constrained models are detected before solving",
     pin.region.name = "pin";
     Selector n1;
     n1.kind = SelectorKind::NearestNode;
-    n1.point = Vector2(0.0, 0.0);
+    n1.point = Vector3(0.0, 0.0, 0.0);
     pin.region.members.push_back(n1);
     pin.fix_x = true;
     pin.fix_y = true;
@@ -460,7 +462,7 @@ TEST_CASE("under-constrained models are detected before solving",
     roller.region.name = "roller";
     Selector n2;
     n2.kind = SelectorKind::NearestNode;
-    n2.point = Vector2(1.0, 0.0);
+    n2.point = Vector3(1.0, 0.0, 0.0);
     roller.region.members.push_back(n2);
     roller.fix_y = true;
 
@@ -473,7 +475,7 @@ TEST_CASE("under-constrained models are detected before solving",
 TEST_CASE("a floating element group is reported separately",
           "[diagnostics][verification]") {
   // Two 1x1 blocks separated by a gap, constrained only on the left block.
-  Eigen::Matrix2Xd coords(2, 8);
+  Matrix coords(2, 8);
   coords << 0, 1, 1, 0, 3, 4, 4, 3,
             0, 0, 1, 1, 0, 0, 1, 1;
   const std::vector<Index> connectivity = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -495,9 +497,9 @@ TEST_CASE("a floating element group is reported separately",
   PointLoadSpec p;
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(4.0, 1.0);
+  nearest.point = Vector3(4.0, 1.0, 0.0);
   p.region.members.push_back(nearest);
-  p.force = Vector2(100.0, 0.0);
+  p.force = Vector3(100.0, 0.0, 0.0);
   load.point_loads.push_back(p);
   model.load_case_specs().push_back(load);
   model.finalize();

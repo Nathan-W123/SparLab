@@ -2,8 +2,8 @@
 /// \brief Element strain / stress recovery and derived invariants.
 ///
 /// Strain is obtained from the element's strain-displacement operator,
-/// \f$ \boldsymbol{\varepsilon} = \mathbf{B}(\xi,\eta)\, \mathbf{u}_e \f$, and
-/// stress from the constitutive law, \f$ \boldsymbol{\sigma} = s_e \mathbf{D}
+/// \f$ \boldsymbol{\varepsilon} = \mathbf{B}(\xi,\eta[,\zeta])\, \mathbf{u}_e \f$,
+/// and stress from the constitutive law, \f$ \boldsymbol{\sigma} = s_e \mathbf{D}
 /// \boldsymbol{\varepsilon} \f$, where \f$ s_e \f$ is the element stiffness
 /// scale factor (1 for a plain analysis, \f$E(\rho_e)/E_0\f$ for a SIMP
 /// design). With \f$ s_e \f$ applied the result is the *macroscopic* stress
@@ -11,18 +11,21 @@
 /// solid material and is reported alongside it.
 ///
 /// Reported element values are the average over the stiffness quadrature
-/// points. Nodal values are area-weighted averages of the adjacent element
+/// points. Nodal values are measure-weighted averages of the adjacent element
 /// values (simple averaging, not superconvergent patch recovery), and are used
 /// for smooth contour plots only.
 ///
 /// von Mises stress uses the correct out-of-plane stress for the active
-/// idealisation: \f$\sigma_{zz} = 0\f$ for plane stress and
-/// \f$\sigma_{zz} = \nu(\sigma_{xx}+\sigma_{yy})\f$ for plane strain, so
+/// idealisation: \f$\sigma_{zz} = 0\f$ for plane stress,
+/// \f$\sigma_{zz} = \nu(\sigma_{xx}+\sigma_{yy})\f$ for plane strain and the
+/// computed \f$\sigma_{zz}\f$ in 3-D, so
 /// \f[
 ///   \sigma_{vm} = \sqrt{\tfrac{1}{2}\left[(\sigma_{xx}-\sigma_{yy})^2 +
 ///   (\sigma_{yy}-\sigma_{zz})^2 + (\sigma_{zz}-\sigma_{xx})^2\right] +
-///   3\sigma_{xy}^2}.
+///   3\left(\sigma_{xy}^2 + \sigma_{yz}^2 + \sigma_{zx}^2\right)}.
 /// \f]
+/// Principal stresses are the roots of the 2-D Mohr circle or, in 3-D, the
+/// eigenvalues of the symmetric stress tensor.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -31,36 +34,40 @@
 
 namespace sparlab {
 
-/// Voigt stress/strain storage: 3 x N columns, one per entity.
-using VoigtField = Eigen::Matrix<Scalar, kVoigt, Eigen::Dynamic>;
+/// Voigt stress/strain storage: num_voigt x N columns, one per entity.
+using VoigtField = Matrix;
 
 struct StressField {
-  VoigtField element_strain;            ///< 3 x num_elements [-]
-  VoigtField element_stress;            ///< 3 x num_elements, macroscopic [Pa]
-  VoigtField element_solid_stress;      ///< 3 x num_elements, solid material [Pa]
+  VoigtField element_strain;            ///< nv x num_elements [-]
+  VoigtField element_stress;            ///< nv x num_elements, macroscopic [Pa]
+  VoigtField element_solid_stress;      ///< nv x num_elements, solid material [Pa]
   Vector element_von_mises;             ///< num_elements, from element_stress [Pa]
   Vector element_solid_von_mises;       ///< num_elements, from solid stress [Pa]
   Vector element_principal_max;         ///< num_elements, sigma_1 [Pa]
-  Vector element_principal_min;         ///< num_elements, sigma_2 [Pa]
+  Vector element_principal_mid;         ///< num_elements, sigma_2 [Pa] (3-D only, else empty)
+  Vector element_principal_min;         ///< num_elements, smallest principal stress [Pa]
   Vector element_strain_energy;         ///< num_elements [J]
 
-  VoigtField nodal_stress;              ///< 3 x num_nodes, averaged [Pa]
+  VoigtField nodal_stress;              ///< nv x num_nodes, averaged [Pa]
   Vector nodal_von_mises;               ///< num_nodes [Pa]
 };
 
-/// von Mises stress from a 2-D Voigt stress vector.
-Scalar von_mises(const Vector3& voigt_stress, StressState state, Scalar poisson);
+/// von Mises stress from a Voigt stress vector (3 or 6 components).
+Scalar von_mises(const Vector& voigt_stress, StressState state, Scalar poisson);
 
-/// In-plane principal stresses (sigma_1 >= sigma_2).
-void principal_stresses(const Vector3& voigt_stress, Scalar& s1, Scalar& s2);
+/// In-plane principal stresses (sigma_1 >= sigma_2) of a 2-D Voigt vector.
+void principal_stresses(const Vector& voigt_stress, Scalar& s1, Scalar& s2);
+
+/// Principal stresses (descending) of a 6-component Voigt vector.
+Vector3 principal_stresses_3d(const Vector& voigt_stress);
 
 /// Strain at one parametric point of one element.
-Vector3 element_strain_at(const FemModel& model, Index element, const NaturalPoint& point,
-                          const Vector& displacement);
+Vector element_strain_at(const FemModel& model, Index element, const NaturalPoint& point,
+                         const Vector& displacement);
 
 /// Stress at one parametric point of one element (macroscopic, scaled).
-Vector3 element_stress_at(const FemModel& model, Index element, const NaturalPoint& point,
-                          const Vector& displacement, Scalar stiffness_scale = 1.0);
+Vector element_stress_at(const FemModel& model, Index element, const NaturalPoint& point,
+                         const Vector& displacement, Scalar stiffness_scale = 1.0);
 
 /// Recover all strain / stress data for a displacement field.
 /// \param stiffness_scale optional per-element SIMP factors \f$E(\rho)/E_0\f$.

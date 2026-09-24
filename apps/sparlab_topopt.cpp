@@ -13,12 +13,13 @@
 ///      uniform plate, and the optimised topology;
 ///   7. write every artefact plus a summary.
 ///
-/// Step 6 uses a property specific to this 2-D idealisation: uniformly scaling
+/// Step 6 uses a property specific to the 2-D idealisation: uniformly scaling
 /// the thickness scales K and M equally, so an equal-mass *uniform* plate has
 /// exactly the same natural frequencies as the full solid domain while its
 /// compliance rises by 1/nu. The run verifies that numerically rather than
 /// asserting it, and the equal-mass compliance is the baseline the optimised
-/// design is judged against.
+/// design is judged against. A 3-D solid has no thickness to scale, so a 3-D
+/// run reports the full solid as its only reference and says so.
 
 #include "AppSupport.hpp"
 
@@ -87,7 +88,7 @@ int main(int argc, char** argv) {
     const std::vector<std::string> known = {
         "config",        "output",      "verbosity",   "strict-config",
         "volume-fraction", "penalty",   "filter-radius", "filter-radius-elements",
-        "filter-type",   "max-iterations", "nx",       "ny",
+        "filter-type",   "max-iterations", "nx",       "ny",           "nz",
         "youngs-modulus", "load-weights", "modes",     "no-vtk",
         "no-csv",        "tag",         "help"};
     app::CommandLine cli(argc, argv, known);
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
            {"--filter-radius-elements <k>", "filter radius as a multiple of the cell size"},
            {"--filter-type <t>", "none|density|sensitivity"},
            {"--max-iterations <n>", "override optimizer.max_iterations"},
-           {"--nx <n> --ny <n>", "override the mesh resolution"},
+           {"--nx <n> --ny <n> [--nz <n>]", "override the mesh resolution"},
            {"--youngs-modulus <E>", "override material.youngs_modulus [Pa]"},
            {"--load-weights <w1,w2,...>", "override the per-load-case weights"},
            {"--modes <n>", "enable modal analysis with n modes"},
@@ -141,6 +142,12 @@ int main(int argc, char** argv) {
     }
     if (cli.has("nx")) config.mesh_spec.nx = cli.integer("nx", config.mesh_spec.nx);
     if (cli.has("ny")) config.mesh_spec.ny = cli.integer("ny", config.mesh_spec.ny);
+    if (cli.has("nz")) {
+      if (config.dim() != 3) {
+        throw ConfigError("--nz applies to a structured_hex mesh only");
+      }
+      config.mesh_spec.nz = cli.integer("nz", config.mesh_spec.nz);
+    }
     if (cli.has("youngs-modulus")) {
       config.set_material(config.material().with_youngs_modulus(
           cli.number("youngs-modulus", config.material().youngs_modulus())));
@@ -313,10 +320,11 @@ int main(int argc, char** argv) {
       modal_solid = std::make_unique<ModalResult>(
           solve_modal(model, assembler, config.modal.options));
 
-      if (config.modal.compare_mass_matched_baseline) {
+      if (config.modal.compare_mass_matched_baseline && config.dim() == 2) {
         // Equal-mass uniform plate: thickness scaled by the achieved volume
         // fraction. K and M both scale with thickness, so the frequencies must
         // match the full solid; the run checks that instead of assuming it.
+        // The argument is a 2-D one, so a solid mesh skips it (see below).
         Configuration thin = config;
         thin.thickness = config.thickness * result.volume_fraction;
         FemModel thin_model = build_model(thin);
@@ -384,13 +392,17 @@ int main(int argc, char** argv) {
       const Scalar equal_mass = result.volume_fraction > 0.0
                                     ? solid_compliance / result.volume_fraction
                                     : 0.0;
-      comparison.set("equal_mass_uniform_plate_compliance_J",
-                     json::Value::make_number(equal_mass));
+      if (config.dim() == 2) {
+        comparison.set("equal_mass_uniform_plate_compliance_J",
+                       json::Value::make_number(equal_mass));
+      }
       comparison.set("optimised_compliance_J",
                      json::Value::make_number(result.compliance));
-      comparison.set("stiffness_gain_over_equal_mass_plate",
-                     json::Value::make_number(
-                         result.compliance > 0.0 ? equal_mass / result.compliance : 0.0));
+      if (config.dim() == 2) {
+        comparison.set("stiffness_gain_over_equal_mass_plate",
+                       json::Value::make_number(
+                           result.compliance > 0.0 ? equal_mass / result.compliance : 0.0));
+      }
       comparison.set("compliance_penalty_vs_full_solid",
                      json::Value::make_number(solid_compliance > 0.0
                                                   ? result.compliance / solid_compliance
@@ -398,10 +410,16 @@ int main(int argc, char** argv) {
       comparison.set(
           "note",
           json::Value::make_string(
-              "In this 2-D idealisation K and M both scale linearly with thickness, so "
-              "an equal-mass uniform plate has the same natural frequencies as the full "
-              "solid domain and a compliance of C_solid / volume_fraction. That plate is "
-              "the equal-mass baseline for the optimised design."));
+              config.dim() == 2
+                  ? "In this 2-D idealisation K and M both scale linearly with "
+                    "thickness, so an equal-mass uniform plate has the same natural "
+                    "frequencies as the full solid domain and a compliance of C_solid / "
+                    "volume_fraction. That plate is the equal-mass baseline for the "
+                    "optimised design."
+                  : "A 3-D solid has no thickness to scale, so the equal-mass uniform "
+                    "plate of the 2-D runs does not exist here. The only reference "
+                    "reported is the full solid domain; the interpreted structure "
+                    "(interpreted_solid_analysis) is the design's own re-solve."));
       if (modal_thin && modal_solid && modal_solid->frequencies_hz.size() > 0) {
         const Eigen::Index n =
             std::min(modal_thin->frequencies_hz.size(), modal_solid->frequencies_hz.size());
@@ -433,12 +451,15 @@ int main(int argc, char** argv) {
               << result.iterations << " iterations (" << result.linear_solves
               << " linear solves)\n";
     std::cout << "  compliance:  " << app::format(result.compliance)
-              << " J (full solid " << app::format(solid_compliance)
-              << " J, equal-mass uniform plate "
-              << app::format(result.volume_fraction > 0.0
-                                 ? solid_compliance / result.volume_fraction
-                                 : 0.0)
-              << " J)\n";
+              << " J (full solid " << app::format(solid_compliance) << " J";
+    if (config.dim() == 2) {
+      std::cout << ", equal-mass uniform plate "
+                << app::format(result.volume_fraction > 0.0
+                                   ? solid_compliance / result.volume_fraction
+                                   : 0.0)
+                << " J";
+    }
+    std::cout << ")\n";
     std::cout << "  volume:      " << app::format(result.volume) << " m^3, fraction "
               << app::format(result.volume_fraction) << " (target "
               << app::format(domain.volume_fraction()) << ", relative violation "

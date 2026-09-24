@@ -13,31 +13,39 @@ namespace sparlab {
 namespace {
 
 /// Uniform spatial hash over element centroids with cell size = filter radius,
-/// so each query only inspects the 3 x 3 block of neighbouring buckets.
+/// so each query only inspects the 3 x 3 (2-D) or 3 x 3 x 3 (3-D) block of
+/// neighbouring buckets. The centroids are stored as dim x n so the distance
+/// computation is the plain in-plane distance on a 2-D mesh.
 class CentroidHash {
  public:
-  CentroidHash(const Mesh& mesh, Scalar cell) : cell_(cell) {
-    centroids_.resize(2, mesh.num_elements());
+  CentroidHash(const Mesh& mesh, Scalar cell) : cell_(cell), dim_(mesh.dim()) {
+    centroids_.resize(dim_, mesh.num_elements());
     for (Index e = 0; e < mesh.num_elements(); ++e) {
-      centroids_.col(e) = mesh.element_centroid(e);
+      centroids_.col(e) = mesh.element_centroid(e).head(dim_);
     }
     for (Index e = 0; e < mesh.num_elements(); ++e) {
-      buckets_[key(centroids_(0, e), centroids_(1, e))].push_back(e);
+      buckets_[key(e)].push_back(e);
     }
   }
 
-  const Eigen::Matrix2Xd& centroids() const { return centroids_; }
+  const Matrix& centroids() const { return centroids_; }
 
   /// Append every element whose bucket can contain a point within `cell_`.
+  /// The visiting order (z slowest, then y, then x, bucket contents in element
+  /// order) fixes the order in which filter weights are accumulated.
   void neighbours(Index e, std::vector<Index>& out) const {
     out.clear();
     const long ix = cell_index(centroids_(0, e));
     const long iy = cell_index(centroids_(1, e));
-    for (long dy = -1; dy <= 1; ++dy) {
-      for (long dx = -1; dx <= 1; ++dx) {
-        const auto it = buckets_.find(hash(ix + dx, iy + dy));
-        if (it == buckets_.end()) continue;
-        out.insert(out.end(), it->second.begin(), it->second.end());
+    const long iz = dim_ == 3 ? cell_index(centroids_(2, e)) : 0;
+    const long dz_range = dim_ == 3 ? 1 : 0;
+    for (long dz = -dz_range; dz <= dz_range; ++dz) {
+      for (long dy = -1; dy <= 1; ++dy) {
+        for (long dx = -1; dx <= 1; ++dx) {
+          const auto it = buckets_.find(hash(ix + dx, iy + dy, iz + dz));
+          if (it == buckets_.end()) continue;
+          out.insert(out.end(), it->second.begin(), it->second.end());
+        }
       }
     }
   }
@@ -46,18 +54,22 @@ class CentroidHash {
   long cell_index(Scalar v) const {
     return static_cast<long>(std::floor(v / cell_));
   }
-  static std::size_t hash(long ix, long iy) {
-    // Cantor-style mixing of two signed integers into one bucket key.
+  static std::size_t hash(long ix, long iy, long iz) {
+    // Cantor-style mixing of three signed integers into one bucket key.
     const std::size_t a = static_cast<std::size_t>(ix * 2654435761L);
     const std::size_t b = static_cast<std::size_t>(iy * 2246822519L);
-    return a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2));
+    const std::size_t c = static_cast<std::size_t>(iz * 3266489917L);
+    const std::size_t ab = a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2));
+    return ab ^ (c + 0x9e3779b97f4a7c15ULL + (ab << 6) + (ab >> 2));
   }
-  std::size_t key(Scalar x, Scalar y) const {
-    return hash(cell_index(x), cell_index(y));
+  std::size_t key(Index e) const {
+    return hash(cell_index(centroids_(0, e)), cell_index(centroids_(1, e)),
+                dim_ == 3 ? cell_index(centroids_(2, e)) : 0);
   }
 
   Scalar cell_;
-  Eigen::Matrix2Xd centroids_;
+  int dim_;
+  Matrix centroids_;
   std::unordered_map<std::size_t, std::vector<Index>> buckets_;
 };
 
@@ -102,7 +114,7 @@ DensityFilter::DensityFilter(const Mesh& mesh, FilterType type, Scalar radius)
 
 void DensityFilter::build(const Mesh& mesh) {
   CentroidHash hash(mesh, radius_);
-  const Eigen::Matrix2Xd& c = hash.centroids();
+  const Matrix& c = hash.centroids();
 
   TripletList raw;
   raw.reserve(static_cast<std::size_t>(num_elements_) * 12);

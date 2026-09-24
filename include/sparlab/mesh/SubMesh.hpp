@@ -5,10 +5,11 @@
 /// body. To analyse "the structure the topology represents" - for example to
 /// compute its natural frequencies - the field has to be interpreted. SparLab
 /// does this explicitly: elements with \f$\rho \ge \rho_{cut}\f$ are kept, the
-/// largest edge-connected group of kept elements is retained, and a new mesh is
-/// built from it. The interpretation (threshold value, connectivity rule,
-/// discarded material fraction) is recorded in the result so that nothing is
-/// presented as geometry without saying how it was obtained.
+/// largest face-connected group of kept elements is retained (edge-connected
+/// in 2-D), and a new mesh is built from it. The interpretation (threshold
+/// value, connectivity rule, discarded material fraction) is recorded in the
+/// result so that nothing is presented as geometry without saying how it was
+/// obtained.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -29,10 +30,11 @@ struct SubMeshResult {
 /// \throws MeshError when the subset is empty.
 SubMeshResult extract_element_subset(const Mesh& mesh, const std::vector<Index>& elements);
 
-/// Connected components of the element graph using *shared edges* (two shared
-/// nodes), which is the correct connectivity for load transfer: elements that
-/// only touch at a corner form a hinge, not a connection.
-std::vector<std::vector<Index>> element_components_by_edge(const Mesh& mesh);
+/// Connected components of the element graph using *shared faces* (two shared
+/// nodes in 2-D, four in 3-D), which is the correct connectivity for load
+/// transfer: elements that only touch at a corner or an edge form a hinge, not
+/// a connection.
+std::vector<std::vector<Index>> element_components_by_face(const Mesh& mesh);
 
 /// Report of a density-field interpretation.
 struct TopologyInterpretation {
@@ -47,7 +49,7 @@ struct TopologyInterpretation {
   SubMeshResult sub;
 };
 
-/// Threshold `density` at `threshold`, keep the largest edge-connected group of
+/// Threshold `density` at `threshold`, keep the largest face-connected group of
 /// elements, and return both the extracted mesh and the bookkeeping needed to
 /// report the interpretation honestly.
 /// \param element_volumes per-element volume [m^3] used for the reported sums.

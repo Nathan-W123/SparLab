@@ -79,9 +79,9 @@ FemModel build_bench_model(Index nx, Index ny) {
   tip.region.name = "tip_node";
   Selector nearest;
   nearest.kind = SelectorKind::NearestNode;
-  nearest.point = Vector2(spec.lx, 0.0);
+  nearest.point = Vector3(spec.lx, 0.0, 0.0);
   tip.region.members.push_back(nearest);
-  tip.force = Vector2(0.0, -1000.0);
+  tip.force = Vector3(0.0, -1000.0, 0.0);
   load.point_loads.push_back(tip);
   model.load_case_specs().push_back(load);
 

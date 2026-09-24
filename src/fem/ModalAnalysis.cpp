@@ -104,7 +104,9 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
   }
 
   ModalResult result;
-  result.total_mass = m_full.sum() / static_cast<Scalar>(kDim);
+  // Every translational direction carries the full mass once, so the sum of
+  // the assembled matrix is dim times the structural mass.
+  result.total_mass = m_full.sum() / static_cast<Scalar>(model.dim());
 
   const int m_req = std::min<int>(options.num_modes, static_cast<int>(n));
   if (m_req < options.num_modes) {
@@ -320,16 +322,18 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
   if (mass_scale != nullptr) {
     const Mesh& mesh = model.mesh();
     const int npe = mesh.nodes_per_elem();
+    const int dim = mesh.dim();
     const Scalar threshold = 0.3;
     for (int i = 0; i < m_req; ++i) {
       Scalar total = 0.0;
       Scalar low = 0.0;
-      Vector pe(npe * kDofsPerNode);
+      Vector pe(npe * dim);
       for (Index e = 0; e < mesh.num_elements(); ++e) {
         const Index* nodes = mesh.element_nodes(e);
         for (int a = 0; a < npe; ++a) {
-          pe(kDofsPerNode * a + 0) = result.mode_shapes(nodes[a] * kDofsPerNode + 0, i);
-          pe(kDofsPerNode * a + 1) = result.mode_shapes(nodes[a] * kDofsPerNode + 1, i);
+          for (int c = 0; c < dim; ++c) {
+            pe(dim * a + c) = result.mode_shapes(nodes[a] * dim + c, i);
+          }
         }
         const Scalar s = (*mass_scale)(e);
         const Scalar ke = s * pe.dot(assembler.element_mass(e) * pe);

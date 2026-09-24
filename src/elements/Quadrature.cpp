@@ -71,4 +71,27 @@ const std::vector<QuadraturePoint2D>& gauss_legendre_square(int points_per_direc
   return cache.emplace(points_per_direction, std::move(tensor)).first->second;
 }
 
+const std::vector<QuadraturePoint3D>& gauss_legendre_cube(int points_per_direction) {
+  static std::map<int, std::vector<QuadraturePoint3D>> cache;
+  const auto cached = cache.find(points_per_direction);
+  if (cached != cache.end()) return cached->second;
+
+  const auto& rule = line_rule(points_per_direction);
+  std::vector<QuadraturePoint3D> tensor;
+  tensor.reserve(rule.size() * rule.size() * rule.size());
+  for (const auto& gk : rule) {
+    for (const auto& gj : rule) {
+      for (const auto& gi : rule) {
+        QuadraturePoint3D p;
+        p.xi = gi.xi;
+        p.eta = gj.xi;
+        p.zeta = gk.xi;
+        p.weight = gi.weight * gj.weight * gk.weight;
+        tensor.push_back(p);
+      }
+    }
+  }
+  return cache.emplace(points_per_direction, std::move(tensor)).first->second;
+}
+
 }  // namespace sparlab

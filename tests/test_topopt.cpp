@@ -55,9 +55,9 @@ struct TopoptFixture {
     PointLoadSpec tip;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(lx, 0.0);
+    nearest.point = Vector3(lx, 0.0, 0.0);
     tip.region.members.push_back(nearest);
-    tip.force = Vector2(0.0, -500.0);
+    tip.force = Vector3(0.0, -500.0, 0.0);
     load.point_loads.push_back(tip);
     model.load_case_specs().push_back(load);
     model.finalize();
@@ -71,7 +71,7 @@ Vector wavy_design(const FemModel& model, const DesignDomain& domain) {
   Vector x = domain.initial_design();
   for (Index e = 0; e < domain.num_elements(); ++e) {
     if (!domain.is_free(e)) continue;
-    const Vector2 c = model.mesh().element_centroid(e);
+    const Vector3 c = model.mesh().element_centroid(e);
     x(e) = 0.40 + 0.25 * std::sin(9.0 * c.x()) * std::cos(7.0 * c.y());
   }
   domain.clamp(x);
@@ -278,7 +278,7 @@ TEST_CASE("design domain bounds, passive regions and feasibility checks",
     hole.region.name = "hole";
     Selector circle;
     circle.kind = SelectorKind::Circle;
-    circle.center = Vector2(0.3, 0.15);
+    circle.center = Vector3(0.3, 0.15, 0.0);
     circle.radius = 0.05;
     hole.region.members.push_back(circle);
     hole.solid = false;
@@ -342,7 +342,7 @@ TEST_CASE("design domain bounds, passive regions and feasibility checks",
     empty.region.name = "nowhere";
     Selector far;
     far.kind = SelectorKind::Circle;
-    far.center = Vector2(100.0, 100.0);
+    far.center = Vector3(100.0, 100.0, 0.0);
     far.radius = 0.001;
     empty.region.members.push_back(far);
     REQUIRE_THROWS_AS(DesignDomain(fixture.model, 0.5, -1.0, {empty}), ConfigError);
@@ -385,7 +385,7 @@ TEST_CASE("analytical compliance sensitivities match central differences",
   hole.region.name = "bolt_hole";
   Selector circle;
   circle.kind = SelectorKind::Circle;
-  circle.center = Vector2(0.30, 0.15);
+  circle.center = Vector3(0.30, 0.15, 0.0);
   circle.radius = 0.04;
   hole.region.members.push_back(circle);
   hole.solid = false;
@@ -506,9 +506,9 @@ TEST_CASE("multi-load-case compliance is the weighted sum",
     PointLoadSpec p;
     Selector nearest;
     nearest.kind = SelectorKind::NearestNode;
-    nearest.point = Vector2(spec.lx, k == 0 ? 0.0 : spec.ly);
+    nearest.point = Vector3(spec.lx, k == 0 ? 0.0 : spec.ly, 0.0);
     p.region.members.push_back(nearest);
-    p.force = k == 0 ? Vector2(0.0, -500.0) : Vector2(300.0, 0.0);
+    p.force = k == 0 ? Vector3(0.0, -500.0, 0.0) : Vector3(300.0, 0.0, 0.0);
     load.point_loads.push_back(p);
     two.load_case_specs().push_back(load);
   }
@@ -697,7 +697,7 @@ TEST_CASE("passive regions are honoured by the optimiser",
   hole.region.name = "bolt_hole";
   Selector circle;
   circle.kind = SelectorKind::Circle;
-  circle.center = Vector2(0.15, 0.15);
+  circle.center = Vector3(0.15, 0.15, 0.0);
   circle.radius = 0.05;
   hole.region.members.push_back(circle);
   hole.solid = false;
