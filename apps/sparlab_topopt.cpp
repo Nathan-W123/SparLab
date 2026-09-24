@@ -11,7 +11,8 @@
 ///      analyse that body directly;
 ///   6. compare natural frequencies of the full solid domain, an equal-mass
 ///      uniform plate, and the optimised topology;
-///   7. write every artefact plus a summary.
+///   7. write every artefact plus a summary, including the "before" (design
+///      domain) and "after" (thresholded structure) geometries as VTK + STL.
 ///
 /// Step 6 uses a property specific to the 2-D idealisation: uniformly scaling
 /// the thickness scales K and M equally, so an equal-mass *uniform* plate has
@@ -378,6 +379,38 @@ int main(int argc, char** argv) {
       }
     }
 
+    // ---- before / after geometry ------------------------------------------
+    // "Before" is the design domain with the uniform starting density;
+    // "after" is the thresholded, largest-group structure with the physical
+    // density of each retained cell. Both are solids in the STL sense only
+    // through the interpretation recorded next to them.
+    json::Value geometry = json::Value::make_object();
+    {
+      ScopedTimer t(timings, "geometry_export");
+      geometry.set("before", writer.write_geometry(model.mesh(), domain.initial_design(),
+                                                   model.thickness(), "structure_before",
+                                                   "design domain before optimisation"));
+      Vector retained_density(interpretation->sub.mesh.num_elements());
+      for (std::size_t i = 0; i < interpretation->sub.element_map.size(); ++i) {
+        retained_density(static_cast<Eigen::Index>(i)) =
+            result.physical_density(interpretation->sub.element_map[i]);
+      }
+      geometry.set("after", writer.write_geometry(interpretation->sub.mesh, retained_density,
+                                                  model.thickness(), "structure_after",
+                                                  "interpreted structure after optimisation"));
+      geometry.set("note", json::Value::make_string(
+                               "structure_after is the density field thresholded at "
+                               "solid_interpretation.threshold with only the largest "
+                               "face-connected group kept, written as the cells' outer "
+                               "surface" +
+                               std::string(model.dim() == 2
+                                               ? " extruded by model.thickness; "
+                                               : "; ") +
+                               "it is an interpretation of a SIMP result, not a "
+                               "checked design. structure_before is the full design "
+                               "domain with the uniform starting density."));
+    }
+
     timings.add("total", wall.elapsed_seconds());
 
     json::Value summary = make_topology_summary(
@@ -439,6 +472,7 @@ int main(int argc, char** argv) {
     if (!interpreted.members().empty()) {
       summary.set("interpreted_solid_analysis", interpreted);
     }
+    summary.set("geometry_export", geometry);
     writer.write_json("summary.json", summary);
 
     // ---- console report ----------------------------------------------------
@@ -480,6 +514,11 @@ int main(int argc, char** argv) {
       std::cout << "  f1 topology: " << app::format(modal_topology->frequencies_hz(0))
                 << " Hz (mass " << app::format(modal_topology->total_mass) << " kg)\n";
     }
+    std::cout << "  geometry:    structure_before.{vtk,stl} and structure_after.{vtk,stl} ("
+              << geometry.find("after")->find("num_triangles")->number_value()
+              << " triangles, "
+              << app::format(geometry.find("after")->find("enclosed_volume_m3")->number_value())
+              << " m^3 enclosed)\n";
     std::cout << "  runtime:     " << app::format(timings.get("total")) << " s\n";
     std::cout << "  results:     " << out_dir << "\n";
     for (const std::string& w : result.warnings) {

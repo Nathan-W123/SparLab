@@ -4,6 +4,7 @@
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/core/Version.hpp"
 #include "sparlab/io/CsvWriter.hpp"
+#include "sparlab/io/StlWriter.hpp"
 #include "sparlab/io/VtkWriter.hpp"
 
 #include <algorithm>
@@ -517,6 +518,75 @@ void ResultWriter::write_density_history(const TopologyOptimizationResult& resul
   csv.close();
   log::debug("wrote ", frames.size(), " density snapshots (of ", count,
              " recorded) to density_history.csv");
+}
+
+json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density,
+                                        Scalar thickness, const std::string& stem,
+                                        const std::string& what) const {
+  if (density.size() != mesh.num_elements()) {
+    std::ostringstream os;
+    os << "geometry export '" << stem << "': density has " << density.size()
+       << " entries but the mesh has " << mesh.num_elements() << " cells";
+    throw IoError(os.str());
+  }
+  const std::string vtk_name = stem + ".vtk";
+  const std::string stl_name = stem + ".stl";
+
+  VtkWriter vtk(mesh, "SparLab " + what + ": " + config_.name);
+  vtk.add_cell_scalars("density", density);
+  vtk.write(file(vtk_name));
+
+  const Scalar extrusion = mesh.dim() == 2 ? thickness : 1.0;
+  const TriangleSurface surface = boundary_surface(mesh, extrusion);
+  write_stl(file(stl_name), surface, config_.name + " " + what);
+  const SurfaceStats stats = surface_stats(surface);
+
+  // Closure is checked exactly on the edge pairing. The enclosed volume is
+  // compared with the cell volume as well: identical for planar faces, and
+  // different by the flat-triangle approximation of a bilinear patch where a
+  // distorted cell was cut, which is reported so it is never mistaken for
+  // exactness.
+  Scalar cell_volume = 0.0;
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    cell_volume += mesh.element_measure(e) * extrusion;
+  }
+  const Scalar mismatch =
+      std::abs(stats.enclosed_volume - cell_volume) / std::max(cell_volume, 1.0e-300);
+  if (!stats.closed) {
+    log::warn("geometry export '", stem, "': the STL surface has ", stats.unmatched_edges,
+              " unmatched directed edges, so it is not closed or not consistently "
+              "oriented; do not use it as a solid");
+  } else if (stats.enclosed_volume <= 0.0) {
+    log::warn("geometry export '", stem, "': the STL surface encloses a non-positive "
+              "volume (", stats.enclosed_volume, " m^3); its normals point inward");
+  }
+
+  json::Value out = json::Value::make_object();
+  out.set("vtk", json::Value::make_string(vtk_name));
+  out.set("stl", json::Value::make_string(stl_name));
+  out.set("stl_format", json::Value::make_string("binary, outward normals"));
+  out.set("num_cells", json::Value::make_number(mesh.num_elements()));
+  out.set("num_triangles", json::Value::make_number(stats.num_triangles));
+  out.set("closed_surface", json::Value::make_bool(stats.closed));
+  out.set("unmatched_edges", json::Value::make_number(stats.unmatched_edges));
+  out.set("surface_area_m2", json::Value::make_number(stats.area));
+  out.set("enclosed_volume_m3", json::Value::make_number(stats.enclosed_volume));
+  out.set("cell_volume_m3", json::Value::make_number(cell_volume));
+  out.set("volume_relative_mismatch", json::Value::make_number(mismatch));
+  json::Value lower = json::Value::make_array();
+  json::Value upper = json::Value::make_array();
+  for (int i = 0; i < 3; ++i) {
+    lower.push_back(json::Value::make_number(stats.bounds.lower(i)));
+    upper.push_back(json::Value::make_number(stats.bounds.upper(i)));
+  }
+  out.set("bounds_lower_m", lower);
+  out.set("bounds_upper_m", upper);
+  if (mesh.dim() == 2) {
+    out.set("extruded_thickness_m", json::Value::make_number(extrusion));
+  }
+  log::debug("wrote ", what, ": ", mesh.num_elements(), " cells, ", stats.num_triangles,
+             " triangles, ", stats.enclosed_volume, " m^3");
+  return out;
 }
 
 // ----------------------------------------------------------------------------

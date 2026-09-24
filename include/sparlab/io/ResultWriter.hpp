@@ -16,7 +16,8 @@
 ///   <out>/history.csv               optimisation iteration history
 ///   <out>/density_final.csv         final design and physical density
 ///   <out>/density_history.csv       density snapshots for the animation
-///   <out>/topology_<lc>.vtk         optimised design fields
+///   <out>/structure_before.{vtk,stl} the design domain the optimiser started from
+///   <out>/structure_after.{vtk,stl}  the thresholded, largest-group structure
 /// \endcode
 /// Every file is plain text. `summary.json` is the single source of truth for
 /// the numbers quoted in the documentation.
@@ -83,6 +84,16 @@ class ResultWriter {
   /// \param max_frames snapshots are strided down to at most this many frames.
   void write_density_history(const TopologyOptimizationResult& result,
                              int max_frames = 60) const;
+
+  /// One geometry as a solid: `<stem>.vtk` (the cells, with `density` as cell
+  /// data) and `<stem>.stl` (the watertight boundary surface, extruded by
+  /// `thickness` for a 2-D mesh). Returns the surface statistics and the
+  /// mismatch between the enclosed and the cell volume, which the summary
+  /// records.
+  /// \param density per-cell density written to the VTK file (length
+  ///        num_elements of `mesh`).
+  json::Value write_geometry(const Mesh& mesh, const Vector& density, Scalar thickness,
+                             const std::string& stem, const std::string& what) const;
 
   /// Write an arbitrary JSON document into the directory.
   void write_json(const std::string& file_name, const json::Value& value) const;

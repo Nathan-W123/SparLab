@@ -2,7 +2,8 @@
 
 Nothing here recomputes physics. Every loader is a thin, validated reader, so a
 missing or malformed file produces a clear error instead of a silently empty
-plot.
+plot. Meshes are two- or three-dimensional; the dimension is read from
+`mesh.json` and every accessor that only makes sense in one of the two says so.
 """
 
 from __future__ import annotations
@@ -40,15 +41,25 @@ def load_csv(path: str, required: bool = True) -> Optional[pd.DataFrame]:
     return frame
 
 
+#: Local node lists of the six faces of a Hex8, in the VTK convention used by
+#: the C++ mesh layer (each face wound so its normal points outward).
+HEX_FACES = np.array([[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
+                      [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]], dtype=int)
+
+
 @dataclass
 class Mesh:
     """Nodes, connectivity, prescribed DOFs and applied loads of one case."""
 
-    nodes: np.ndarray          # (num_nodes, 2) [m]
+    nodes: np.ndarray          # (num_nodes, dim) [m]
     elements: np.ndarray       # (num_elements, nodes_per_element)
     element_type: str
     prescribed: List[Dict[str, Any]] = field(default_factory=list)
     load_cases: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def dim(self) -> int:
+        return int(self.nodes.shape[1])
 
     @property
     def num_nodes(self) -> int:
@@ -60,22 +71,45 @@ class Mesh:
 
     @property
     def extent(self) -> tuple:
-        """(xmin, xmax, ymin, ymax) of the nodal coordinates [m]."""
-        return (
-            float(self.nodes[:, 0].min()),
-            float(self.nodes[:, 0].max()),
-            float(self.nodes[:, 1].min()),
-            float(self.nodes[:, 1].max()),
-        )
+        """(xmin, xmax, ymin, ymax[, zmin, zmax]) of the nodal coordinates [m]."""
+        out = []
+        for k in range(self.dim):
+            out.extend((float(self.nodes[:, k].min()), float(self.nodes[:, k].max())))
+        return tuple(out)
 
     @property
     def polygons(self) -> np.ndarray:
-        """(num_elements, nodes_per_element, 2) array of element corner points."""
+        """(num_elements, nodes_per_element, 2) array of element corner points.
+
+        Only a plane mesh has element polygons; a solid mesh exposes its
+        boundary faces through `boundary_faces` instead.
+        """
+        if self.dim != 2:
+            raise ResultError("element polygons exist for 2-D meshes only; use "
+                              "boundary_faces() for a solid mesh")
         return self.nodes[self.elements]
 
     @property
     def element_centroids(self) -> np.ndarray:
-        return self.polygons.mean(axis=1)
+        return self.nodes[self.elements].mean(axis=1)
+
+    def boundary_faces(self, mask: Optional[np.ndarray] = None) -> np.ndarray:
+        """Outward-wound boundary quads of a solid mesh (or of a subset of it).
+
+        Returns an (n_faces, 4) array of node indices: the faces owned by
+        exactly one element of the subset, wound so the right-hand normal
+        points out of the material. `mask` selects the elements (all when None).
+        """
+        if self.dim != 3:
+            raise ResultError("boundary faces are defined for 3-D meshes only")
+        elements = self.elements if mask is None else self.elements[np.asarray(mask, bool)]
+        if elements.size == 0:
+            return np.empty((0, 4), dtype=int)
+        faces = elements[:, HEX_FACES].reshape(-1, 4)          # (6 n, 4)
+        keys = np.sort(faces, axis=1)
+        _unique, first, counts = np.unique(keys, axis=0, return_index=True,
+                                           return_counts=True)
+        return faces[first[counts == 1]]
 
     def constrained_nodes(self, component: Optional[str] = None) -> np.ndarray:
         """Indices of nodes with a prescribed DOF, optionally for one component."""
@@ -87,15 +121,17 @@ class Mesh:
         return np.unique(np.asarray(ids, dtype=int)) if ids else np.empty(0, dtype=int)
 
     def nodal_forces(self, load_case: str) -> np.ndarray:
-        """(k, 3) array of [node, fx, fy] for the named load case [N]."""
+        """(k, 1 + dim) array of [node, fx, fy(, fz)] for the named load case [N]."""
+        keys = ["fx_N", "fy_N", "fz_N"][: self.dim]
         for case in self.load_cases:
             if case["name"] != load_case:
                 continue
             rows = [
-                (entry["node"], entry["fx_N"], entry["fy_N"])
+                (entry["node"], *[entry[k] for k in keys])
                 for entry in case["nodal_forces"]
             ]
-            return np.asarray(rows, dtype=float) if rows else np.empty((0, 3))
+            return (np.asarray(rows, dtype=float) if rows
+                    else np.empty((0, 1 + self.dim)))
         raise ResultError(f"load case '{load_case}' is not present in mesh.json")
 
     @property
@@ -108,8 +144,12 @@ def load_mesh(directory: str) -> Mesh:
     doc = load_json(os.path.join(directory, "mesh.json"))
     nodes = np.asarray(doc["nodes_m"], dtype=float)
     elements = np.asarray(doc["elements"], dtype=int)
-    if nodes.ndim != 2 or nodes.shape[1] != 2:
-        raise ResultError("mesh.json: nodes_m must be an array of [x, y] pairs")
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ResultError("mesh.json: nodes_m must be an array of [x, y] or [x, y, z] rows")
+    declared = int(doc.get("dim", nodes.shape[1]))
+    if declared != nodes.shape[1]:
+        raise ResultError(f"mesh.json: dim is {declared} but nodes carry "
+                          f"{nodes.shape[1]} coordinates")
     if elements.ndim != 2:
         raise ResultError("mesh.json: elements must be a rectangular array")
     if elements.size and (elements.min() < 0 or elements.max() >= nodes.shape[0]):
@@ -141,6 +181,10 @@ class CaseResults:
 
     def has(self, name: str) -> bool:
         return os.path.isfile(self.path(name))
+
+    @property
+    def dim(self) -> int:
+        return self.mesh.dim
 
     # -- static fields -----------------------------------------------------
     def displacement(self, load_case: str) -> pd.DataFrame:

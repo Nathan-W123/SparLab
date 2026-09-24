@@ -74,6 +74,7 @@ add_library(sparlab STATIC
   src/io/Config.cpp
   src/io/CsvWriter.cpp
   src/io/VtkWriter.cpp
+  src/io/StlWriter.cpp
   src/io/ResultWriter.cpp
 )
 

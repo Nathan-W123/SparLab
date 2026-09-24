@@ -24,6 +24,7 @@ set(SPARLAB_TEST_SOURCES
   test_topopt.cpp
   test_io.cpp
   test_solid.cpp
+  test_geometry.cpp
 )
 
 add_executable(sparlab_tests ${SPARLAB_TEST_SOURCES})
