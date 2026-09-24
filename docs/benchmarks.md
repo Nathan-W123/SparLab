@@ -581,17 +581,17 @@ Four things to read from it:
   stiffer part;
 * **the grey band is still in the design variables.** The density before
   projection stays grey, 0.324 and 0.354: the projection does not remove
-  the filter's boundary band, it maps it to solid or void at `eta`. That is
-  also why it gives no minimum length scale (`docs/limitations.md`);
+  the filter's boundary band, it maps it to solid or void at `eta`. It
+  gives no minimum length scale either (`docs/limitations.md`);
 * **the stopping rule has to change with it.** The MBB deck with only the
   projection switched on (`sparlab_topopt --projection`, schedule `beta` 1
   to 32 every 50 iterations) ran to its 600-iteration cap. At `beta = 32`
   single elements on the solid-void interface flip by the whole move limit
   of 0.2, so the design change never fell to 0.01. The compliance moved
   within a 0.39 % band over the last 101 iterations, far above that deck's
-  stall tolerance of `5e-5`. Its design was as good as the projected deck's
-  (grey level 0.029, thresholded / optimised 0.989), but neither criterion
-  could say so. With a move limit of 0.1 and a stall criterion of 0.1 %
+  stall tolerance of `5e-5`. Its design was as good as the projected
+  deck's: a thresholded structure of 187.63 J at a volume fraction of
+  0.501, grey level 0.029. Neither criterion could say so. With a move limit of 0.1 and a stall criterion of 0.1 %
   over 10 iterations, the MBB beam stops after 218 iterations, 18 of them
   at `beta = 32`, and the bracket after 190, 30 of them at `beta = 16`.
 
@@ -736,9 +736,8 @@ Three things to read from it:
 
 The first frequency of the optimised part is 40.5 % above the solid
 part's, at 25 % of its mass; `f2` and `f3` rise too, and `f4` falls. The
-same mesh is a
-cross-validation problem: scikit-fem agrees to `1.5e-12` and CalculiX to
-`2.0e-6` (`docs/verification.md`, section 14).
+same mesh is a cross-validation problem: scikit-fem agrees to `1.5e-12`
+and CalculiX to `2.0e-6` (`docs/verification.md`, section 14).
 
 ## 10. Solid bracket at 356 475 DOFs (Hex8, multigrid)
 
@@ -808,9 +807,8 @@ Four things to read from it:
   the same matrix, which a factorisation makes cheap. Here each of those
   solves is a new CG run (4 485 CG iterations for the two analyses).
 
-The finer mesh also removes section 6's edge-only contacts between retained
-cells: `structure_after.stl` is 2-manifold, where the coarse design's
-surface has 32 non-manifold edges.
+This design's `structure_after.stl` is 2-manifold: no two retained cells
+touch only along an edge. The coarse design of section 6 has 32 such edges.
 
 ## Convergence behaviour
 
