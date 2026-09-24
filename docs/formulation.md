@@ -6,9 +6,9 @@ beside it.
 
 ## 1. Continuum problem
 
-Two-dimensional small-strain linear elasticity on a domain `Omega` of constant
-out-of-plane thickness `t`, with displacement boundary `Gamma_u` and traction
-boundary `Gamma_t`:
+Small-strain linear elasticity on a domain `Omega` - a plane of constant
+out-of-plane thickness `t` (2-D) or a solid (3-D, where `t = 1` everywhere
+below) - with displacement boundary `Gamma_u` and traction boundary `Gamma_t`:
 
 ```
   div sigma + b = 0            in Omega          (equilibrium)
@@ -58,7 +58,29 @@ The `(3,3)` entry of both matrices equals the shear modulus
 *engineering* shear strain and is checked in the test suite.
 
 Both idealisations are implemented and unit-tested. Plane stress is the default
-and is the path the benchmark and verification studies exercise.
+on a plane mesh and is the path the plane benchmark and verification studies
+exercise.
+
+### Three dimensions
+
+On a solid (`structured_hex`) mesh the full isotropic law is used, with Voigt
+ordering `{sigma_xx, sigma_yy, sigma_zz, sigma_xy, sigma_yz, sigma_zx}` and
+the three engineering shear strains. In terms of the Lame constants
+`lambda = E nu / ((1+nu)(1-2nu))` and `G = E / (2(1+nu))`,
+
+```
+        | lambda+2G   lambda     lambda    0  0  0 |
+        | lambda    lambda+2G    lambda    0  0  0 |
+  D  =  | lambda      lambda   lambda+2G   0  0  0 |          (6 x 6)
+        |    0          0         0        G  0  0 |
+        |    0          0         0        0  G  0 |
+        |    0          0         0        0  0  G |
+```
+
+which the test suite checks entry by entry against this Lame form, and whose
+von Mises reduction it checks against uniaxial, hydrostatic (zero) and
+pure-shear (`sqrt(3) tau`) states. There is no thickness: a solid deck rejects
+`model.thickness`.
 
 ## 2. Element formulation
 
@@ -126,12 +148,13 @@ polynomials of degree `2n - 1` exactly.
 
 | Kernel | Default rule | Why |
 |--------|--------------|-----|
-| Stiffness `K_e` | 2 x 2 | exact for the Q4 on a parallelogram; full integration, no reduced-integration hourglass modes |
-| Mass `M_e` | 3 x 3 | `N^T N` is biquadratic, and on a general quadrilateral `detJ` is not constant |
-| Edge traction | 2 points | exact for a linear traction times a linear shape function |
+| Stiffness `K_e` | 2 x 2 (2 x 2 x 2 for the Hex8) | exact for the Q4 on a parallelogram and the Hex8 on a parallelepiped; full integration, no reduced-integration hourglass modes |
+| Mass `M_e` | 3 x 3 (3 x 3 x 3) | `N^T N` is biquadratic, and on a general cell `detJ` is not constant |
+| Edge / face traction | 2 points per direction | exact for a linear traction times a linear shape function |
 
 All are configurable per run via `model.integration`. On a rectangle the 2x2,
-3x3 and 4x4 stiffness matrices agree to round-off, which is unit-tested.
+3x3 and 4x4 stiffness matrices agree to round-off, which is unit-tested; the
+same holds for the Hex8 on a box.
 
 ### Element matrices
 
@@ -147,8 +170,9 @@ where `N` is the `2 x 8` shape-function matrix. Both are symmetrised after
 integration, since any asymmetry is pure round-off.
 
 `K_e` has exactly three zero eigenvalues - the two translations and the
-infinitesimal rotation - and five strictly positive ones. Both parts of that
-statement are unit-tested on a uniform and on a distorted element.
+infinitesimal rotation - and five strictly positive ones (six and eighteen
+for the Hex8). Both parts of that statement are unit-tested on a uniform and
+on a distorted element of each type.
 
 Row-sum lumping of `M_e` gives the optional diagonal mass matrix. For the Q4 the
 row sums add up to the exact element mass, so total mass is conserved either
@@ -166,6 +190,43 @@ parametrised by `s in [-1,1]` with the constant Jacobian `|x_b - x_a| / 2`. For
 a constant traction on a straight edge this splits the resultant evenly between
 the two nodes, and the total is exactly `t_bar * (edge length) * t`. The test
 suite checks the total is mesh independent under refinement.
+
+### The trilinear hexahedron
+
+On a solid mesh the element is the eight-node trilinear hexahedron
+(`elements/Hex8.cpp`) on the reference cube `(xi, eta, zeta) in [-1,1]^3`,
+nodes in the VTK order of `docs/conventions.md`:
+
+```
+  N_a = 1/8 (1 + xi_a xi)(1 + eta_a eta)(1 + zeta_a zeta),   (xi_a, eta_a, zeta_a) = +-1
+```
+
+The isoparametric mapping, the `3 x 3` Jacobian (inverted explicitly through
+its adjugate; `detJ <= 0` raises `MeshError` naming the element and the
+point) and the `6 x 24` strain-displacement operator
+
+```
+          | dN_a/dx     0        0     |
+          |   0      dN_a/dy     0     |
+  B_a  =  |   0         0     dN_a/dz  |        columns of node a, rows in the
+          | dN_a/dy  dN_a/dx     0     |        order xx, yy, zz, xy, yz, zx
+          |   0      dN_a/dz  dN_a/dy  |
+          | dN_a/dz     0     dN_a/dx  |
+```
+
+follow the Q4 pattern exactly, and so do the checks: `sum_a N_a = 1`,
+`sum_a grad N_a = 0`, exact reproduction of a linear field with six
+independent constant strains on a distorted cell, `sum_g w_g detJ` against the
+volume of a sheared box, `K_e` symmetric with exactly **six** zero eigenvalues
+(three translations, three rotations) and the rest positive, and the 2x2x2
+and 3x3x3 rules agreeing on a box. Face tractions integrate the
+bilinear face `x(s, t)` with the area element `|x_s cross x_t|`, so a
+constant traction on a flat face splits its resultant evenly over the four
+corners and the total is exactly `t_bar * area` at any resolution.
+
+The fully integrated Hex8 shares the Q4's stiffness in bending: it needs
+several elements through a bending depth, which the 3-D mesh-convergence
+study quantifies (`docs/verification.md`).
 
 ## 3. Assembly
 
@@ -250,14 +311,20 @@ the element, and the unscaled solid-material stress is reported alongside it.
 Derived quantities:
 
 ```
-  sigma_vm = sqrt( 1/2 [ (sxx-syy)^2 + (syy-szz)^2 + (szz-sxx)^2 ] + 3 sxy^2 )
-  szz = 0                            (plane stress)
+  sigma_vm = sqrt( 1/2 [ (sxx-syy)^2 + (syy-szz)^2 + (szz-sxx)^2 ] + 3 (sxy^2 + syz^2 + szx^2) )
+  szz = 0                            (plane stress;  syz = szx = 0 in both plane cases)
   szz = nu (sxx + syy)               (plane strain)
 
-  sigma_{1,2} = (sxx+syy)/2  +-  sqrt( ((sxx-syy)/2)^2 + sxy^2 )
+  sigma_{1,2} = (sxx+syy)/2  +-  sqrt( ((sxx-syy)/2)^2 + sxy^2 )          (plane)
+  sigma_{1,2,3} = eigenvalues of the symmetric 3 x 3 stress tensor         (solid)
 
   U_e = 1/2 s_e u_e^T K_e^0 u_e      (element strain energy, exact)
 ```
+
+On a solid mesh the three principal stresses come from a self-adjoint
+eigen-decomposition of the stress tensor, and the test suite checks that
+their sum, the sum of their pairwise products and their product reproduce the
+three stress invariants.
 
 ## 7. Modal analysis
 
@@ -304,9 +371,10 @@ problem's stiffness/mass scale (warning - an unsuppressed rigid-body or
 mechanism mode).
 
 **Mass conservation.** Summing every entry of the assembled mass matrix gives
-`sum(M) = 2 * rho V`, one factor per translation direction. This identity is
-exact for both the consistent and the lumped matrix and is used as a
-verification check (measured error `<= 5e-14`).
+`sum(M) = dim * rho V`, one factor per translation direction (2 on a plane
+mesh, 3 on a solid one). This identity is exact for both the consistent and
+the lumped matrix and is used as a verification check (measured error
+`<= 5e-14` in both dimensions).
 
 ### Analytical references
 
@@ -330,4 +398,15 @@ stronger than asserting agreement.
 ## 8. Topology optimisation
 
 See `docs/topology_optimization.md` for the SIMP interpolation, the filters, the
-sensitivity derivation and the optimality-criteria update.
+sensitivity derivation, the optimality-criteria and MMA updates, and the
+aggregated stress constraint with its adjoint.
+
+## 9. Cross-validation
+
+The discrete problem a deck defines is exported verbatim - the same nodes,
+connectivity, supports and consistent nodal loads - to CalculiX (`*.inp`,
+elements CPS4/CPE4/C3D8) and rebuilt in scikit-fem (`ElementQuad1` /
+`ElementHex1` with the same Lame constants, `lambda* = 2 lambda G / (lambda +
+2G)` for plane stress), and the three nodal displacement fields are compared
+node by node. `docs/verification.md` has the measured differences and what
+they mean.

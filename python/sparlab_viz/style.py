@@ -307,3 +307,35 @@ def sequence_colors(n: int, cmap: str = "viridis", lo: float = 0.12,
     on something the ordering already encodes.
     """
     return plt.get_cmap(cmap)(np.linspace(lo, hi, max(n, 1)))
+
+
+def shrink_gif_palette(path: str, fps: int, colors: int = 64) -> None:
+    """Re-encode a GIF with a small adaptive palette.
+
+    The density ramps are monochrome, so 64 colours is ample and cuts the
+    file size several-fold. Cosmetic: a failure leaves the original file.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(path) as source:
+            frames = []
+            try:
+                index = 0
+                while True:
+                    source.seek(index)
+                    frames.append(
+                        source.convert("RGB").convert(
+                            "P", palette=Image.ADAPTIVE, colors=colors
+                        )
+                    )
+                    index += 1
+            except EOFError:
+                pass
+        if frames:
+            frames[0].save(
+                path, save_all=True, append_images=frames[1:], loop=0,
+                duration=int(1000 / max(fps, 1)), optimize=True,
+            )
+    except Exception as error:  # pragma: no cover - cosmetic only
+        print(f"  note: GIF palette re-encode skipped ({error})")

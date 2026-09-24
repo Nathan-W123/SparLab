@@ -24,7 +24,12 @@ import pandas as pd
 from sparlab_viz.loaders import ResultError, load_json
 
 
-BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "aerospace_bracket", "wing_rib"]
+BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "aerospace_bracket", "wing_rib",
+                   "l_bracket_stress", "bracket_3d"]
+ANALYSIS_CASES = ["cantilever_analysis", "block_3d_analysis"]
+#: The unconstrained run of the stress-constrained deck (sparlab_topopt
+#: --no-stress) that the stress table sets beside it.
+STRESS_REFERENCE = {"l_bracket_stress": "l_bracket_unconstrained"}
 
 
 def _fmt(value, digits: int = 4) -> str:
@@ -78,6 +83,8 @@ def benchmark_table(results_dir: str) -> Optional[str]:
         interp = doc.get("solid_interpretation", {})
         record = {
             "case": case,
+            "dim": mesh.get("dim", 2),
+            "method": setup.get("method", "oc"),
             "elements": mesh.get("num_elements"),
             "dofs": mesh.get("num_dofs"),
             "volume_fraction_target": setup.get("volume_fraction_target"),
@@ -110,7 +117,8 @@ def benchmark_table(results_dir: str) -> Optional[str]:
         frames.append(record)
         rows.append([
             case,
-            _fmt(record["elements"]),
+            f"{record['elements']} {'Hex8' if record['dim'] == 3 else 'Q4'}",
+            str(record["method"]),
             _fmt(record["volume_fraction_target"]),
             _fmt(record["volume_fraction_achieved"], 6),
             _fmt(record["volume_violation"], 2),
@@ -129,11 +137,91 @@ def benchmark_table(results_dir: str) -> Optional[str]:
         os.path.join(_OUTPUT, "benchmarks.csv"), index=False
     )
     headers = [
-        "case", "elements", "vf target", "vf achieved", "vf violation",
+        "case", "elements", "method", "vf target", "vf achieved", "vf violation",
         "iterations", "stop reason", "compliance [J]",
         "equal-mass plate [J]", "stiffness gain", "grey", "runtime [s]",
     ]
     return _markdown_table(headers, rows)
+
+
+def stress_table(results_dir: str) -> Optional[str]:
+    """Stress-constrained runs beside the unconstrained run of the same deck."""
+    rows = []
+    for case in BENCHMARK_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        result = doc.get("optimization_result", {})
+        block = result.get("stress")
+        if not block:
+            continue
+        interpreted = doc.get("interpreted_solid_analysis", {})
+        limit = interpreted.get("stress_limit_Pa")
+        first = (block.get("load_cases") or [{}])[0]
+        rows.append([
+            case, "on", _fmt(limit, 4),
+            _fmt(result.get("compliance_J"), 6),
+            _fmt(block.get("max_relaxed_stress_ratio"), 5),
+            _fmt(first.get("p_norm_ratio"), 5),
+            _fmt(first.get("scale"), 5),
+            "yes" if result.get("feasible") else "no",
+            _fmt(interpreted.get("max_von_mises_Pa"), 5),
+            _fmt(interpreted.get("max_von_mises_over_limit"), 4),
+            _fmt(result.get("iterations")),
+        ])
+        reference = STRESS_REFERENCE.get(case)
+        ref_path = os.path.join(results_dir, reference or "", "summary.json")
+        if reference and os.path.isfile(ref_path):
+            ref = load_json(ref_path)
+            ref_result = ref.get("optimization_result", {})
+            ref_max = ref.get("interpreted_solid_analysis", {}).get("max_von_mises_Pa")
+            rows.append([
+                f"{case} (constraint off)", "off", _fmt(limit, 4),
+                _fmt(ref_result.get("compliance_J"), 6),
+                "n/a", "n/a", "n/a", "n/a",
+                _fmt(ref_max, 5),
+                _fmt(ref_max / limit if (ref_max and limit) else None, 4),
+                _fmt(ref_result.get("iterations")),
+            ])
+    if not rows:
+        return None
+    return _markdown_table(
+        ["case", "constraint", "limit [Pa]", "compliance [J]", "max relaxed ratio",
+         "p-norm ratio", "p-norm scale", "feasible", "re-solve max vM [Pa]",
+         "re-solve / limit", "iterations"],
+        rows,
+    )
+
+
+def cross_validation_table(results_dir: str) -> Optional[str]:
+    path = os.path.join(results_dir, "cross_validation", "summary.json")
+    if not os.path.isfile(path):
+        return None
+    doc = load_json(path)
+    versions = {name: entry.get("version", "") for name, entry in doc.get("codes", {}).items()}
+    rows = []
+    frames = []
+    for case in doc.get("cases", []):
+        for load_case in case.get("load_cases", []):
+            for code, entry in load_case.get("codes", {}).items():
+                rows.append([
+                    case["case"], case.get("element_type", ""), load_case["load_case"],
+                    f"{code} {versions.get(code, '')}".strip(), entry.get("element", ""),
+                    _fmt(entry["max_rel_diff"], 3), _fmt(entry.get("rms_rel_diff"), 3),
+                    _fmt(entry["tolerance"], 2),
+                    "PASS" if entry["passed"] else "FAIL",
+                ])
+                frames.append({"case": case["case"], "load_case": load_case["load_case"],
+                               "code": code, **entry})
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "cross_validation.csv"), index=False)
+    return _markdown_table(
+        ["case", "SparLab element", "load case", "code", "reference element",
+         "max rel diff", "RMS rel diff", "tolerance", "result"],
+        rows,
+    )
 
 
 #: Arm name -> (what it varies, the summary field that records it).
@@ -212,7 +300,7 @@ def verification_table(results_dir: str) -> Optional[str]:
 
 def modal_table(results_dir: str) -> Optional[str]:
     rows = []
-    for case in BENCHMARK_CASES + ["cantilever_analysis"]:
+    for case in BENCHMARK_CASES + ANALYSIS_CASES:
         path = os.path.join(results_dir, case, "summary.json")
         if not os.path.isfile(path):
             continue
@@ -244,15 +332,18 @@ def modal_table(results_dir: str) -> Optional[str]:
     )
 
 
-def scaling_table(results_dir: str) -> Optional[str]:
-    path = os.path.join(results_dir, "benchmark", "runtime_scaling.json")
+def scaling_table(results_dir: str, stem: str = "runtime_scaling") -> Optional[str]:
+    path = os.path.join(results_dir, "benchmark", f"{stem}.json")
     if not os.path.isfile(path):
         return None
     doc = load_json(path)
     rows = []
     for record in doc.get("records", []):
+        mesh = f"{record['nx']} x {record['ny']}"
+        if record.get("nz"):
+            mesh += f" x {record['nz']}"
         rows.append([
-            f"{record['nx']} x {record['ny']}",
+            mesh,
             _fmt(record["num_elements"]),
             _fmt(record["num_dofs"]),
             _fmt(record["stiffness_nonzeros"]),
@@ -294,17 +385,38 @@ def main(argv=None) -> int:
          "`results/verification/summary.json`. Verification compares against "
          "exact answers for the discrete problem; validation compares against an "
          "independent theory, where a finite gap is expected."),
+        ("Cross-validation against independent codes", cross_validation_table(args.results),
+         "Generated from `results/cross_validation/summary.json` by "
+         "`python/scripts/cross_validate.py`: node-by-node comparison of the "
+         "nodal displacements with scikit-fem (same element formulation) and "
+         "CalculiX (C3D8 is the same element; CPS4 is a plane element CalculiX "
+         "expands through the thickness). CalculiX results are read from its "
+         ".frd output, which carries six significant digits, so differences "
+         "below 5e-6 relative are its rounding."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
          "compliance, so values above 1 mean the optimised design is stiffer at "
-         "the same mass."),
+         "the same mass; it is a plane-stress quantity and is n/a for the solid "
+         "case."),
+        ("Stress-constrained optimisation", stress_table(args.results),
+         "The constraint bounds the relaxed (rho^q) von Mises stress aggregated "
+         "with a scaled p-norm; `max relaxed ratio` is the true relaxed maximum "
+         "over the limit at the returned design, and `re-solve max vM` is the "
+         "peak von Mises of the thresholded structure analysed as solid material, "
+         "which is the number that says whether the structure meets the limit. "
+         "The `constraint off` row is the same deck run with the constraint "
+         "disabled."),
         ("Modal results", modal_table(args.results),
          "`max residual` is the largest relative eigenpair residual "
          "||K phi - lambda M phi|| / ||lambda M phi|| over the reported modes."),
-        ("Runtime scaling", scaling_table(args.results),
+        ("Runtime scaling (2-D, Q4)", scaling_table(args.results),
          "Minimum over repeats at each size, which is the standard estimator for "
          "wall-clock benchmarks."),
+        ("Runtime scaling (3-D, Hex8)", scaling_table(args.results, "runtime_scaling_3d"),
+         "Same protocol on a Hex8 block (nx x nx/2 x nx/4 cells). The direct "
+         "solver's fill-in grows much faster in 3-D, which is what limits the "
+         "solid problem size."),
         ("Design study", study_table(os.path.join(args.results, "study")),
          "One row per arm of the aerospace parametric study; the per-point table "
          "is `aerospace_study.csv` beside this file and the interpretation is in "

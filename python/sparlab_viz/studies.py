@@ -245,11 +245,17 @@ def plot_modal_convergence(directory: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 # Runtime scaling
 # ---------------------------------------------------------------------------
-def plot_runtime_scaling(directory: str, path: str) -> str:
-    """Wall-clock cost of each phase against problem size."""
-    table = load_csv(os.path.join(directory, "runtime_scaling.csv"))
-    summary = load_json(os.path.join(directory, "runtime_scaling.json"))
+def plot_runtime_scaling(directory: str, path: str, stem: str = "runtime_scaling",
+                         dim: int = 2) -> str:
+    """Wall-clock cost of each phase against problem size.
+
+    `stem` selects the benchmark files (`runtime_scaling` for the Q4 plate,
+    `runtime_scaling_3d` for the Hex8 block) and `dim` the wording.
+    """
+    table = load_csv(os.path.join(directory, f"{stem}.csv"))
+    summary = load_json(os.path.join(directory, f"{stem}.json"))
     exponents = summary.get("scaling_exponent_vs_dofs", {})
+    element = "Hex8" if dim == 3 else "Q4"
 
     fig, axes = st.stacked_panels(2, width=7.2, panel_height=2.6)
 
@@ -270,7 +276,7 @@ def plot_runtime_scaling(directory: str, path: str) -> str:
     ax.set_yscale("log")
     ax.set_ylabel("wall-clock time [s]")
     st.title(
-        ax, "Runtime scaling of the solver phases",
+        ax, f"Runtime scaling of the solver phases ({element})",
         f"{summary.get('compiler', 'unknown compiler')}, "
         f"{summary.get('build_type', 'unknown build')}, "
         f"{summary.get('linear_solver', 'direct solver')}; "
@@ -286,16 +292,240 @@ def plot_runtime_scaling(directory: str, path: str) -> str:
     ax.set_ylabel("nonzeros / DOF [-]")
     st.title(
         ax, "sparsity of the reduced stiffness matrix",
-        "flat with size, as expected for a fixed-stencil structured Q4 mesh",
+        f"flat with size, as expected for a fixed-stencil structured {element} mesh",
     )
     st.legend(ax, loc="lower right")
 
+    if dim == 3:
+        asymptote = ("a 3-D sparse Cholesky with a fill-reducing ordering is close "
+                     "to O(n^2) asymptotically (nested dissection), so the direct "
+                     "solver is what limits the solid problem size")
+    else:
+        asymptote = ("a 2-D sparse Cholesky with a fill-reducing ordering is close "
+                     "to O(n^1.5) asymptotically")
     st.annotate_note(
         fig,
         "Slopes are least-squares fits of log(time) against log(DOFs) over the "
-        "largest three sizes. Assembly is O(n); a 2-D sparse Cholesky with a "
-        "fill-reducing ordering is close to O(n^1.5) asymptotically, and at "
-        "these sizes the measured slope also carries cache effects.",
+        f"largest three sizes. Assembly is O(n); {asymptote}, and at these sizes "
+        "the measured slope also carries cache effects.",
+    )
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Verification: the 3-D (Hex8) studies
+# ---------------------------------------------------------------------------
+def plot_sensitivity_check_3d(directory: str, path: str) -> str:
+    """Error of the Hex8 topology gradient vs the central-difference step."""
+    steps = load_csv(os.path.join(directory, "sensitivity_steps_3d.csv"))
+    summary = load_json(os.path.join(directory, "summary.json")).get("sensitivity_3d", {})
+    tolerance = summary.get("tolerance", 1e-5)
+
+    fig, ax = st.figure(7.2, 3.6)
+    st.require_scatter_series(3, "error measures")
+    for slot, (column, label) in enumerate(
+        [
+            ("max_relative_error[-]", "max relative error over elements"),
+            ("rms_relative_error[-]", "RMS relative error over elements"),
+            ("directional_relative_error[-]", "relative error of the directional derivative"),
+        ]
+    ):
+        ax.plot(steps["step[-]"], steps[column], "o-", color=st.series_color(slot),
+                label=label)
+    ax.axhline(tolerance, color=st.INK_MUTED, linewidth=1.0, linestyle="--")
+    ax.text(steps["step[-]"].min(), tolerance, f" pass tolerance {tolerance:g}",
+            fontsize=7.8, color=st.INK_SECONDARY, va="bottom")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.invert_xaxis()
+    ax.set_xlabel("central-difference step h on the design variable [-]")
+    ax.set_ylabel("relative error [-]")
+    st.title(
+        ax, "Hex8 topology sensitivity: analytical gradient vs central differences",
+        f"{summary.get('mesh', 'Hex8 mesh')}, {summary.get('filter', 'density filter')}; "
+        f"{summary.get('tested_elements', '?')} elements tested, "
+        f"{summary.get('excluded_elements', 0)} excluded at active bounds; best step "
+        f"{summary.get('best_step', float('nan')):g} gives "
+        f"{summary.get('best_max_relative_error', float('nan')):.2e}",
+    )
+    st.legend(ax, loc="upper left")
+    st.annotate_note(
+        fig,
+        "The same adjoint gradient as in 2-D, evaluated with the trilinear "
+        "element; the error floor is where round-off in the difference of two "
+        "compliances overtakes the truncation error of the central difference.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_mesh_convergence_3d(directory: str, path: str) -> str:
+    """Hex8 cantilever tip deflection and discretisation error vs element size."""
+    # Coarse to fine, so the last row is the finest mesh the self-convergence
+    # error is measured against.
+    table = load_csv(os.path.join(directory, "mesh_convergence_3d.csv")).sort_values(
+        "h[m]", ascending=False)
+    summary = load_json(os.path.join(directory, "summary.json"))
+    block = summary.get("mesh_convergence_3d", {})
+    order = block.get("observed_convergence_order_tip_deflection")
+
+    fig, axes = st.figure(7.4, 6.4, nrows=2, ncols=1)
+
+    ax = axes[0]
+    ax.plot(table["h[m]"], np.abs(table["tip_mean[m]"]), "o-", color=st.series_color(0),
+            label="FEM, Hex8, full 2x2x2 integration")
+    ax.axhline(abs(float(table["timoshenko[m]"].iloc[0])), color=st.series_color(0),
+               linewidth=0.9, linestyle=":", label="Timoshenko (bending + shear)")
+    ax.axhline(abs(float(table["euler_bernoulli[m]"].iloc[0])), color=st.INK_MUTED,
+               linewidth=1.0, linestyle="--", label="Euler-Bernoulli (bending only)")
+    ax.set_xscale("log")
+    ax.invert_xaxis()
+    ax.set_xlabel("element size h [m]")
+    ax.set_ylabel("|tip deflection| [m]")
+    st.title(
+        ax, "Solid cantilever tip deflection vs mesh size",
+        f"{block.get('geometry', '')}; deflection is the mean u_y over the tip face",
+    )
+    st.legend(ax, loc="lower left")
+
+    ax = axes[1]
+    finest = float(table["tip_mean[m]"].iloc[-1])
+    error = np.abs(table["tip_mean[m]"] - finest) / abs(finest)
+    mask = error > 0
+    label = "self-convergence error"
+    if order is not None:
+        label += f" (observed order {order:.2f})"
+    ax.plot(table["h[m]"][mask], error[mask], "o-", color=st.series_color(0), label=label)
+    h_ref = np.array([float(table["h[m]"].min()) * 2.0, float(table["h[m]"].max())])
+    ax.plot(h_ref, 1e-3 * (h_ref / h_ref[0]) ** 2, "-", color=st.INK_MUTED,
+            linewidth=1.0, label=r"reference slope $h^2$")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.invert_xaxis()
+    ax.set_xlabel("element size h [m]")
+    ax.set_ylabel("relative error vs the finest mesh [-]")
+    st.title(
+        ax, "Self-convergence of the discretisation error",
+        f"finest mesh within {block.get('finest_mesh_relative_error_vs_timoshenko', float('nan')):.2e} "
+        "of Timoshenko",
+    )
+    st.legend(ax, loc="lower left")
+    st.annotate_note(
+        fig,
+        block.get("note", "") + " Comparing against the finest mesh is verification; "
+        "comparing against beam theory is validation, where a finite gap is expected.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_modal_convergence_3d(directory: str, path: str) -> str:
+    """Hex8 cantilever frequencies for the weak and strong bending axes."""
+    table = load_csv(os.path.join(directory, "modal_convergence_3d.csv")).sort_values("num_dofs")
+    summary = load_json(os.path.join(directory, "summary.json"))
+    block = summary.get("modal_validation_3d", {})
+    fig, axes = st.stacked_panels(2, width=7.2, panel_height=2.5)
+
+    ax = axes[0]
+    series = [
+        ("f1_weak_fem[Hz]", "f1_weak_theory[Hz]", "o", "first bending mode, weak axis"),
+        ("f1_strong_fem[Hz]", "f1_strong_theory[Hz]", "s", "first bending mode, strong axis"),
+    ]
+    for slot, (column, reference, marker, label) in enumerate(series):
+        ax.plot(table["num_dofs"], table[column], marker + "-", color=st.series_color(slot),
+                label=f"{label}, FEM")
+        ax.axhline(float(table[reference].iloc[0]), color=st.series_color(slot),
+                   linewidth=0.9, linestyle="--", label=f"{label}, Euler-Bernoulli")
+    ax.set_xscale("log")
+    ax.set_ylabel("frequency [Hz]")
+    st.title(
+        ax, "Solid cantilever natural frequencies vs mesh size",
+        f"{block.get('geometry', '')}; consistent mass matrix; mass conserved to "
+        f"{block.get('max_mass_relative_error', float('nan')):.1e} relative",
+    )
+    st.legend(ax, loc="center right", ncol=2)
+
+    ax = axes[1]
+    for slot, (column, marker, label) in enumerate([
+        ("f1_weak_rel_error[-]", "o", "weak axis vs Euler-Bernoulli"),
+        ("f1_strong_rel_error[-]", "s", "strong axis vs Euler-Bernoulli"),
+    ]):
+        ax.plot(table["num_dofs"], table[column], marker + "-", color=st.series_color(slot),
+                label=label)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("number of degrees of freedom")
+    ax.set_ylabel("relative difference [-]")
+    st.title(ax, "difference from beam theory", block.get("note", ""))
+    st.legend(ax, loc="upper right")
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Cross-validation against independent codes
+# ---------------------------------------------------------------------------
+def plot_cross_validation(directory: str, path: str) -> str:
+    """Largest relative nodal-displacement difference per code and load case."""
+    summary = load_json(os.path.join(directory, "summary.json"))
+    codes = summary.get("codes", {})
+    tolerances = summary.get("tolerances", {})
+    rows = []
+    for case in summary.get("cases", []):
+        for load_case in case.get("load_cases", []):
+            rows.append((case["case"], case.get("element_type", ""),
+                         load_case["load_case"], load_case["codes"]))
+    if not rows:
+        raise ValueError("cross-validation summary lists no comparisons")
+
+    code_names = ["scikit-fem", "calculix"]
+    st.require_scatter_series(len(code_names), "codes")
+    fig, ax = st.figure(7.4, 0.55 * len(rows) + 2.4)
+    y = np.arange(len(rows))[::-1]
+    floors = set()
+    for slot, code in enumerate(code_names):
+        xs, ys = [], []
+        for position, (_c, _e, _l, results) in zip(y, rows):
+            entry = results.get(code)
+            if entry is None:
+                continue
+            xs.append(entry["max_rel_diff"])
+            ys.append(position)
+            floor = entry.get("frd_rounding_floor_rel")
+            if floor:
+                floors.add(float(floor))
+        version = codes.get(code, {}).get("version", "")
+        ax.plot(xs, ys, "o", color=st.series_color(slot), markersize=7,
+                label=f"{code} {version}".strip())
+    tol_lines = [
+        ("skfem", "scikit-fem tolerance", 0, "--"),
+        ("calculix_solid", "CalculiX tolerance", 1, "--"),
+    ]
+    for key, label, slot, style in tol_lines:
+        value = tolerances.get(key)
+        if value:
+            ax.axvline(value, color=st.series_color(slot), linewidth=1.0, linestyle=style,
+                       label=f"{label} {value:g}")
+    for floor in sorted(floors):
+        ax.axvline(floor, color=st.INK_MUTED, linewidth=1.0, linestyle=":",
+                   label=f".frd six-digit rounding floor {floor:g}")
+    ax.set_xscale("log")
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{c} ({e}), '{l}'" for c, e, l, _r in rows], fontsize=8.5)
+    ax.set_xlabel("max |u_SparLab - u_reference| / max |u_reference| over all nodes [-]")
+    ax.set_ylim(-0.7, len(rows) - 0.3)
+    passed = all(entry["passed"] for *_r, results in rows for entry in results.values())
+    st.title(
+        ax, "Cross-validation: nodal displacements vs independent codes",
+        f"{len(rows)} load cases, {len(code_names)} codes; "
+        + ("every comparison within its tolerance" if passed else "a comparison FAILED"),
+    )
+    st.legend(ax, loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    st.annotate_note(
+        fig,
+        "Same mesh, material, supports and nodal loads in every code. scikit-fem "
+        "uses the same bilinear/trilinear elements, so its differences are solver "
+        "round-off. CalculiX C3D8 is the same element as SparLab's Hex8; CPS4 is a "
+        "plane element CalculiX expands through the thickness. Its results are "
+        "read from the .frd file, which carries six significant digits, so "
+        "differences below the dotted floor are its output rounding.",
     )
     return st.save_figure(fig, path)
 

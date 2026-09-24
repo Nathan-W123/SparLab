@@ -15,12 +15,14 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test        # the Catch2 suite: 93 cases, 3865 assertions
-make verify      # the studies, which exit non-zero if any tolerance is missed
+make test              # the Catch2 suite: 138 cases, 6 199 assertions
+make verify            # the studies, which exit non-zero if any tolerance is missed
+make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
 
-All numbers in this document come from `results/verification/summary.json` and
-from the test run; `docs/results/README.md` carries the machine-generated table.
+All numbers in this document come from `results/verification/summary.json`,
+`results/cross_validation/summary.json` and the test run;
+`docs/results/README.md` carries the machine-generated tables.
 
 ## Study results
 
@@ -31,15 +33,30 @@ from the test run; `docs/results/README.md` carries the machine-generated table.
 | Topology sensitivity | verification | min over steps of the max relative gradient error | `2.18e-08` | `1e-5` | PASS |
 | Mesh convergence | verification + validation | relative tip-deflection error vs Timoshenko, finest mesh, `nu = 0` | `4.78e-04` | `0.02` | PASS |
 | Modal frequencies | validation | `f1` relative error vs Euler-Bernoulli, finest mesh | `5.52e-03` | `0.02` | PASS |
+| Patch test 3-D, distorted Hex8 mesh | verification | max relative error in `u`, strain and stress | `1.63e-15` | `1e-10` | PASS |
+| Topology sensitivity 3-D, Hex8 | verification | min over steps of the max relative gradient error | `1.56e-08` | `1e-5` | PASS |
+| Mesh convergence 3-D, Hex8 cantilever | verification + validation | relative tip-deflection error vs Timoshenko, finest mesh | `5.42e-03` | `0.03` | PASS |
+| Modal frequencies 3-D, Hex8 cantilever | validation | `f1` (weak axis) relative error vs Euler-Bernoulli, finest mesh | `1.06e-02` | `0.03` | PASS |
 
 Supporting measurements from the same runs:
 
 | Quantity | Value |
 |----------|-------|
-| Observed convergence order, tip deflection | `2.31` at `nu = 0`, `2.28` at `nu = 0.3` |
-| Mass conservation, `sum(M)/2` vs `rho V` | `<= 4.84e-14` relative |
+| Observed convergence order, tip deflection | `2.31` at `nu = 0`, `2.28` at `nu = 0.3` (Q4); `2.63` (Hex8) |
+| Mass conservation, `sum(M)/dim` vs `rho V` | `<= 4.84e-14` relative (Q4), `<= 4.89e-14` (Hex8) |
 | Axial mode vs fixed-free rod theory | `4.02e-06` relative |
-| Elements excluded from the FD check at active bounds | 6 of 72 |
+| Elements excluded from the FD check at active bounds | 6 of 72 (Q4), 2 of 36 (Hex8) |
+
+And from the cross-validation against two independent codes (section 11):
+
+| Problem | Reference | Max relative nodal-displacement difference | Tolerance | Result |
+|---------|-----------|-------------------------------------------:|----------:|--------|
+| Plane cantilever, 1 440 Q4 | scikit-fem 12.0.2, `ElementQuad1` | `1.47e-10` | `1e-7` | PASS |
+| Plane cantilever, 1 440 Q4 | CalculiX 2.21, `CPS4` | `8.75e-07` | `1e-5` | PASS |
+| Solid block, tip load, 1 280 Hex8 | scikit-fem, `ElementHex1` | `5.59e-12` | `1e-7` | PASS |
+| Solid block, tip load, 1 280 Hex8 | CalculiX, `C3D8` | `3.39e-06` | `1e-5` | PASS |
+| Solid block, top pressure | scikit-fem, `ElementHex1` | `1.42e-11` | `1e-7` | PASS |
+| Solid block, top pressure | CalculiX, `C3D8` | `2.43e-06` | `1e-5` | PASS |
 
 ## 1. Element-level verification
 
@@ -378,16 +395,147 @@ residual expected of OC with a move limit and a finite change tolerance.
 * the CSV writer enforces its declared column count; the VTK writer's header,
   cell block and data blocks are checked by parsing the file back.
 
+## 11. The solid (Hex8) path
+
+Every study above has a 3-D counterpart, run by `sparlab_verify --study
+patch-test-3d | sensitivity-3d | mesh-convergence-3d | modal-3d` and covered
+by `tests/test_solid.cpp` (27 cases).
+
+**Element level.** Partition of unity and the nodal delta property of the
+trilinear shape functions; the cube Gauss rules as tensor products with total
+weight 8; `K_e` symmetric with exactly six zero eigenvalues (three
+translations, three rotations `e_j x r`) on a unit cube and on a distorted
+cell; the 2x2x2 rule exact on a box (agrees with 3x3x3 to round-off); the
+strain operator reproducing a linear field with six independent constant
+strains on a distorted cell; `sum_g w_g detJ` against the closed-form volume
+of a box and of a sheared box; inverted, degenerate and mis-sized cells
+rejected; the consistent mass symmetric, positive definite and summing to
+`3 rho V`; a constant face traction split evenly over the four corners with
+the exact resultant.
+
+**Patch test 3-D.** `u = (1e-4, -2e-4, 0.5e-4) + G x` with a symmetric `G`
+carrying all six constant strain components, prescribed on the boundary of a
+3x3x3 mesh whose interior nodes are perturbed; the interior displacement,
+strain and stress agree with the exact field to `1.63e-15` - round-off, as in
+2-D.
+
+**Diagnostics 3-D.** An unconstrained solid reports a null dimension of six
+(and the assembled `K` annihilates all six rigid-body vectors to `1e-13`), a
+single fixed node leaves three rotations, a face fixed in one component
+leaves the in-face translations and the rotation about the normal, a clamped
+face is well posed, and so is a 3-2-1 set of three non-collinear point
+supports; a 2-D model rejects any out-of-plane input with a message naming
+the key.
+
+**Mesh convergence 3-D.** The solid cantilever `L = 1 m, h = 0.1 m, b = 0.05 m`
+at `nu = 0` on four meshes from 16x2x1 to 96x12x6 (306 to 26 481 DOFs), tip
+resultant 1 kN over the tip face. The fully integrated Hex8 is stiff in
+bending on coarse meshes - the coarsest is 16 % below Timoshenko - and
+approaches the reference from below as the section is refined: the finest
+mesh is within `5.42e-03` of Timoshenko, and the self-convergence order
+against it is `2.63`. The deflection approaching from *below* is the sign
+shear locking must have, and the test suite asserts it.
+
+**Modal 3-D.** The same bar at `rho = 2700 kg/m^3` has two first bending
+modes, about the weak (0.05 m) and the strong (0.1 m) axis. Both are compared
+with Euler-Bernoulli on three meshes: the strong-axis mode is within 2.1 %
+on the coarsest mesh, the weak-axis one needs the finest mesh to reach
+`1.06e-02` because it bends through only a few elements. Mass is conserved to
+`4.89e-14` (`sum(M) = 3 rho V`).
+
+**Sensitivity 3-D.** The compliance gradient of a 6x3x2 Hex8 cantilever with
+a density filter, one passive solid and one passive void cell, at a
+non-uniform design point, against central differences at eight steps: best
+step `1e-5`, maximum relative error `1.56e-08`, the same `h^2` fall and
+round-off rise as in 2-D.
+
+**Solver, faces and I/O.** Face tractions give a mesh-independent resultant
+and the reactions balance it to `1e-10`; 3-D selectors (box with z limits,
+sphere, cylinder about any axis), sub-meshes and face connectivity are
+exercised; a `structured_hex` deck parses into a 3-D model; dimension
+mismatches in a deck are rejected with a reason; the writers produce z
+columns, six stress components and VTK hexahedra.
+
+**End to end.** A short 3-D optimisation (OC) runs, converges on its
+criteria, thresholds to a single connected structure and re-solves it.
+
+## 12. MMA and the stress constraint
+
+`tests/test_mma.cpp` (12 cases):
+
+| Property | Check | Result |
+|----------|-------|--------|
+| Separable problem with a known optimum | `min sum x_j^2 s.t. sum x_j >= 1` converges to `x_j = 1/n`, multiplier `2/n` | `1e-6` |
+| Two active constraints | optimum `(0.3, 0.7)` with multipliers `(0.6, 0.8)` | `1e-5` |
+| Badly scaled constraint | a constraint violated by `1e5` is scaled to the cap and its multiplier scaled back | subproblem converges; `lambda ~ 1e-5` |
+| Malformed input | wrong sizes, non-finite entries, bounds crossed | rejected |
+| von Mises as a quadratic form | `sigma^T V sigma` against `von_mises()` in plane stress, plane strain and 3-D | `1e-12` |
+| p-norm aggregate | bounded by the maximum from below and by `n^(1/P)` times it from above; centre stress on a uniform mesh equals the recovered element average; the adaptive scale maps it to the maximum | exact / `1e-12` |
+| Stress-constraint gradient, 2-D | adjoint gradient of the aggregate, two load cases with unequal weights and a passive pad, vs central differences | relative error `< 1e-5` per entry (scale-aware) |
+| Stress-constraint gradient, 3-D | the same on a Hex8 cantilever | `< 1e-5` |
+| No filter | `dg/dx == dg/drho` | exact |
+| Sensitivity filter | refused with a `ConfigError` | yes |
+| MMA vs OC | the same 24x12 compliance problem | compliances within 5 % |
+| Stress-limited L-bracket | 32x32, limit at 70 % of the unconstrained design's relaxed peak, which the test locates at the re-entrant corner and not at the load pad | feasible; relaxed ratio within 5 % of 1; the peak at least a fifth below the unconstrained one; compliance higher |
+| Infeasible limit | limit `1e3` Pa, far below anything reachable | `feasible = false`, warning; the run is reported, not hidden |
+| Deck parsing | every `optimizer.mma.*` and `topology.stress.*` key, plus the two incompatibilities | round-trip and rejection |
+
+## 13. Geometry export
+
+`tests/test_geometry.cpp`: a plane mesh extrudes to a closed surface of
+volume `A t` and area `2A + P t` to `1e-12`; a hex mesh's boundary is closed,
+outward (checked against the centroid) and encloses exactly its volume; a
+thresholded L of cells on a distorted mesh is watertight and agrees with its
+cell volume to the flat-triangle error of its bilinear cut faces (`1.5e-4`,
+and *not* to round-off - the test asserts both); on the uniform grid the same
+cut is exact to `1e-12`; dropping one triangle is reported as three unmatched
+edges; two cells touching along an edge are reported as closed with one
+non-manifold edge; a binary STL round-trips through `read_stl` with the
+standard 84-byte header layout.
+
+## 14. Cross-validation against independent codes
+
+The one item earlier versions of this document listed as absent. The same
+discrete problem - nodes, connectivity, supports, consistent nodal loads - is
+solved by two independent codes and the nodal displacements compared node by
+node (`python/scripts/cross_validate.py`, `make cross-validation`):
+
+* **scikit-fem 12.0.2** rebuilds the problem with `ElementQuad1` /
+  `ElementHex1`, the same Lame constants (`lambda* = 2 lambda G/(lambda+2G)`
+  for plane stress) and the same integration order. It is the *same element
+  formulation* in an independent implementation, so the only expected
+  difference is linear-solver round-off - and that is what is measured:
+  `1.5e-10` (Q4) and `5.6e-12`, `1.4e-11` (Hex8) relative;
+* **CalculiX 2.21** (`ccx`) runs the exported `.inp` decks. `C3D8` is the same
+  trilinear element as SparLab's Hex8; the measured differences of `3.4e-06`
+  and `2.4e-06` are within the six-significant-digit rounding of its `.frd`
+  result file (floor `5e-6`), i.e. as close as the file format allows one to
+  see. `CPS4` is a plane element CalculiX expands through the thickness - a
+  different discretisation of the plane problem - and it agrees to
+  `8.7e-07`.
+
+Tolerances are `1e-7` for scikit-fem and `1e-5` for CalculiX, both recorded
+in the summary with the `.frd` floor. The comparison exits non-zero if any
+pair exceeds its tolerance; CI runs the scikit-fem half on every push.
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
 
-* **no comparison against a commercial FE code**;
 * **no comparison against experiment**;
+* the cross-validation covers linear static displacements on two problems.
+  Stresses, natural frequencies and the optimised designs are not compared
+  with another code;
 * plane strain is unit-tested but no verification *study* runs in it;
-* the sensitivity check runs on a 72-element mesh (it needs two extra solves per
-  element per step); the gradient is not FD-verified at benchmark resolution,
-  although it is the same code path;
+* the sensitivity checks run on 72- and 36-element meshes (they need two
+  extra solves per element per step); the gradients are not FD-verified at
+  benchmark resolution, although they are the same code path;
+* the stress-constraint gradient is FD-verified; the *constraint's* claim
+  - that the relaxed aggregate bounds the stress of a part - is checked only
+  by the re-solve of the thresholded structure, which is a consistency check,
+  not a proof;
+* the Hex8 mesh-convergence study reaches 26 481 DOFs; the direct solver's
+  `O(n^2.3)` factorisation cost is what stopped it there;
 * no convergence study of the *optimised topology* against mesh size in the
   verification suite - that lives in the design study, where the
   `mesh_fixed_r` and `mesh_fixed_cells` arms address it directly.

@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import fields as fld
+from . import plots3d as p3
 from . import style as st
 from .loaders import CaseResults
 
@@ -32,6 +33,8 @@ def plot_mesh_and_bcs(case: CaseResults, path: str,
     Passive regions are part of the problem definition, not of the answer, so
     they belong on this figure rather than only on the density plot.
     """
+    if case.dim == 3:
+        return p3.plot_mesh_and_bcs(case, path)
     mesh = case.mesh
     # The panel keeps the domain's aspect and the legend sits outside it, so the
     # height that leaves no slack follows from the domain: a tall figure around
@@ -152,6 +155,8 @@ def plot_mesh_and_bcs(case: CaseResults, path: str,
 def plot_deformed_shape(case: CaseResults, load_case: str, path: str,
                         density: Optional[np.ndarray] = None) -> str:
     """Undeformed outline against the exaggerated deformed shape."""
+    if case.dim == 3:
+        return p3.plot_deformed_shape(case, load_case, path, density=density)
     mesh = case.mesh
     disp = case.displacement(load_case)
     ux = disp["ux[m]"].to_numpy()
@@ -186,8 +191,16 @@ def plot_deformed_shape(case: CaseResults, load_case: str, path: str,
     return st.save_figure(fig, path)
 
 
-def plot_displacement_magnitude(case: CaseResults, load_case: str, path: str) -> str:
-    """Nodal displacement magnitude on the undeformed configuration."""
+def plot_displacement_magnitude(case: CaseResults, load_case: str, path: str,
+                                density: Optional[np.ndarray] = None) -> str:
+    """Nodal displacement magnitude on the undeformed configuration.
+
+    `density` is used by the solid renderer only, which draws the retained
+    structure rather than the whole domain; the plane figure shows the field
+    over the full domain with the design outline drawn on top elsewhere.
+    """
+    if case.dim == 3:
+        return p3.plot_displacement_magnitude(case, load_case, path, density=density)
     mesh = case.mesh
     disp = case.displacement(load_case)
     magnitude = disp["umag[m]"].to_numpy()
@@ -223,6 +236,9 @@ def plot_stress_fields(case: CaseResults, load_case: str, path: str,
                        density: Optional[np.ndarray] = None,
                        threshold: float = 0.5) -> str:
     """Normal, shear and von Mises stress on one page."""
+    if case.dim == 3:
+        return p3.plot_stress_fields(case, load_case, path, density=density,
+                                     threshold=threshold)
     mesh = case.mesh
     stress = case.stress(load_case)
     mask = None
@@ -289,6 +305,8 @@ def plot_stress_fields(case: CaseResults, load_case: str, path: str,
 
 def plot_reactions(case: CaseResults, load_case: str, path: str) -> str:
     """Support reactions against the applied load, with the balance printed."""
+    if case.dim == 3:
+        return p3.plot_reactions(case, load_case, path)
     mesh = case.mesh
     reactions = case.reactions(load_case)
     summary = case.summary
@@ -357,6 +375,8 @@ def plot_reactions(case: CaseResults, load_case: str, path: str) -> str:
 def plot_mode_shapes(case: CaseResults, path: str, tag: str = "",
                      num_modes: int = 6) -> str:
     """Small multiples of the lowest mode shapes."""
+    if case.dim == 3:
+        return p3.plot_mode_shapes(case, path, tag=tag, num_modes=num_modes)
     modes = case.modes(tag)
     shapes = case.mode_shapes(tag)
     if modes is None or shapes is None:
@@ -417,7 +437,8 @@ def plot_mode_shapes(case: CaseResults, path: str, tag: str = "",
     return st.save_figure(fig, path)
 
 
-def plot_modal_comparison(summary: Dict, path: str, case_name: str) -> str:
+def plot_modal_comparison(summary: Dict, path: str, case_name: str,
+                          dim: int = 2) -> str:
     """Frequencies of the solid domain and the optimised topology, and mass."""
     solid = summary.get("modal_initial_solid")
     topology = summary.get("modal_optimised_topology")
@@ -465,13 +486,21 @@ def plot_modal_comparison(summary: Dict, path: str, case_name: str) -> str:
         "above 1 means the optimised design is stiffer per unit mass in that mode",
     )
     st.legend(ax, loc="upper right")
-    st.annotate_note(
-        fig,
-        "In this 2-D idealisation K and M both scale linearly with thickness, so "
-        "a uniformly thinned plate of the same mass has exactly the full-solid "
-        "frequencies. The full-solid bars are therefore also the equal-mass "
-        "uniform baseline.",
-    )
+    if dim == 2:
+        note = (
+            "In this 2-D idealisation K and M both scale linearly with thickness, "
+            "so a uniformly thinned plate of the same mass has exactly the "
+            "full-solid frequencies. The full-solid bars are therefore also the "
+            "equal-mass uniform baseline."
+        )
+    else:
+        note = (
+            "A solid has no thickness to scale, so there is no uniform equal-mass "
+            "baseline with the full-solid frequencies: the full-solid bars are the "
+            "reference structure, and the mass ratio above says how much lighter "
+            "the optimised design is."
+        )
+    st.annotate_note(fig, note)
     return st.save_figure(fig, path)
 
 
@@ -480,6 +509,8 @@ def plot_modal_comparison(summary: Dict, path: str, case_name: str) -> str:
 # ---------------------------------------------------------------------------
 def plot_final_topology(case: CaseResults, path: str) -> str:
     """Final density field plus the thresholded interpretation."""
+    if case.dim == 3:
+        return p3.plot_final_topology(case, path)
     density_table = case.density()
     if density_table is None:
         raise FileNotFoundError(f"{case.directory} has no density_final.csv")
@@ -550,8 +581,11 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
     result = case.summary.get("optimization_result", {})
     setup = case.summary.get("optimization_setup", {})
     iterations = history["iteration"].to_numpy()
+    method = str(setup.get("method", "oc")).lower()
+    stress_constrained = "max_stress_ratio[-]" in history and bool(result.get("stress"))
 
-    fig, axes = st.stacked_panels(4, width=7.0, panel_height=1.75)
+    fig, axes = st.stacked_panels(5 if stress_constrained else 4, width=7.0,
+                                  panel_height=1.75)
 
     ax = axes[0]
     # A linear scale reads better here: the objective falls by a factor of a few
@@ -571,7 +605,31 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
     ax = axes[1]
     target = setup.get("volume_fraction_target")
     violation = result.get("volume_constraint_relative_violation", 0.0)
-    if target:
+    if target and method == "mma":
+        # MMA treats the volume as an explicit constraint that its subproblem
+        # satisfies only approximately, so the interesting reading is how far
+        # each iterate sits from the target and which iterates overshoot it.
+        relative = (history["volume_fraction[-]"].to_numpy() - target) / target
+        magnitude = np.maximum(np.abs(relative), 1.0e-16)
+        ax.plot(iterations, magnitude, color=st.series_color(2),
+                label="|volume - target| / target")
+        over = relative > 0.0
+        if over.any():
+            ax.plot(iterations[over], magnitude[over], "o", color=st.series_color(7),
+                    markersize=3.2, label=f"over the target ({int(over.sum())} iterates)")
+        feasibility = setup.get("constraint_tolerance")
+        if feasibility:
+            ax.axhline(feasibility, color=st.INK_MUTED, linewidth=0.9, linestyle="--",
+                       label=f"feasibility tolerance {feasibility:g}")
+        ax.set_yscale("log")
+        ax.set_ylabel("relative distance [-]")
+        st.title(
+            ax, f"volume constraint, target fraction {target:g}",
+            f"met to {abs(violation):.1e} relative at the returned iterate; an "
+            "explicit MMA constraint, so iterates may sit on either side of the target",
+        )
+        st.legend(ax, loc="upper right")
+    elif target:
         relative = (history["volume_fraction[-]"].to_numpy() - target) / target
         ax.plot(iterations, relative, color=st.series_color(2))
         ax.axhline(0.0, color=st.INK_MUTED, linewidth=0.9, linestyle="--")
@@ -605,7 +663,28 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
     )
     st.legend(ax, loc="best")
 
-    ax = axes[3]
+    grey_panel = 3
+    if stress_constrained:
+        ax = axes[3]
+        ax.plot(iterations, history["max_stress_ratio[-]"], color=st.series_color(3),
+                label="max relaxed von Mises / limit")
+        ax.axhline(1.0, color=st.INK_MUTED, linewidth=0.9, linestyle="--",
+                   label="stress limit")
+        ax.set_ylabel("stress ratio [-]")
+        st.limit_ticks(ax, x=8, y=5)
+        stress_block = result.get("stress", {})
+        st.title(
+            ax, "stress constraint",
+            "final max relaxed ratio "
+            f"{stress_block.get('max_relaxed_stress_ratio', float('nan')):.4f}. MMA "
+            "constrains the p-norm aggregate, whose scale is re-fitted to the true "
+            "maximum every iteration, so the ratio hovers about 1 while the design "
+            "moves and settles below it",
+        )
+        st.legend(ax, loc="best")
+        grey_panel = 4
+
+    ax = axes[grey_panel]
     ax.plot(iterations, history["grey_level[-]"], color=st.series_color(6))
     if "penalty[-]" in history:
         penalty = history["penalty[-]"].to_numpy()
@@ -627,18 +706,26 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
         "grey level 4/n sum rho (1 - rho): 0 = pure 0/1, 1 = every element at 0.5",
     )
 
+    if method == "mma":
+        why = ("MMA minimises a convex approximation with moving asymptotes and a "
+               "move limit, and a stress constraint's p-norm scale changes between "
+               "iterations")
+    else:
+        why = ("optimality criteria is a fixed-point update with a move limit, and "
+               "each continuation step raises the SIMP penalty, which raises "
+               "compliance at fixed density")
     st.annotate_note(
         fig,
-        "Compliance is not guaranteed to fall monotonically: optimality criteria "
-        "is a fixed-point update with a move limit, and each continuation step "
-        "raises the SIMP penalty, which raises compliance at fixed density. "
-        "Every value is plotted rather than smoothed.",
+        f"Compliance is not guaranteed to fall monotonically: {why}. Every value is "
+        "plotted rather than smoothed.",
     )
     return st.save_figure(fig, path)
 
 
 def plot_density_evolution(case: CaseResults, path: str, frames: int = 8) -> str:
     """Small multiples of the density field as the optimisation proceeds."""
+    if case.dim == 3:
+        return p3.plot_density_evolution(case, path, frames=min(frames, 6))
     table = case.density_history()
     if table is None:
         raise FileNotFoundError(f"{case.directory} has no density_history.csv")
@@ -692,6 +779,9 @@ def animate_density_evolution(case: CaseResults, path: str, fps: int = 8,
     `hold_frames` repeats of the last frame keep the finished design on screen
     when the GIF loops.
     """
+    if case.dim == 3:
+        return p3.animate_density_evolution(case, path, fps=fps, hold_frames=hold_frames,
+                                            width=width, dpi=dpi)
     import matplotlib.animation as animation
 
     table = case.density_history()
@@ -772,31 +862,96 @@ def animate_density_evolution(case: CaseResults, path: str, fps: int = 8,
         os.makedirs(directory, exist_ok=True)
     anim.save(path, writer=animation.PillowWriter(fps=fps), dpi=dpi)
     plt.close(fig)
-
-    # Re-encode with a small palette: the density ramp is monochrome, so 64
-    # colours is ample and cuts the file size several-fold.
-    try:
-        from PIL import Image
-
-        with Image.open(path) as source:
-            frames = []
-            try:
-                index = 0
-                while True:
-                    source.seek(index)
-                    frames.append(
-                        source.convert("RGB").convert(
-                            "P", palette=Image.ADAPTIVE, colors=64
-                        )
-                    )
-                    index += 1
-            except EOFError:
-                pass
-        if frames:
-            frames[0].save(
-                path, save_all=True, append_images=frames[1:], loop=0,
-                duration=int(1000 / max(fps, 1)), optimize=True,
-            )
-    except Exception as error:  # pragma: no cover - cosmetic only
-        print(f"  note: GIF palette re-encode skipped ({error})")
+    st.shrink_gif_palette(path, fps)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Stress-constrained vs unconstrained design
+# ---------------------------------------------------------------------------
+def plot_stress_constraint_comparison(constrained: CaseResults,
+                                      unconstrained: CaseResults, path: str,
+                                      load_case: Optional[str] = None) -> str:
+    """Von Mises stress of the two designs on one colour scale with the limit.
+
+    Both fields are the solid-material von Mises stress recovered from the SIMP
+    model's displacement field, shown on the elements at or above the
+    interpretation threshold; the re-solve peak of the thresholded structure,
+    which is the number the summary judges the limit by, is quoted alongside.
+    """
+    if constrained.dim != 2 or unconstrained.dim != 2:
+        raise ValueError("the stress comparison figure is drawn for plane cases")
+    name = load_case or constrained.load_case_names[0]
+    result = constrained.summary.get("optimization_result", {})
+    interpreted = constrained.summary.get("interpreted_solid_analysis", {})
+    stress_block = result.get("stress")
+    if not stress_block:
+        raise KeyError("the constrained run has no stress-constraint block in summary.json")
+    limit = interpreted.get("stress_limit_Pa")
+    if not limit:
+        limit = stress_block["max_relaxed_stress_Pa"] / stress_block["max_relaxed_stress_ratio"]
+    threshold = float(constrained.summary.get("solid_interpretation", {})
+                      .get("threshold", 0.5))
+    column = "solid_von_mises[Pa]"
+
+    def field(case: CaseResults):
+        table = case.density()
+        if table is None:
+            raise FileNotFoundError(f"{case.directory} has no density_final.csv")
+        density = table["physical_density[-]"].to_numpy()
+        stress = case.stress(name)
+        values = stress[column if column in stress else "von_mises[Pa]"].to_numpy()
+        return density >= threshold, values
+
+    cases = [("unconstrained", unconstrained), ("stress-constrained", constrained)]
+    fields = [field(c) for _, c in cases]
+    vmax = max(float(values[mask].max()) for mask, values in fields)
+    vmax = max(vmax, float(limit))
+
+    # Two stacked panels: each carries a subtitle with its own numbers, which
+    # side by side would not fit a half-width panel.
+    xmin, xmax, ymin, ymax = constrained.mesh.extent
+    aspect = (ymax - ymin) / max(xmax - xmin, 1.0e-12)
+    fig, grid = st.figure(7.4, float(np.clip(2.0 * (5.2 * aspect + 1.3), 5.0, 9.0)),
+                          nrows=2, ncols=1)
+    axes = list(np.atleast_1d(grid).ravel())
+    collection = None
+    for ax, (label, case), (mask, values) in zip(axes, cases, fields):
+        collection = fld.element_collection(ax, case.mesh, values, cmap=st.FIELD_CMAP,
+                                            vmin=0.0, vmax=vmax, mask=mask)
+        fld.mesh_outline(ax, case.mesh, color=st.INK_MUTED, linewidth=0.7, linestyle="--")
+        fld.geometry_axes(ax, case.mesh)
+        summary = case.summary
+        peak_field = float(values[mask].max())
+        resolve = summary.get("interpreted_solid_analysis", {}).get("max_von_mises_Pa")
+        compliance = summary.get("optimization_result", {}).get("compliance_J", float("nan"))
+        st.title(
+            ax, label,
+            f"compliance {st.format_si(compliance)} J; field peak "
+            f"{st.format_si(peak_field)} Pa; re-solve peak "
+            f"{st.format_si(resolve) if resolve else 'n/a'} Pa"
+            + (f" = {resolve / limit:.3f} x limit" if resolve else ""),
+        )
+    bar = fld.add_colorbar(fig, collection, axes,
+                           r"solid-material von Mises $\sigma_{vm}$ [Pa]")
+    bar.ax.axhline(limit, color=st.series_color(7), linewidth=1.6)
+
+    st.figure_title(
+        fig, f"{constrained.name}: effect of the stress constraint, load case '{name}'",
+        f"limit {st.format_si(limit)} Pa on the relaxed p-norm aggregate (the red "
+        "line on the colour bar); constrained design: max relaxed ratio "
+        f"{stress_block.get('max_relaxed_stress_ratio', float('nan')):.4f}, "
+        f"re-solved structure at {interpreted.get('max_von_mises_over_limit', float('nan')):.3f} "
+        "of the limit",
+        ax=axes[0],
+    )
+    st.annotate_note(
+        fig,
+        f"Both panels show elements with density >= {threshold} only, coloured by the "
+        "von Mises stress the material would carry at full density, recovered from "
+        "the SIMP model's displacement field and averaged over each element's "
+        "quadrature points. The re-solve peak in each title comes from analysing "
+        "the thresholded structure as solid material, which is the check the "
+        "summary reports against the limit. Neither is a manufacturability claim.",
+    )
+    return st.save_figure(fig, path)

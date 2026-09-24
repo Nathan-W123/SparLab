@@ -7,8 +7,8 @@ is refreshed by `make results`; this document adds the interpretation.
 Reproduce all of it with:
 
 ```bash
-make benchmarks     # all four cases, about 10 minutes in total
-make figures        # every figure and the animation
+make benchmarks     # all six cases plus the two analysis decks, about 20 minutes
+make figures        # every figure and the animations
 make results        # refresh the generated tables
 ```
 
@@ -19,17 +19,22 @@ part.
 
 ## Summary
 
-| Case | Elements | DOFs | `nu` target | Iterations | Stop reason | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Runtime [s] |
-|------|---------:|-----:|------------:|-----------:|-------------|---------------:|---------------------:|---------------:|-----:|------------:|
-| `cantilever_beam` | 12 800 | 26 082 | 0.40 | 362 | design change | 1.11252 | 1.37813 | **1.239** | 0.0947 | 44.4 |
-| `mbb_beam` | 10 800 | 22 082 | 0.50 | 434 | design change | 221.551 | 259.521 | **1.171** | 0.279 | 50.2 |
-| `aerospace_bracket` | 38 400 | 77 602 | 0.35 | 375 | objective stall | 3.00015 | 3.19665 | **1.065** | 0.116 | 422.5 |
-| `wing_rib` | 12 500 | 25 602 | 0.40 | 530 | objective stall | 1.35608 | 1.21194 | **0.894** | 0.221 | 56.0 |
+| Case | Elements | DOFs | Method | `nu` target | Iterations | Stop reason | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Runtime [s] |
+|------|---------:|-----:|--------|------------:|-----------:|-------------|---------------:|---------------------:|---------------:|-----:|------------:|
+| `cantilever_beam` | 12 800 Q4 | 26 082 | OC | 0.40 | 362 | design change | 1.11252 | 1.37813 | **1.239** | 0.0947 | 44.4 |
+| `mbb_beam` | 10 800 Q4 | 22 082 | OC | 0.50 | 434 | design change | 221.551 | 259.521 | **1.171** | 0.279 | 50.2 |
+| `aerospace_bracket` | 38 400 Q4 | 77 602 | OC | 0.35 | 375 | objective stall | 3.00015 | 3.19665 | **1.065** | 0.116 | 422.5 |
+| `wing_rib` | 12 500 Q4 | 25 602 | OC | 0.40 | 530 | objective stall | 1.35608 | 1.21194 | **0.894** | 0.221 | 56.0 |
+| `l_bracket_stress` | 4 096 Q4 | 8 450 | MMA + stress | 0.35 | 240 | objective stall | 0.09006 | (see section 5) | - | 0.116 | 10.6 |
+| `bracket_3d` | 4 096 Hex8 | 15 147 | OC | 0.30 | 157 | design change | 0.28951 | n/a (solid) | - | 0.336 | 442.0 |
 
 "Stiffness gain" is the compliance of an equal-mass *uniform* plate divided by
 the optimised compliance, so above 1 means the optimisation paid off. The
 wing rib's value below 1 is real and is explained in its own section - it is the
-most interesting result in the set.
+most interesting result in the set. The L-bracket's baseline plate would fill
+the passive void quadrant, so the ratio is not a fair one there and is not
+quoted; a solid has no thickness to thin, so the 3-D bracket has no such
+baseline at all (section 6).
 
 **Volume constraint.** Satisfied in every case to the multiplier-bisection
 tolerance: the relative violations are `-3.0e-11`, `-1.5e-11`, `-7.2e-11` and
@@ -255,9 +260,10 @@ fall, for the same local-member reason as the cantilever.
 the SIMP field's 3.00015 J (ratio 0.850), at 13 476 elements = 35.1% of the
 domain against a 35% target. Its peak von Mises stress is 160 MPa. Against the
 7075-T6 tensile yield of roughly 500 MPa that is a margin of about 3 on the
-weighted design loads - but the model has no stress constraint, so this is a
-*post-hoc observation*, not a substantiation, and point-load and
-re-entrant-corner stresses in a density design are mesh sensitive.
+weighted design loads - but this deck runs without a stress constraint (section
+5 shows what one does), so this is a *post-hoc observation*, not a
+substantiation, and point-load and re-entrant-corner stresses in a density
+design are mesh sensitive.
 
 ## 4. Wing rib
 
@@ -354,13 +360,153 @@ vibration or flutter requirement would need that requirement in the
 optimisation, not checked afterwards - and this optimiser, with its single
 volume constraint, cannot carry it.
 
+## 5. Stress-constrained L-bracket (MMA)
+
+`configs/benchmarks/l_bracket_stress.json` - the canonical stress-constrained
+test case. A 0.40 x 0.40 m square, 10 mm thick, Al 7075-T6, on a 64 x 64
+mesh (4 096 elements, 8 450 DOFs) whose upper-right quadrant is passive void
+(1 444 elements). The remaining left arm is clamped along its top edge; a
+600 N downward resultant is applied at the tip of the lower arm through a
+passive solid pad (60 elements), so the load-application stress is not
+design dependent. Volume fraction 0.35, density filter radius 1.5 cells
+(9.4 mm, support 8.8 elements), `p = 3`, no continuation, MMA with a move
+limit of 0.1, and one aggregated von Mises constraint with limit
+**9.4 MPa** (`P = 8`, `q = 0.5`). The same deck is run once more with the
+constraint switched off (`--no-stress`) as the reference.
+
+![Stress-constrained vs unconstrained L-bracket](figures/l_bracket_stress_stress_comparison.png)
+
+| Quantity | Constraint off | Constraint on |
+|----------|---------------:|--------------:|
+| Iterations, stop reason | 115, objective stall | 240, objective stall |
+| Linear solves (one adjoint per iteration when constrained) | 116 | 481 |
+| Compliance, uniform start | 1.35322 J | 1.35322 J |
+| Compliance, optimised | 0.085276 J | **0.090060 J** (+5.6 %) |
+| Volume fraction | 0.349999 (`-2.1e-06`) | 0.349987 (`-3.8e-05`, feasible) |
+| Grey level | 0.122 | 0.116 |
+| Relaxed stress peak of the design, `rho^0.5 sigma_vm` | 15.6 MPa (1.66 x limit) | 9.24 MPa (**0.983** x limit) |
+| p-norm aggregate over the limit, and its scale | - | 1.180, `c = 0.842` |
+| Interpretation at `rho >= 0.5` | 1 440 elements, 1 group, 0 islands | 1 435 elements, 1 group, 0 islands |
+| Re-solved structure: compliance | 0.075180 J | 0.079859 J (+6.2 %) |
+| Re-solved structure: peak von Mises | 10.13 MPa (**1.078** x limit) | 7.51 MPa (**0.799** x limit) |
+| Runtime | 4.4 s | 10.6 s |
+
+The unconstrained design does what a compliance objective always does at a
+re-entrant corner: it fills it, and concentrates stress there. Its re-solved
+structure exceeds the 9.4 MPa limit by 7.8 % at the corner (the yellow spot in
+the upper panel). With the constraint on, the corner is rounded - material
+moves from the corner into a second diagonal - and the re-solved structure
+sits at 80 % of the limit, a **26 % lower peak stress for 5.6 % more
+compliance**. That is the trade a stress constraint is for.
+
+Three readings of the table need care:
+
+* the constraint acts on the **relaxed** stress of the SIMP model, whose peak
+  at the returned design is 0.983 of the limit: active, feasible, and
+  hovering just inside the limit as the adaptive p-norm scale is re-fitted
+  each iteration (`l_bracket_stress_convergence.png`, fourth panel). The
+  re-solved structure's 0.799 is a different, better number because
+  thresholding promotes the corner's intermediate densities to solid
+  material and its stress drops. Both are reported; the second is the one
+  that says whether the *structure* meets the limit;
+* the "unconstrained relaxed peak" of 15.6 MPa is measured by running the
+  deck with the constraint switched off but the stress evaluation on
+  (`--stress-limit 1e30`); the limit was set at 60 % of it;
+* neither run's compliance is comparable with an equal-mass uniform plate
+  of the *square* domain, since that plate would fill the passive quadrant.
+  The fair reference for the constrained design is the unconstrained one,
+  which is why the deck is run twice.
+
+**Convergence.** MMA with a stress constraint oscillates more than OC on a
+compliance-only problem, because the constraint surface moves with the
+p-norm scale. At the compliance decks' move limit of 0.2 the run hit its
+300-iteration cap with a handful of corner elements still flipping between
+their bounds (feasible, but not converged); at 0.1 it stops on the
+objective-stall criterion after 240 iterations, feasible, with a final design
+change of 0.020. The MMA subproblem took 32-92 Newton iterations per step.
+
+## 6. Solid bracket (Hex8)
+
+`configs/benchmarks/bracket_3d.json` - the 3-D case. A 0.24 x 0.12 x 0.06 m
+aluminium block (Al 7075-T6) clamped on its `x = 0` face (153 nodes,
+459 DOFs), with two load cases at the far end: `down_limit`, 3 kN in `-y`
+spread over the nine nodes of the tip's bottom edge (weight 1.0), and
+`lateral`, 1.2 kN in `+z` over the nine nodes of the tip's mid-height line
+(weight 0.5). 32 x 16 x 8 Hex8 mesh (4 096 elements, 15 147 DOFs), volume
+fraction 0.30, density filter radius 1.5 cells (11.25 mm, support 16.9
+elements), `p = 3`, optimality criteria, six modes of the solid and of the
+interpreted structure.
+
+![Solid bracket before and after](figures/bracket_3d_topology.png)
+
+| Quantity | Value |
+|----------|-------|
+| Compliance, uniform start | 2.77535 J |
+| Compliance, optimised | 0.289513 J (**9.6x** improvement); `down_limit` 0.33669 J, `lateral` 0.19516 J |
+| Full solid domain | 0.074935 J at 4.8557 kg |
+| Optimised design | 0.289513 J at 1.4567 kg (3.86x the solid's compliance at 30 % of its mass) |
+| Volume fraction | 0.30000000 (violation `8.0e-11`) |
+| Grey level | 0.336 |
+| Interpretation at `rho >= 0.5` | 1 278 of 4 096 elements, **1** connected group, **0** discarded as islands |
+| Re-solved structure | 0.176349 J (ratio **0.609** to the SIMP field) at 1.5150 kg; peak von Mises 12.7 MPa |
+| Geometry export | 5 356 triangles, closed, 32 non-manifold edges, enclosed volume equal to the cell volume to `3.5e-14` |
+| Runtime | 442.0 s for 157 iterations (2.82 s each), 316 linear solves; 451.4 s in total with both modal analyses |
+
+The topology is a cantilevered box girder: two webs along the sides joined by
+a tapered top flange, thinning towards the tip where the bending moment is
+smallest, with the `lateral` case keeping both webs rather than letting the
+design collapse onto a single vertical plate. The structure is one connected
+group and nothing is discarded.
+
+Two numbers stand out against the plane cases:
+
+* **the grey level is 0.336**, three times the cantilever's. In 3-D a filter
+  of radius 1.5 cells averages over 17 elements rather than 9, and the
+  intermediate boundary layer is a *surface* of the structure rather than a
+  curve, so it holds a larger share of the volume. The re-solve shows what
+  that costs: the thresholded structure is **39 % stiffer** than the SIMP
+  field (ratio 0.609) for 4 % more mass, because the threshold promotes that
+  whole grey shell to solid material. On a 3-D density design the reported
+  objective is even more pessimistic than on a plane one, and the re-solved
+  number is the one to plan with;
+* **there is no equal-mass baseline.** A solid has no thickness to scale, so
+  the uniformly thinned plate that made "stiffness gain" a clean comparison
+  in 2-D does not exist; the only reference reported is the full solid
+  domain, and the summary says so in its `mass_stiffness_comparison.note`.
+
+**Modal comparison.**
+
+| Structure | Mass [kg] | f1 [Hz] | f2 [Hz] | f3 [Hz] | f4 [Hz] |
+|-----------|----------:|--------:|--------:|--------:|--------:|
+| Full solid domain | 4.8557 | 835.0 | 1471.0 | 2531.6 | 4201.0 |
+| Optimised topology | 1.5150 | **917.1** | 1664.9 | 2661.2 | 3326.3 |
+
+`f1` rises by 9.8 % at 31 % of the solid's mass, and `f2` and `f3` rise too;
+`f4` falls, for the local-member reason the plane cases show. Without a
+thinned-solid baseline the honest comparison is only against the full block,
+and the mass ratio has to be read alongside the frequencies.
+
+**Geometry.** `structure_after.stl` is the boundary of the 1 278 retained
+cells: closed and outward, with its enclosed volume equal to the cell volume
+to round-off, but with 32 edges where two retained cells touch only along an
+edge. The surface is therefore not a 2-manifold and a slicer may split it
+into shells at those edges; the summary and the console report the count, and
+the interpretation threshold and connectivity rule - not the STL writer -
+decide whether such cells belong to one part.
+
+The run is the most expensive in the set at 2.8 s per iteration for 15 147
+DOFs, where the plane bracket manages 1.1 s per iteration for 77 602: the
+direct solver's fill-in grows far faster in three dimensions (see *Runtime
+and scaling* below).
+
 ## Convergence behaviour
 
 ![Cantilever convergence history](figures/cantilever_beam_convergence.png)
 
-Both stopping criteria are exercised across the four cases: the two beam
-benchmarks stop on the design change, the two aerospace cases on the objective
-stall. Final indicator values:
+Both stopping criteria are exercised across the cases: the two beam benchmarks
+and the solid bracket stop on the design change, the two aerospace plane cases
+and the stress-constrained L-bracket on the objective stall. Final indicator
+values:
 
 | Case | Stop reason | Final `max |dx|` | Final relative `dC` over 20 iterations |
 |------|-------------|-----------------:|---------------------------------------:|
@@ -368,6 +514,8 @@ stall. Final indicator values:
 | `mbb_beam` | design change | 0.00697 | `6.2e-05` |
 | `aerospace_bracket` | objective stall | 0.0202 | `4.9e-05` |
 | `wing_rib` | objective stall | 0.0113 | `4.9e-05` |
+| `l_bracket_stress` (MMA) | objective stall | 0.0198 | `1.5e-05` (and feasible, largest constraint `-3.8e-05`) |
+| `bracket_3d` | design change | 0.00988 | `1.4e-04` |
 
 The objective criterion is what makes the fine-mesh cases terminate. A measured
 example on the cantilever benchmark, with both criteria disabled and the cap
@@ -421,6 +569,37 @@ Stored entries per free DOF is flat with size (15.6 to 17.9), as expected for a
 fixed-stencil structured Q4 mesh: the growth in factorisation cost comes from
 fill-in during elimination, not from the assembled matrix.
 
+### Three dimensions
+
+![Runtime scaling, Hex8](figures/runtime_scaling_3d.png)
+
+The same protocol on a Hex8 block of `nx x nx/2 x nx/4` cells
+(`sparlab_bench --dim 3`):
+
+| Mesh | Elements | DOFs | Nonzeros | Assemble [s] | Factorise [s] | Solve [s] | Obj+grad [s] |
+|------|---------:|-----:|---------:|-------------:|--------------:|----------:|-------------:|
+| 8 x 4 x 2 | 64 | 405 | 18 018 | 0.000624 | 0.000971 | 2.92e-05 | 0.00184 |
+| 16 x 8 x 4 | 512 | 2 295 | 134 550 | 0.00365 | 0.0273 | 0.000549 | 0.0362 |
+| 24 x 12 x 6 | 1 728 | 6 825 | 442 890 | 0.0223 | 0.358 | 0.00391 | 0.397 |
+| 32 x 16 x 8 | 4 096 | 15 147 | 1 036 350 | 0.0517 | 2.35 | 0.0141 | 2.58 |
+| 40 x 20 x 10 | 8 000 | 28 413 | 2 008 242 | 0.117 | 9.47 | 0.0352 | 9.87 |
+
+| Phase | Slope (3-D) | Slope (2-D) | Expected |
+|-------|------------:|------------:|----------|
+| Assemble `K` | 1.16 | 1.15 | `O(n)` |
+| Sparse Cholesky factorisation | **2.30** | 1.57 | a 3-D fill-reducing ordering is close to `O(n^2)`; the measured slope also carries cache effects |
+| One back-substitution | 1.54 | 1.31 | the factor has `O(n^(4/3))` nonzeros in 3-D |
+| Objective + gradient | 2.26 | 1.55 | factorisation-dominated |
+
+The direct solver is what bounds the solid problem size: at 28 413 DOFs one
+factorisation already costs 9.5 s, against 0.09 s for the plane mesh with
+the same DOF count (26 082), and the stored entries per DOF are 44-71 rather
+than 16-18 because an interior node of a hexahedral grid couples to 27 nodes
+rather than 9. The 3-D bracket's
+2.8 s per iteration at 15 147 DOFs is consistent with this table, and a
+finer solid design study needs an iterative solver with a multigrid
+preconditioner rather than more patience.
+
 ## Where the time goes
 
 From the `timings_s` block of each summary:
@@ -431,6 +610,8 @@ From the `timings_s` block of each summary:
 | `mbb_beam` | 50.17 | - | 0.09 | 0.24 | 50.56 |
 | `aerospace_bracket` | 422.50 | 12.24 | 1.12 | 2.09 | 438.07 |
 | `wing_rib` | 55.97 | 2.00 | 0.09 | 0.68 | 58.79 |
+| `l_bracket_stress` | 10.57 | - | 0.03 | 0.12 | 10.78 |
+| `bracket_3d` | 441.96 | 6.28 | 2.57 | 0.38 | 451.42 |
 
 The optimisation loop dominates everywhere, which is the intended cost profile:
 modal analysis of both the solid domain and the extracted topology costs a few

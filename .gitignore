@@ -4,8 +4,9 @@ build-*/
 cmake-build-*/
 _deps/
 
-# Generated run output. Curated artefacts live in docs/figures and docs/results.
-results/
+# Generated run output. Curated artefacts live in docs/figures and docs/results;
+# the leading slash keeps the pattern from swallowing docs/results as well.
+/results/
 
 # Python
 __pycache__/

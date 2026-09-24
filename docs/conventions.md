@@ -63,16 +63,42 @@ Counter-clockwise ordering makes the Jacobian determinant positive; a clockwise
 or self-intersecting element is rejected by `Mesh::validate()` with a message
 naming the element.
 
-## Degrees of freedom
+### Solid meshes
 
-Two translations per node, numbered node-major:
+A `structured_hex` mesh is a box with its lower corner at `(x0, y0, z0)`.
+Node numbering is `node(i, j, k) = k (nx+1)(ny+1) + j (nx+1) + i` and element
+numbering `elem(i, j, k) = k nx ny + j nx + i`, x fastest, then y, then z. The
+eight nodes of a Hex8 follow the VTK hexahedron convention: the bottom face
+(`zeta = -1`) counter-clockwise seen from above, then the top face in the same
+order:
 
 ```
-  dof(node n, component c) = 2 n + c,     c = 0 -> u_x,  c = 1 -> u_y
+        7 --------- 6
+       /|          /|          zeta
+      4 --------- 5 |           ^   eta
+      | |         | |           |  /
+      | 3 --------|-2           | /
+      |/          |/            +-----> xi
+      0 --------- 1
+```
+
+The six faces are numbered `0: bottom (0 3 2 1)`, `1: top (4 5 6 7)`,
+`2: front y = -1 (0 1 5 4)`, `3: right x = +1 (1 2 6 5)`,
+`4: back y = +1 (2 3 7 6)`, `5: left x = -1 (3 0 4 7)`, each wound so its
+right-hand normal points out of the element. That winding is what the STL
+export relies on for outward normals.
+
+## Degrees of freedom
+
+`dim` translations per node, numbered node-major:
+
+```
+  dof(node n, component c) = dim * n + c,     c = 0 -> u_x,  1 -> u_y,  2 -> u_z
 ```
 
 An element's DOF vector follows the same ordering:
-`{u_x1, u_y1, u_x2, u_y2, u_x3, u_y3, u_x4, u_y4}`.
+`{u_x1, u_y1, u_x2, u_y2, ...}` on a plane mesh and `{u_x1, u_y1, u_z1, ...}`
+on a solid one.
 
 There are no rotational degrees of freedom: these are continuum elements, not
 beam or shell elements.
@@ -92,20 +118,24 @@ beam or shell elements.
   applied load plus reaction sums to zero. Every static result records that sum
   and its relative error.
 * Positive moment is counter-clockwise about `+z`, i.e. `M = x F_y - y F_x`,
-  taken about the origin.
+  taken about the origin. On a solid mesh the moment is the full vector
+  `M = x cross F` about the origin, reported component by component.
 
 ## Voigt notation
 
-Stress and strain are stored as three-component vectors with the *engineering*
-shear strain:
+Stress and strain are stored as vectors with the *engineering* shear strain:
 
 ```
-  sigma = { sigma_xx, sigma_yy, sigma_xy }
-  eps   = { eps_xx,   eps_yy,   gamma_xy },    gamma_xy = 2 eps_xy
+  plane:  sigma = { sigma_xx, sigma_yy, sigma_xy }
+          eps   = { eps_xx,   eps_yy,   gamma_xy },    gamma_xy = 2 eps_xy
+
+  solid:  sigma = { sigma_xx, sigma_yy, sigma_zz, sigma_xy, sigma_yz, sigma_zx }
+          eps   = { eps_xx,   eps_yy,   eps_zz,   gamma_xy, gamma_yz, gamma_zx }
 ```
 
 This pairing makes `sigma^T eps` the strain-energy density, which is why the
-constitutive matrix carries `G` rather than `2G` in its (3,3) entry.
+constitutive matrix carries `G` rather than `2G` in its shear entries. The CSV
+columns follow the same order (`sxx, syy, szz, sxy, syz, szx`).
 
 ## Energy definitions
 
@@ -170,7 +200,10 @@ Every tolerance is configurable and every run records the value it used in
 | `modal.residual_tolerance` | `1e-6` | relative eigenpair residual, also part of the stopping rule |
 | `topology.optimizer.change_tolerance` | `1e-2` | `max \|dx\|` between iterations |
 | `topology.optimizer.objective_tolerance` | `5e-5` | relative compliance change over `objective_window` iterations |
-| `topology.optimizer.volume_tolerance` | `1e-10` | relative volume error of the multiplier bisection |
+| `topology.optimizer.volume_tolerance` | `1e-10` | relative volume error of the multiplier bisection (OC) |
+| `topology.optimizer.constraint_tolerance` | `1e-4` | largest MMA constraint value an iterate may have and still count as feasible; convergence requires it |
+| `topology.optimizer.mma.subproblem_tolerance` | `1e-7` | interior-point residual of the MMA subproblem |
+| `topology.stress.feasibility_tolerance` | `1e-3` | relative margin used when the summary reports whether the relaxed stress maximum meets the limit |
 
 Exceeding a solver tolerance raises an exception with a diagnosis; exceeding an
 optimiser tolerance is reported as non-convergence in both the console output
@@ -179,7 +212,9 @@ and `summary.json`. Nothing is silently accepted.
 ## Determinism
 
 The only randomness in the code is the filler part of the subspace-iteration
-starting basis and the node perturbation of `make_perturbed_quad_mesh`. Both
-take an explicit seed (`modal.seed`, default `20240917`) and both default to
-deterministic values, so repeated runs of the same deck on the same build give
-bit-identical results.
+starting basis and the node perturbation of `make_perturbed_quad_mesh` and
+`make_perturbed_hex_mesh`. All take an explicit seed (`modal.seed`, default
+`20240917`) and default to deterministic values, so repeated runs of the same
+deck on the same build give bit-identical results. The MMA subproblem solver
+and the stress-constraint scaling are deterministic by construction: they
+start from fixed values and involve no random choice.

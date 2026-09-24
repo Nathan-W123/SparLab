@@ -3,14 +3,20 @@
 ## 1. The problem
 
 Minimum compliance under a volume constraint, with per-element density design
-variables:
+variables, on a plane (Q4) or a solid (Hex8) mesh:
 
 ```
   min over x      c(x) = sum_l  w_l  f_l^T u_l
   subject to      K(rho_tilde(x)) u_l = f_l          for every load case l
                   g(x) = rho_tilde^T v - nu V  <=  0
                   0 <= x_e <= 1                      (tightened on passive elements)
+
+  optionally      g_l(x) = c_l  sigma_PN,l(x) / sigma_lim  -  1  <=  0   per load case
 ```
+
+The optional last line is the aggregated stress constraint of section 5c; it
+needs the MMA update of section 5b, since optimality criteria can carry only
+the volume constraint.
 
 where
 
@@ -175,7 +181,11 @@ Three consequences:
   `grad_x g = Hhat^T v`.
 
 Implemented in `topopt/Sensitivity.cpp`; verified in `sparlab_verify --study
-sensitivity` and regression-tested in `tests/test_topopt.cpp`.
+sensitivity` (and `sensitivity-3d` on a Hex8 mesh) and regression-tested in
+`tests/test_topopt.cpp`. The same class keeps the factorisation of the last
+evaluation, so a non-self-adjoint quantity - the stress aggregate of section
+5c - gets its adjoint solve from `ComplianceObjective::solve_adjoint` at the
+cost of one back-substitution per load case.
 
 ## 5. Optimality criteria
 
@@ -207,10 +217,143 @@ the reachable volume range and the two causes (move limit too small to reach the
 target from the current design, or passive regions making the target
 unreachable).
 
-**Why OC and not MMA.** One constraint, a separable objective in the SIMP sense,
-and convergence in a few hundred iterations with no tuning. Its limitation -
-exactly one inequality constraint - is stated in `docs/limitations.md`; a stress
-or frequency constraint would need MMA or an augmented-Lagrangian method.
+**When OC is the right choice.** One constraint, a separable objective in the
+SIMP sense, and convergence in a few hundred iterations with no tuning. It is
+the default (`optimizer.method: "oc"`) and every compliance-only benchmark
+uses it. Its limitation is exactly one inequality constraint, which is what
+the next section removes.
+
+## 5b. Method of moving asymptotes
+
+`optimizer.method: "mma"` replaces the OC update with Svanberg's method of
+moving asymptotes (`topopt/Mma.cpp`), which handles any number of
+constraints - the volume plus one stress constraint per load case here.
+
+At iterate `x^k`, each function `f_i` (objective `i = 0`, constraints
+`i = 1..m`) is replaced by the separable convex approximation
+
+```
+  f_i(x) ~ r_i + sum_j [ p_ij / (U_j - x_j) + q_ij / (x_j - L_j) ]
+
+  p_ij = (U_j - x_j^k)^2 [ max(df_i/dx_j, 0) + 1e-3 |df_i/dx_j| + raa0 / (xmax_j - xmin_j) ]
+  q_ij = (x_j^k - L_j)^2 [ max(-df_i/dx_j, 0) + 1e-3 |df_i/dx_j| + raa0 / (xmax_j - xmin_j) ]
+```
+
+built from the asymptotes `L_j < x_j^k < U_j`. The asymptotes start at
+`x^k -+ 0.5 (xmax - xmin)` and move on the history of each variable: widened
+by 1.2 when a variable has moved the same way twice, tightened by 0.7 when it
+has oscillated, and never closer than `0.01` nor further than `10` times the
+range. The subproblem is solved on the box
+`max(xmin, L + 0.1 (x^k - L), x^k - m) <= x <= min(xmax, U - 0.1 (U - x^k), x^k + m)`,
+with `m` the move limit, by the primal-dual interior-point method of
+Svanberg's reference implementation (`subsolv`): Newton on the perturbed KKT
+conditions with the barrier parameter driven from 1 down to `1e-7`, line
+search on the residual, and the constraint multipliers `lambda_i` returned
+with the step.
+
+Two details are SparLab's rather than the textbook's:
+
+* **scaling.** The objective is divided by its value at the first iteration
+  and the volume constraint is written as `V/V_target - 1`, so every function
+  is O(1). A constraint that is nevertheless violated by orders of magnitude
+  (a stress limit far below what any feasible design can reach) would make
+  the subproblem's absolute residual target unreachable, so such a row is
+  scaled down to a cap of 10 and its multiplier scaled back afterwards; the
+  scale is recorded per iteration;
+* **the returned design.** Convergence is judged on the iterate whose
+  functions were just evaluated and requires it to be feasible
+  (`max_i g_i <= constraint_tolerance`, default `1e-4`) as well as either
+  stationary (`max |dx| <= change_tolerance`) or stalled in the objective.
+  That evaluated iterate is what the run returns. The unevaluated update can
+  differ from it by up to the move limit under the objective-stall rule and
+  has no feasibility guarantee, and returning it would have reported numbers
+  the check never saw.
+
+Only free variables enter the subproblem; passive elements keep their pinned
+value. The solver throws `ConvergenceError` naming the residual if the
+subproblem does not converge within its Newton budget, rather than continuing
+with a bad step.
+
+**Verification.** `tests/test_mma.cpp` solves problems with known optima: a
+separable problem whose solution is `x_j = 1/n` with multiplier `2/n`, a
+two-constraint problem with both constraints active at `(0.3, 0.7)` and
+multipliers `(0.6, 0.8)`, and the scale-cap case; and it checks that MMA and
+OC reach compliances within 5 % of each other on the same compliance-only
+cantilever (they are different algorithms with different move-limit
+semantics, so bit-equality is not the expectation).
+
+**Move limit.** MMA with a moving constraint surface tolerates a smaller
+move limit than OC: the stress-constrained deck uses `0.1` against the `0.2`
+of the compliance decks, because at `0.2` a handful of corner elements kept
+oscillating between their bounds and the run hit its iteration cap without
+meeting either criterion. That behaviour is reported, not hidden, which is
+how it was found.
+
+## 5c. Aggregated stress constraint
+
+`topology.stress` adds one constraint per load case (`topopt/StressConstraint.cpp`):
+
+```
+  sigma_e        = rho_e^q  sigma_vm( D_0 B_e(centre) u_{l,e} )      relaxed element stress
+  sigma_PN       = ( sum_e  sigma_e^P )^(1/P)                        p-norm aggregate
+  g_l(x)         = c_l  sigma_PN / sigma_lim  -  1  <=  0
+```
+
+with `q = 0.5` (`relaxation`), `P = 8` (`p_norm`) and `sigma_lim` the limit.
+Three facts about this formulation, each of which the reader needs to hold
+onto:
+
+* **the relaxation is what makes the problem solvable.** The stress in a
+  SIMP element is the solid-material stress `D_0 B u`, which does not vanish
+  when the density does: a void element with a nonzero strain would violate
+  any limit, and the optimiser could never remove material near a
+  concentration. Multiplying by `rho^q` with `q < p` lets a vanishing element
+  satisfy the constraint (the "qp relaxation", `q = 0.5` against `p = 3`).
+  The price is that intermediate densities carry a stress the material would
+  not: the constraint bounds the **relaxed** stress of the SIMP model, not
+  the stress of a part;
+* **the p-norm underestimates the maximum**, by up to `n^(1/P)` on a mesh
+  of `n` elements, and the ratio changes as the design changes. The scale
+  `c_l` is re-fitted every iteration to the ratio of the true relaxed maximum
+  to the aggregate, blended with the previous value
+  (`c_k = alpha s_max/g_PN + (1 - alpha) c_{k-1}`, `alpha = 0.5`), so the
+  constraint tracks the maximum it stands for. The summary records the
+  aggregate, the scale, the true maximum and the element that carries it;
+* **the number that answers "does the structure meet the limit" is the
+  re-solve.** Every stress-constrained run thresholds its design, analyses
+  the extracted structure with full material and reports
+  `interpreted_solid_analysis.max_von_mises_over_limit`. On the L-bracket
+  that is 0.80 against a relaxed maximum of 0.98: the interpreted part sits
+  comfortably inside a limit the relaxed model only just meets, because
+  thresholding promotes the corner's intermediate densities to solid material
+  and the corner stress drops. The opposite can happen on another design,
+  which is why both numbers are printed.
+
+**Gradient.** With `Psi_l = d sigma_PN / d u_l` assembled from the element
+centres, one adjoint solve per load case on the cached factorisation,
+`K lambda_l = Psi_l`, gives
+
+```
+  d sigma_PN / d rho_e  =  (explicit: d rho^q / d rho at fixed u)
+                          -  lambda_{l,e}^T  (dE(rho_e)/d rho / E_0)  K_e^0  u_{l,e}
+```
+
+pulled back through the density filter by the exact chain rule. This is a
+genuine adjoint - unlike the compliance, the stress aggregate is not
+self-adjoint - and it is verified against central differences on a 2-D
+problem with two load cases and a passive pad, and on a 3-D Hex8 problem
+(`tests/test_mma.cpp`). The sensitivity filter is refused for this constraint,
+because its filtered gradient is not the gradient of anything; so are
+non-zero prescribed displacements, which the adjoint above does not include.
+
+**What the constraint does not claim.** It bounds an aggregated, relaxed,
+element-centre von Mises stress of a density model. It is not a stress
+analysis of a part, not a fatigue or yield substantiation, and it says
+nothing about stress concentrations the mesh does not resolve - a re-entrant
+corner in a density design is mesh sensitive whether or not the constraint
+is on. It is the standard research formulation (Le, Norato, Bruns, Ha and
+Tortorelli 2010), implemented so the design it produces can be checked by
+the re-solve.
 
 ## 6. Passive regions
 
@@ -271,6 +414,15 @@ Every result records which criterion fired (`stop_reason`), the final value of
 both indicators, and - when neither was met - a warning stating that the
 returned design is the last iterate rather than a converged optimum.
 
+Under MMA a third condition applies: the iterate must also be feasible
+(`max_i g_i <= constraint_tolerance`). A stalled objective on a design that
+violates a constraint is not convergence and is not reported as such; the run
+continues to the cap and the summary then carries `feasible = false`. The
+stress-constrained L-bracket stops on the objective-stall criterion after 240
+iterations with a design change of 0.020 - the same fine-mesh migration
+described above, now with a constraint surface that moves as the p-norm scale
+is re-fitted - at a largest constraint value of `-3.8e-5`.
+
 **Compliance is not guaranteed to fall monotonically**, and SparLab does not
 pretend otherwise:
 
@@ -293,8 +445,12 @@ The optimiser and its supporting pieces report, never hide:
 | positive entry in `dc/dx` | warning naming the value; the OC update clamps it |
 | volume bisection cannot bracket the target | `ConvergenceError` with the reachable range |
 | volume bisection bracket collapses | warning with the achieved volume and the relative gap |
-| iteration cap reached | `converged = false`, `stop_reason = iteration_cap`, warning with both indicator values |
-| final volume above target by more than `1e-6` relative | warning with both volumes |
+| iteration cap reached | `converged = false`, `stop_reason = iteration_cap`, warning with both indicator values (and, for MMA, the largest constraint value) |
+| final volume above target by more than `1e-6` relative (OC) or `constraint_tolerance` (MMA) | warning with both volumes |
+| MMA subproblem fails to converge | `ConvergenceError` with the residual reached; the run stops rather than taking a bad step |
+| stress constraint requested with OC, the sensitivity filter or non-zero prescribed displacements | `ConfigError` at deck load, naming the incompatibility |
+| stress constraint violated at the returned design | `feasible = false`, warning with the largest constraint value and the relaxed stress ratio; a stalled objective on an infeasible design is never reported as convergence |
+| interpreted structure's re-solve exceeds the stress limit | `interpreted_solid_analysis.meets_stress_limit = false` in the summary, with the ratio |
 | non-finite objective | `SolverError` |
 | singular or near-singular `K_ff` | `SolverError` naming the three usual modelling causes |
 | density field with no element above the threshold | `MeshError` with the maximum density |
@@ -312,6 +468,11 @@ The optimiser and its supporting pieces report, never hide:
 | interpretation | threshold, retained elements, connected groups, discarded island volume | how the field was read as geometry |
 | interpreted compliance | weighted compliance of the *thresholded* structure, re-solved with real material | what the design would actually deliver |
 | `compliance_vs_simp_ratio` | interpreted compliance / SIMP compliance | the gap between the relaxed model and a real structure; either side of 1 (see below) |
+| `constraint_violation`, `feasible` (MMA) | largest constraint value at the returned design, and whether it is within `constraint_tolerance` | a converged MMA run is feasible by definition; an iteration-capped one may not be |
+| `stress.max_relaxed_stress_ratio` | true maximum of `rho^q sigma_vm` over the limit, per load case | what the constraint bounds; hovers about 1 while active |
+| `stress.p_norm_ratio`, `stress.scale` | the aggregate over the limit, and the scale that maps it to the maximum | how far the aggregate sits from the maximum it stands for |
+| `interpreted_solid_analysis.max_von_mises_over_limit` | peak von Mises of the re-solved thresholded structure over the limit | the number that says whether the *structure* meets the limit |
+| `geometry_export` | triangles, closure, non-manifold edges, enclosed vs cell volume of `structure_after.stl` | whether the exported surface is a usable solid, and what it inherits from the interpretation |
 
 The grey level needs care. A density filter of radius `r_min` leaves a genuinely
 intermediate boundary layer roughly `r_min` wide, and on a coarse mesh that layer

@@ -19,5 +19,11 @@ for case in cantilever_beam mbb_beam aerospace_bracket wing_rib l_bracket_stress
   "$SPARLAB_ROOT/scripts/run_benchmark.sh" "$case" "$RESULTS"
 done
 
+# The stress-constrained deck once more with the constraint switched off: the
+# reference the stress table and the comparison figure set beside it.
+banner "topology optimization: l_bracket_stress with the stress constraint off"
+"$BIN_DIR/sparlab_topopt" --config "$SPARLAB_ROOT/configs/benchmarks/l_bracket_stress.json" \
+                          --no-stress --output "$RESULTS/l_bracket_unconstrained"
+
 banner "all benchmarks complete"
 echo "results under: $RESULTS"

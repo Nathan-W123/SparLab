@@ -570,6 +570,12 @@ json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density
   } else if (stats.enclosed_volume <= 0.0) {
     log::warn("geometry export '", stem, "': the STL surface encloses a non-positive "
               "volume (", stats.enclosed_volume, " m^3); its normals point inward");
+  } else if (stats.non_manifold_edges > 0) {
+    log::warn("geometry export '", stem, "': the STL surface is closed but has ",
+              stats.non_manifold_edges, " non-manifold edge(s) where cells touch only "
+              "along an edge; a slicer may split it into several shells, and the "
+              "interpretation threshold or connectivity rule decides whether such "
+              "cells are one part");
   }
 
   json::Value out = json::Value::make_object();
@@ -580,6 +586,7 @@ json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density
   out.set("num_triangles", json::Value::make_number(stats.num_triangles));
   out.set("closed_surface", json::Value::make_bool(stats.closed));
   out.set("unmatched_edges", json::Value::make_number(stats.unmatched_edges));
+  out.set("non_manifold_edges", json::Value::make_number(stats.non_manifold_edges));
   out.set("surface_area_m2", json::Value::make_number(stats.area));
   out.set("enclosed_volume_m3", json::Value::make_number(stats.enclosed_volume));
   out.set("cell_volume_m3", json::Value::make_number(cell_volume));

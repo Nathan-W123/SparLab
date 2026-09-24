@@ -93,23 +93,34 @@ class Mesh:
     def element_centroids(self) -> np.ndarray:
         return self.nodes[self.elements].mean(axis=1)
 
-    def boundary_faces(self, mask: Optional[np.ndarray] = None) -> np.ndarray:
+    def boundary_faces(self, mask: Optional[np.ndarray] = None,
+                       return_owners: bool = False):
         """Outward-wound boundary quads of a solid mesh (or of a subset of it).
 
         Returns an (n_faces, 4) array of node indices: the faces owned by
         exactly one element of the subset, wound so the right-hand normal
-        points out of the material. `mask` selects the elements (all when None).
+        points out of the material. `mask` selects the elements (all when
+        None). With `return_owners`, also returns the index (into the full
+        element list) of the element each face belongs to, which is what maps
+        an element field onto the surface.
         """
         if self.dim != 3:
             raise ResultError("boundary faces are defined for 3-D meshes only")
-        elements = self.elements if mask is None else self.elements[np.asarray(mask, bool)]
+        ids = (np.arange(self.num_elements) if mask is None
+               else np.flatnonzero(np.asarray(mask, bool)))
+        elements = self.elements[ids]
         if elements.size == 0:
-            return np.empty((0, 4), dtype=int)
+            empty = np.empty((0, 4), dtype=int)
+            return (empty, np.empty(0, dtype=int)) if return_owners else empty
         faces = elements[:, HEX_FACES].reshape(-1, 4)          # (6 n, 4)
+        owners = np.repeat(ids, HEX_FACES.shape[0])
         keys = np.sort(faces, axis=1)
         _unique, first, counts = np.unique(keys, axis=0, return_index=True,
                                            return_counts=True)
-        return faces[first[counts == 1]]
+        keep = first[counts == 1]
+        if return_owners:
+            return faces[keep], owners[keep]
+        return faces[keep]
 
     def constrained_nodes(self, component: Optional[str] = None) -> np.ndarray:
         """Indices of nodes with a prescribed DOF, optionally for one component."""

@@ -129,6 +129,43 @@ TEST_CASE("a hex mesh's boundary faces form a closed outward surface",
   const SurfaceStats open_stats = surface_stats(open);
   REQUIRE_FALSE(open_stats.closed);
   REQUIRE(open_stats.unmatched_edges == 3);
+  REQUIRE(open_stats.non_manifold_edges == 0);
+
+  // Two cells that touch only along an edge (the diagonal pair of a 2 x 2
+  // grid) still close - every directed edge has its reverse - but use that
+  // edge twice each way, which is reported as one non-manifold edge, not as
+  // an open surface.
+  {
+    StructuredMeshSpec pair_spec;
+    pair_spec.nx = pair_spec.ny = 2;
+    pair_spec.nz = 1;
+    const Mesh grid = make_structured_hex_mesh(pair_spec);
+    std::vector<Index> remap(static_cast<std::size_t>(grid.num_nodes()), -1);
+    std::vector<Index> used;
+    std::vector<Index> connectivity;
+    for (Index e : {Index(0), Index(3)}) {
+      const Index* nodes = grid.element_nodes(e);
+      for (int a = 0; a < 8; ++a) {
+        Index& slot = remap[static_cast<std::size_t>(nodes[a])];
+        if (slot < 0) {
+          slot = static_cast<Index>(used.size());
+          used.push_back(nodes[a]);
+        }
+        connectivity.push_back(slot);
+      }
+    }
+    Matrix coords(3, static_cast<Index>(used.size()));
+    for (std::size_t i = 0; i < used.size(); ++i) {
+      coords.col(static_cast<Index>(i)) = grid.node(used[i]);
+    }
+    const Mesh pair(coords, connectivity, ElementType::Hex8);
+    const SurfaceStats pair_stats = surface_stats(boundary_surface(pair));
+    REQUIRE(pair_stats.closed);
+    REQUIRE(pair_stats.unmatched_edges == 0);
+    REQUIRE(pair_stats.non_manifold_edges == 1);
+    REQUIRE(pair_stats.enclosed_volume ==
+            Approx(grid.element_measure(0) + grid.element_measure(3)).epsilon(1.0e-12));
+  }
 }
 
 TEST_CASE("binary STL files have the standard layout and round-trip",

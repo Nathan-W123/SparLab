@@ -22,11 +22,18 @@ import _bootstrap  # noqa: F401
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 CASES = [
     "cantilever_analysis",
+    "block_3d_analysis",
     "cantilever_beam",
     "mbb_beam",
     "aerospace_bracket",
     "wing_rib",
+    "l_bracket_stress",
+    "bracket_3d",
 ]
+
+#: The stress-constrained case and the unconstrained run of the same deck
+#: (sparlab_topopt --no-stress) that the comparison figure sets beside it.
+STRESS_COMPARISON = ("l_bracket_stress", "l_bracket_unconstrained")
 
 
 def run(label: str, argv: list) -> bool:
@@ -63,12 +70,25 @@ def main(argv=None) -> int:
         if not run(f"figures for {case}", argv_case):
             failures.append(f"{case}: plot_case.py failed")
 
-    if not run("verification and benchmark figures",
+    if not run("verification, benchmark and cross-validation figures",
                [os.path.join(SCRIPTS, "plot_verification.py"),
                 "--verification", os.path.join(args.results, "verification"),
                 "--benchmark", os.path.join(args.results, "benchmark"),
+                "--cross-validation", os.path.join(args.results, "cross_validation"),
                 "--figures", args.figures]):
         failures.append("verification/benchmark figures failed")
+
+    constrained, unconstrained = (os.path.join(args.results, c) for c in STRESS_COMPARISON)
+    if not args.only or STRESS_COMPARISON[0] in cases:
+        if os.path.isdir(constrained) and os.path.isdir(unconstrained):
+            if not run("stress-constraint comparison figure",
+                       [os.path.join(SCRIPTS, "plot_comparison.py"),
+                        "--constrained", constrained, "--unconstrained", unconstrained,
+                        "--figures", args.figures]):
+                failures.append("stress-constraint comparison figure failed")
+        else:
+            failures.append(f"stress comparison: {constrained} and {unconstrained} "
+                            "must both exist (scripts/run_all_benchmarks.sh writes them)")
 
     study_dir = os.path.join(args.results, "study")
     if os.path.isdir(study_dir):

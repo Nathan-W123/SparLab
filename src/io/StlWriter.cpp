@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -127,19 +128,26 @@ SurfaceStats surface_stats(const TriangleSurface& surface) {
   stats.bounds.upper = Vector3::Constant(-std::numeric_limits<Scalar>::max());
 
   // Directed edges: a closed, consistently oriented surface uses every edge
-  // exactly once in each direction.
+  // as often in one direction as in the other. A 2-manifold uses it exactly
+  // once each way; cells touching only along an edge use it twice each way,
+  // which is counted separately because the surface still closes.
   std::map<std::pair<Index, Index>, Index> edges;
   for (const std::array<Index, 3>& f : surface.faces) {
     for (int k = 0; k < 3; ++k) ++edges[{f[k], f[(k + 1) % 3]}];
   }
   Index unmatched = 0;
+  Index non_manifold = 0;
   for (const auto& entry : edges) {
     const auto reverse = edges.find({entry.first.second, entry.first.first});
-    if (entry.second != 1 || reverse == edges.end() || reverse->second != 1) {
-      unmatched += entry.second;
+    const Index reversed = reverse == edges.end() ? 0 : reverse->second;
+    if (entry.second != reversed) {
+      unmatched += std::abs(entry.second - reversed);
+    } else if (entry.second > 1 && entry.first.first < entry.first.second) {
+      ++non_manifold;  // count each undirected edge once
     }
   }
   stats.unmatched_edges = unmatched;
+  stats.non_manifold_edges = non_manifold;
   stats.closed = unmatched == 0;
 
   for (Index i = 0; i < surface.num_triangles(); ++i) {

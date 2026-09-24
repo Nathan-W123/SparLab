@@ -41,7 +41,7 @@ a 41-point sweep is affordable.
 | Optimiser | OC, move limit 0.2, damping 0.5 |
 | Convergence | `max |dx| < 1e-2` **or** relative objective change `< 5e-5` over 20 iterations, cap 600 iterations |
 
-The convergence rule is deliberately identical to the four benchmark decks, so
+The convergence rule is deliberately identical to the four plane benchmark decks, so
 compliance is comparable between a study point and a benchmark, and every point
 stops for a recorded reason rather than at an iteration budget.
 

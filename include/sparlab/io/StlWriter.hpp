@@ -67,6 +67,11 @@ struct SurfaceStats {
   /// i.e. the surface is closed and consistently oriented.
   bool closed = false;
   Index unmatched_edges = 0;     ///< directed edges without a reversed partner
+  /// Edges used more than once in the same direction: cells that touch only
+  /// along an edge or at a corner. The surface still closes (every directed
+  /// edge has its reverse), but it is not a 2-manifold, and a slicer may split
+  /// it into several shells.
+  Index non_manifold_edges = 0;
 };
 
 /// Boundary surface of the mesh, extruded by `thickness` along +z when the

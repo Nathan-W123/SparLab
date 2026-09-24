@@ -100,39 +100,74 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ninja-build libeigen3-dev catch2
-          python3 -m pip install --quiet numpy pandas matplotlib pillow
+          python3 -m pip install --quiet numpy pandas matplotlib pillow scikit-fem
 
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j "$(nproc)"
 
-      - name: Static and modal analysis
-        run: ./scripts/run_benchmark.sh cantilever_analysis results
+      - name: Static and modal analysis (2-D and 3-D)
+        run: |
+          ./build/bin/sparlab_solve --config configs/verification/cantilever_analysis.json \
+                                    --output results/cantilever_analysis --export-calculix
+          ./build/bin/sparlab_solve --config configs/verification/block_3d_analysis.json \
+                                    --output results/block_3d_analysis --export-calculix
 
-      - name: Topology optimization on a reduced mesh
-        # The committed cantilever deck runs a 160x80 mesh for several hundred
-        # iterations. CI runs the same deck at a quarter of the resolution and a
-        # shorter budget: enough to exercise the whole pipeline, including the
-        # modal comparison of the interpreted topology, in about a minute.
+      - name: Cross-validation against scikit-fem
+        # CalculiX is not installed on the runner, so only the scikit-fem
+        # comparison runs; it exits non-zero if a displacement field differs
+        # beyond the documented tolerance.
+        run: |
+          python3 python/scripts/cross_validate.py --skip-calculix \
+              --case results/cantilever_analysis --case results/block_3d_analysis \
+              --output results/cross_validation
+
+      - name: Topology optimization on reduced meshes
+        # The committed decks run for several hundred iterations on fine
+        # meshes. CI runs the same decks at a fraction of the resolution and a
+        # shorter budget: enough to exercise the whole pipeline - OC and MMA,
+        # the stress constraint, the Hex8 path, the modal comparison of the
+        # interpreted topology and the geometry export - in a few minutes.
         run: |
           ./build/bin/sparlab_topopt \
             --config configs/benchmarks/cantilever_beam.json \
             --output results/cantilever_beam \
             --nx 80 --ny 40 --max-iterations 60 --modes 4
+          ./build/bin/sparlab_topopt \
+            --config configs/benchmarks/l_bracket_stress.json \
+            --output results/l_bracket_stress \
+            --nx 32 --ny 32 --max-iterations 40
+          ./build/bin/sparlab_topopt \
+            --config configs/benchmarks/l_bracket_stress.json \
+            --output results/l_bracket_unconstrained \
+            --nx 32 --ny 32 --max-iterations 40 --no-stress
+          ./build/bin/sparlab_topopt \
+            --config configs/benchmarks/bracket_3d.json \
+            --output results/bracket_3d \
+            --nx 16 --ny 8 --nz 4 --max-iterations 20 --modes 4
 
       - name: Runtime scaling (small sizes)
-        run: ./build/bin/sparlab_bench --sizes 20,40,80 --repeats 1 --output results/benchmark
-
-      - name: Regenerate figures
         run: |
-          python3 python/scripts/plot_case.py --case results/cantilever_analysis \
-                                              --figures ci-figures
-          python3 python/scripts/plot_case.py --case results/cantilever_beam \
-                                              --figures ci-figures
+          ./build/bin/sparlab_bench --sizes 20,40,80 --repeats 1 --output results/benchmark
+          ./build/bin/sparlab_bench --dim 3 --sizes 8,16 --repeats 1 --output results/benchmark
+
+      - name: Regenerate figures and tables
+        run: |
+          for case in cantilever_analysis block_3d_analysis cantilever_beam \
+                      l_bracket_stress bracket_3d; do
+            python3 python/scripts/plot_case.py --case results/$case \
+                                                --figures ci-figures --no-animation
+          done
+          python3 python/scripts/plot_comparison.py \
+              --constrained results/l_bracket_stress \
+              --unconstrained results/l_bracket_unconstrained --figures ci-figures
           python3 python/scripts/plot_verification.py \
               --verification results/verification --benchmark results/benchmark \
+              --cross-validation results/cross_validation \
               --figures ci-figures || true
+          python3 python/scripts/write_result_tables.py --results results \
+                                                        --output ci-figures/tables
 
       - name: Upload figures
         if: always()

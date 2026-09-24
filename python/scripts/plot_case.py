@@ -53,17 +53,19 @@ def _topology_case(case: CaseResults) -> CaseResults:
         raise ResultError("no topology-tagged mode shapes in this run")
     from sparlab_viz.loaders import Mesh
 
-    nodes = np.column_stack([table["x[m]"].to_numpy(), table["y[m]"].to_numpy()])
+    columns = [c for c in ("x[m]", "y[m]", "z[m]") if c in table]
+    nodes = np.column_stack([table[c].to_numpy() for c in columns])
     # Rebuild connectivity by matching the retained elements of the parent mesh
     # against the sub-mesh node coordinates.
     parent = case.mesh
-    lookup = {(round(x, 12), round(y, 12)): i for i, (x, y) in enumerate(nodes)}
+    if nodes.shape[1] != parent.dim:
+        raise ResultError("the topology mode-shape table and the mesh differ in dimension")
+    lookup = {tuple(np.round(row, 12)): i for i, row in enumerate(nodes)}
     elements = []
     for element in parent.elements:
         mapped = []
         for node in element:
-            key = (round(float(parent.nodes[node, 0]), 12),
-                   round(float(parent.nodes[node, 1]), 12))
+            key = tuple(np.round(parent.nodes[node], 12))
             index = lookup.get(key)
             if index is None:
                 mapped = []
@@ -122,7 +124,8 @@ def main(argv=None) -> int:
             case, name, _figure_name(args.figures, prefix, f"deformed_{name}"),
             density=density))
         written.append(plots.plot_displacement_magnitude(
-            case, name, _figure_name(args.figures, prefix, f"displacement_{name}")))
+            case, name, _figure_name(args.figures, prefix, f"displacement_{name}"),
+            density=density))
         if case.has(f"stress_{name}.csv"):
             written.append(plots.plot_stress_fields(
                 case, name, _figure_name(args.figures, prefix, f"stress_{name}"),
@@ -153,7 +156,7 @@ def main(argv=None) -> int:
     if "modal_optimised_topology" in case.summary:
         written.append(plots.plot_modal_comparison(
             case.summary, _figure_name(args.figures, prefix, "modal_comparison"),
-            case.name))
+            case.name, dim=case.dim))
 
     # --- topology ------------------------------------------------------------
     if case.is_topology_run:

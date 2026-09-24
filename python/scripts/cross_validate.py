@@ -104,9 +104,14 @@ def run_calculix(deck: str, workdir: str) -> str:
 
 
 def calculix_version() -> str:
+    """The ccx version number ("2.21"), or its raw banner if it cannot be parsed."""
     proc = subprocess.run(["ccx", "-v"], capture_output=True, text=True, check=False)
-    text = (proc.stdout + proc.stderr).strip().splitlines()
-    return text[-1].strip() if text else "unknown"
+    text = (proc.stdout + proc.stderr).strip()
+    match = re.search(r"[Vv]ersion\s+([0-9][0-9.]*)", text)
+    if match:
+        return match.group(1)
+    lines = text.splitlines()
+    return lines[-1].strip() if lines else "unknown"
 
 
 # ---------------------------------------------------------------------------

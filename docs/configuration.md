@@ -31,14 +31,27 @@ reports its line and column.
 ```json
 "mesh": { "type": "structured_quad", "nx": 240, "ny": 160,
           "lx": 0.30, "ly": 0.20, "x0": 0.0, "y0": 0.0 }
+
+"mesh": { "type": "structured_hex", "nx": 32, "ny": 16, "nz": 8,
+          "lx": 0.24, "ly": 0.12, "lz": 0.06 }
 ```
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `type` | string | `structured_quad` | the only generator implemented |
+| `type` | string | `structured_quad` | `structured_quad` (plane, Q4) or `structured_hex` (solid, Hex8) |
 | `nx`, `ny` | integer | required | elements per direction, `>= 1` |
+| `nz` | integer | required for `structured_hex` | elements through the third direction |
 | `lx`, `ly` | number | required | domain extents [m], `> 0` |
-| `x0`, `y0` | number | `0` | lower-left corner [m] |
+| `lz` | number | required for `structured_hex` | extent in z [m] |
+| `x0`, `y0`, `z0` | number | `0` | lower corner [m] |
+
+The mesh type fixes the dimension of the whole deck: a `structured_hex` mesh
+has three displacement components per node, regions may use `zmin`/`zmax`
+and `sphere`, boundary conditions may fix `"z"`, forces and tractions carry
+three components, `model.thickness` must be absent (a solid has none) and
+`model.stress_state` defaults to `three_dimensional`. Naming `nz`, `lz` or
+`z0` on a `structured_quad` mesh is an error, as is any z component on a
+plane deck.
 
 ## `material`
 
@@ -64,11 +77,11 @@ reports its line and column.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `thickness` | number [m] | `1.0` | out-of-plane thickness, `> 0` |
-| `stress_state` | string | `plane_stress` | or `plane_strain` |
-| `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 |
+| `thickness` | number [m] | `1.0` | out-of-plane thickness, `> 0`; plane meshes only - a solid mesh rejects the key |
+| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh) | `plane_stress`, `plane_strain` or `three_dimensional`; the plane idealisations need a `structured_quad` mesh and `three_dimensional` a `structured_hex` one |
+| `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 (2x2 for the Q4, 2x2x2 for the Hex8) |
 | `integration.mass_points` | integer | `3` | Gauss points per direction for `M_e`, 1-4 |
-| `integration.edge_points` | integer | `2` | Gauss points along an edge, 1-4 |
+| `integration.face_points` | integer | `2` | Gauss points per direction on a loaded edge or face, 1-4; `edge_points` is accepted as a synonym |
 
 ## Regions
 
@@ -89,12 +102,16 @@ A single primitive may also be written directly in the `region` object, without
 | Primitive | Form | Selects |
 |-----------|------|---------|
 | `all` | `"all": true` | everything |
-| `box` | `{ "xmin":, "xmax":, "ymin":, "ymax": }`, any subset | points inside the axis-aligned box; omitted sides are unbounded |
-| `circle` | `{ "center": [x, y], "radius": r }` | the closed disc |
-| `annulus` | `{ "center": [x, y], "inner_radius": r0, "radius": r1 }` | the closed ring, `r0 < r1` |
+| `box` | `{ "xmin":, "xmax":, "ymin":, "ymax":, "zmin":, "zmax": }`, any subset | points inside the axis-aligned box; omitted sides are unbounded; `zmin`/`zmax` on a solid mesh only |
+| `circle` | `{ "center": [x, y(, z)], "radius": r, "axis": "z" }` | the closed disc; on a solid mesh, the infinite cylinder of that radius about the line through `center` along `axis` (`x`, `y` or `z`, default `z`) |
+| `annulus` | `{ "center": [...], "inner_radius": r0, "radius": r1, "axis": "z" }` | the closed ring, `r0 < r1`; a tube on a solid mesh |
+| `sphere` | `{ "center": [x, y, z], "radius": r }` | the closed ball (solid meshes only) |
 | `node_ids` | `[...]` | explicit nodes (node regions only) |
 | `element_ids` | `[...]` | explicit elements (element regions only) |
-| `nearest_node` | `[x, y]` | the single node closest to the point (node regions only) |
+| `nearest_node` | `[x, y(, z)]` | the single node closest to the point (node regions only) |
+
+A `center` or `nearest_node` point carries as many components as the mesh has
+dimensions.
 
 | Region key | Type | Default | Meaning |
 |------------|------|---------|---------|
@@ -119,8 +136,8 @@ an error, as is a region that selects nothing.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `name` | string | auto | diagnostics |
-| `fix` | array of `"x"` / `"y"` | required, non-empty | which components to prescribe |
-| `value` | `[u_x, u_y]` [m] | `[0, 0]` | prescribed displacement |
+| `fix` | array of `"x"` / `"y"` (/ `"z"` on a solid mesh) | required, non-empty | which components to prescribe |
+| `value` | `[u_x, u_y(, u_z)]` [m] | zeros | prescribed displacement |
 | `region` | object | required | node region |
 
 Non-zero values are handled by static condensation, not by modifying the load
@@ -156,7 +173,7 @@ vector, so the reactions stay exact.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `force` | `[F_x, F_y]` [N] | required | see `distribution` |
+| `force` | `[F_x, F_y(, F_z)]` [N] | required | see `distribution` |
 | `distribution` | `"total"` / `"per_node"` | `"total"` | `total` divides the resultant among the selected nodes, so the total force is mesh independent; `per_node` applies `force` to each node |
 | `region` | object | required | node region |
 
@@ -164,12 +181,13 @@ vector, so the reactions stay exact.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `traction` | `[t_x, t_y]` [Pa] | required | stress vector in **global** components, not a normal pressure |
-| `region` | object | required | node region; a boundary edge is loaded when *both* its end nodes lie inside |
+| `traction` | `[t_x, t_y(, t_z)]` [Pa] | required | stress vector in **global** components, not a normal pressure |
+| `region` | object | required | node region; a boundary edge (face, on a solid mesh) is loaded when *all* its nodes lie inside |
 
 Tractions are integrated to consistent nodal forces, so the resultant is exactly
-`traction * (loaded length) * thickness` at any mesh resolution. A traction
-region matching no boundary edge is an error.
+`traction * (loaded length) * thickness` on a plane mesh and
+`traction * (loaded area)` on a solid one, at any mesh resolution. A traction
+region matching no boundary edge or face is an error.
 
 A load case with neither `point_loads` nor `tractions` is an error unless
 `prescribed_displacement_only` is set.
@@ -284,10 +302,44 @@ length scale fixed, which is what makes the optimum mesh convergent.
 | `continuation_steps` | integer | `1` | `> 1` enables penalty continuation |
 | `penalty_start` | number | `1.0` | starting penalty, `>= 1` and `<= simp.penalty` |
 | `continuation_iterations` | integer | `25` | iterations per continuation stage |
-| `volume_tolerance` | number | `1e-10` | relative volume error of the multiplier bisection |
-| `max_bisections` | integer | `200` | bisection cap |
+| `volume_tolerance` | number | `1e-10` | relative volume error of the multiplier bisection (OC) |
+| `max_bisections` | integer | `200` | bisection cap (OC) |
 | `history_stride` | integer | `1` | record a density snapshot every N iterations; `0` disables |
 | `interpretation_threshold` | number | `0.5` | density threshold used when reading the field as geometry, in `(0, 1)` |
+| `method` | string | `oc` | `oc` (optimality criteria, volume constraint only) or `mma` (method of moving asymptotes, any number of constraints) |
+| `constraint_tolerance` | number | `1e-4` | MMA: largest constraint value `g_i <= tol` for an iterate to count as feasible; convergence requires feasibility |
+| `mma.move_limit` | number | `move_limit` | MMA per-iteration bound on the design change |
+| `mma.asymptote_init` | number | `0.5` | initial asymptote distance as a fraction of the variable range |
+| `mma.asymptote_increase` | number | `1.2` | asymptote widening when a variable keeps moving the same way |
+| `mma.asymptote_decrease` | number | `0.7` | asymptote tightening when it oscillates |
+| `mma.constraint_penalty` | number | `1000` | Svanberg's `c_i`: the price of the artificial variables that relax a constraint |
+| `mma.subproblem_tolerance` | number | `1e-7` | interior-point residual at which the subproblem is converged |
+
+```json
+"topology": {
+  "optimizer": { "method": "mma", "move_limit": 0.1, "constraint_tolerance": 1e-4,
+                 "mma": { "asymptote_init": 0.5, "asymptote_increase": 1.2,
+                          "asymptote_decrease": 0.7 } },
+  "stress": { "enabled": true, "limit": 9.4e6, "p_norm": 8.0,
+              "relaxation": 0.5, "scaling_blend": 0.5, "feasibility_tolerance": 1e-3 }
+}
+```
+
+**`stress`** - an aggregated von Mises stress constraint, one per load case.
+Requires `method: "mma"` and the density filter (the sensitivity filter has no
+gradient the adjoint could use).
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | add the constraint |
+| `limit` | number [Pa] | required | allowable von Mises stress |
+| `p_norm` | number | `8` | exponent `P` of the p-norm aggregate; larger tracks the maximum more closely at the price of a rougher constraint |
+| `relaxation` | number | `0.5` | qp-relaxation exponent `q`: the relaxed stress is `rho^q sigma_vm(solid)`, so a void element cannot violate the limit |
+| `scaling_blend` | number | `0.5` | weight `alpha` in the adaptive scale `c_k = alpha s_max/g_PN + (1 - alpha) c_{k-1}` that makes the aggregate track the true maximum |
+| `feasibility_tolerance` | number | `1e-3` | relative margin the summary uses when it reports whether the *relaxed* maximum meets the limit |
+
+`docs/topology_optimization.md` gives the formulation and says what the
+constraint does and does not guarantee.
 
 **`passive_regions`** - an array of
 
@@ -322,11 +374,19 @@ duplicate a deck. Each corresponds to one deck field:
 --filter-radius-elements topology.filter.radius_elements   (cells)
 --filter-type            topology.filter.type
 --max-iterations         topology.optimizer.max_iterations
---nx --ny                mesh.nx, mesh.ny
+--method oc|mma          topology.optimizer.method
+--stress-limit <Pa>      topology.stress.limit, and enables the constraint and MMA
+--no-stress              topology.stress.enabled = false
+--nx --ny (--nz)         mesh.nx, mesh.ny (mesh.nz, solid meshes only)
 --youngs-modulus         material.youngs_modulus
 --load-weights w1,w2,... one weight per load case, in deck order
 --modes N                modal.enabled = true, modal.num_modes = N
 --tag NAME               appended to the case name in summary.json
 ```
+
+`sparlab_solve --export-calculix` additionally writes one CalculiX input deck
+per load case (`calculix_<case>.inp`: CPS4, CPE4 or C3D8 elements, the same
+nodes, supports and nodal loads) into the output directory, which is what
+`scripts/run_cross_validation.sh` feeds to `ccx`.
 
 Run any app with `--help` for its full flag list.
