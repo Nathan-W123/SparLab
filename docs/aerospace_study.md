@@ -673,7 +673,12 @@ constraint.
    twice, on two separately compiled binaries, and all 41 points reproduced
    with a relative difference of exactly zero in compliance, volume fraction,
    grey level and both convergence indicators, with identical iteration counts
-   and stop reasons.
+   and stop reasons. It was run a third time after the multigrid solver, the
+   Heaviside projection and the mesh readers were added. The study deck names
+   the sparse Cholesky solver and uses no projection, so of those changes it
+   meets only the assembly into a cached sparsity pattern and the new
+   objective-stall measure. All 41 points reproduced exactly again, down to
+   the modal frequencies and the re-solved structures.
 
 ## Reproducing the diagnostics
 

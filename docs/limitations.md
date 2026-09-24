@@ -180,7 +180,8 @@ turn.
 reach `1e-2` on the finer benchmark meshes because thin members migrate one cell
 at a time long after the objective has settled. A measured example: on the
 cantilever benchmark the compliance improves by only 0.35% between iteration 250
-and iteration 800 while `max |dx|` keeps oscillating between 0.004 and 0.12.
+and iteration 800, while `max |dx|` stays between 0.004 and 0.09 in nine
+iterations out of ten and reaches the move limit of 0.2 around iteration 260.
 This is why an objective-stall criterion is the backstop - the relative spread
 of the compliance over a window, which an oscillating design cannot satisfy
 mid-cycle - and why every run records both indicators and which one fired.
@@ -322,9 +323,10 @@ than a curve. The 3-D bracket without a projection therefore settles at a
 grey level of 0.34, and its thresholded structure is 39 % stiffer than the
 SIMP field. The Heaviside projection closes most of that gap: the projected
 bracket ends at a grey level of 0.013 with its thresholded structure within
-2 % of the objective, and the 356 475-DOF bracket within 0.03 %. The
-re-solved value is still the one to plan with, because it is the analysis
-of the part that is actually exported.
+2 % of the objective, and the 356 475-DOF bracket within 0.03 %. The engine
+mount, whose projection stops at `beta = 16` on a tetrahedral mesh, still
+differs by 4.5 %. The re-solved value is the one to plan with, because it
+is the analysis of the part that is actually exported.
 
 **A projected run reports the projected density.** With the projection on,
 the compliance, the volume, the grey level and every figure refer to the
@@ -334,8 +336,9 @@ higher: 0.12 to 0.35 on the benchmarks. The volume constraint holds at every
 design update, but two kinds of iterate are analysed before an update has
 put them on the target: the uniform start seen through the projection, and
 the first design after each increase of `beta`. Their recorded volume is off
-by up to 16 % (the lug bracket's start) and 6.4e-4 (after a `beta` step on
-the large bracket). The convergence figure says so beside those points.
+by up to 16 % at the start (the lug bracket) and up to 1.8 % after a `beta`
+step (the projected solid bracket). The convergence figure says so beside
+those points.
 
 **Runtimes are machine-specific.** Every reported time comes from one machine
 and one build, both recorded in the result summaries. Absolute values will

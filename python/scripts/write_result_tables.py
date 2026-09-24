@@ -607,7 +607,8 @@ def main(argv=None) -> int:
          "the compliance of an equal-mass uniform plate divided by the optimised "
          "compliance, so values above 1 mean the optimised design is stiffer at "
          "the same mass; it is a plane-stress quantity and is n/a for the solid "
-         "cases."),
+         "cases. The L-bracket's plate would fill its passive void quadrant, so "
+         "its gain is not a fair comparison (`docs/benchmarks.md`, section 5)."),
         ("Heaviside projection", projection_table(args.results),
          "Every projected run and, where one exists, the unprojected run of the "
          "same problem. `grey` is 4 mean(rho (1 - rho)) of the physical density; "

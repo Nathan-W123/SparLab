@@ -38,7 +38,7 @@ relative.
 | **Modal analysis** | Consistent or lumped mass, generalised eigenproblem by shift-invert subspace iteration, validity screening for negative and rigid-body eigenvalues |
 | **Topology optimisation** | SIMP with penalty continuation, density and sensitivity filters, a **Heaviside projection** with `beta` continuation, analytical sensitivities, optimality criteria *or* the method of moving asymptotes, an aggregated von Mises **stress constraint** with adjoint sensitivities, passive solid/void regions, multi-load-case objective |
 | **Geometry** | The structure before and after optimisation as VTK and watertight binary STL, with closure, manifoldness and volume checks |
-| **Verification** | Patch tests on all four elements, rigid-body modes, positive definiteness, reaction equilibrium, agreement of seven linear solvers, multigrid iteration counts under refinement, finite-difference gradient checks (compliance and stress, 2-D and 3-D, through the projection), mass conservation, beam and rod theory, mesh convergence - and node-by-node **cross-validation against CalculiX and scikit-fem**, including two meshes read from Gmsh |
+| **Verification** | Patch tests on all four elements, rigid-body modes, positive definiteness, reaction equilibrium, agreement of seven linear solvers, multigrid iteration counts under refinement, finite-difference gradient checks (compliance and stress, 2-D and 3-D, through the projection), mass conservation, beam and rod theory, mesh convergence - and node-by-node **cross-validation against CalculiX and scikit-fem**, including the two parts meshed in Gmsh |
 | **Diagnostics** | Pre-solve detection of rigid-body under-constraint and floating regions, singular-matrix reporting with the likely modelling cause, explicit non-convergence and infeasibility reporting |
 | **Output** | `summary.json`, CSV tables, legacy VTK for ParaView, CalculiX decks, STL, publication-quality figures and animations |
 
@@ -48,7 +48,7 @@ relative.
 # 1. Dependencies (Debian/Ubuntu; see scripts/setup_deps.sh for other platforms)
 ./scripts/setup_deps.sh
 
-# 2. Build and test          (~1 min build, ~10 s tests)
+# 2. Build and test          (~2 min build, ~25 s tests)
 make build
 make test
 
@@ -56,7 +56,7 @@ make test
 make benchmark CASE=cantilever_analysis
 make benchmark CASE=block_3d_analysis
 
-# 4. Verification studies    (~15 s, exits non-zero if any tolerance is missed)
+# 4. Verification studies    (~80 s, exits non-zero if any tolerance is missed)
 make verify
 
 # 5. Cross-validation         (needs scikit-fem; CalculiX's ccx if installed)
@@ -172,18 +172,28 @@ recorded as a comparison between idealisations rather than judged
 
 ### Benchmarks
 
-| Case | Elements | Method | `nu` | Iterations | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Runtime [s] |
-|------|---------:|--------|-----:|-----------:|---------------:|---------------------:|---------------:|-----:|------------:|
-| Cantilever beam | 12 800 Q4 | OC | 0.40 | 362 | 1.11252 | 1.37813 | **1.239** | 0.095 | 44.4 |
-| MBB beam | 10 800 Q4 | OC | 0.50 | 434 | 221.551 | 259.521 | **1.171** | 0.279 | 50.2 |
-| Aerospace bracket | 38 400 Q4 | OC | 0.35 | 375 | 3.00015 | 3.19665 | **1.065** | 0.116 | 422.5 |
-| Wing rib | 12 500 Q4 | OC | 0.40 | 530 | 1.35608 | 1.21194 | **0.894** | 0.221 | 56.0 |
-| L-bracket, stress-constrained | 4 096 Q4 | MMA | 0.35 | 240 | 0.09006 | - | - | 0.116 | 10.6 |
-| Solid bracket | 4 096 Hex8 | OC | 0.30 | 157 | 0.28951 | - | - | 0.336 | 442.0 |
+| Case | Elements | Method | Solver | `nu` | Iterations | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Optimisation [s] |
+|------|---------:|--------|--------|-----:|-----------:|---------------:|---------------------:|---------------:|-----:|-----------------:|
+| Cantilever beam | 12 800 Q4 | OC | Cholesky | 0.40 | 362 | 1.11252 | 1.37813 | **1.239** | 0.0947 | 48.9 |
+| MBB beam | 10 800 Q4 | OC | Cholesky | 0.50 | 434 | 221.551 | 259.521 | **1.171** | 0.279 | 56.6 |
+| MBB beam, projected | 10 800 Q4 | OC + projection | Cholesky | 0.50 | 218 | 189.654 | 259.521 | **1.368** | 0.0207 | 31.6 |
+| Aerospace bracket | 38 400 Q4 | OC | Cholesky | 0.35 | 375 | 3.00015 | 3.19665 | **1.065** | 0.116 | 443.9 |
+| Wing rib | 12 500 Q4 | OC | Cholesky | 0.40 | 530 | 1.35608 | 1.21194 | **0.894** | 0.221 | 64.9 |
+| L-bracket, stress-constrained | 4 096 Q4 | MMA + stress | Cholesky | 0.35 | 494 | 0.0895584 | - | - | 0.118 | 22.1 |
+| Solid bracket | 4 096 Hex8 | OC | Cholesky | 0.30 | 157 | 0.289513 | - | - | 0.336 | 450.5 |
+| Solid bracket, projected | 4 096 Hex8 | OC + projection | multigrid CG | 0.30 | 190 | 0.181884 | - | - | 0.0125 | 99.6 |
+| Solid bracket, 356k DOFs | 110 592 Hex8 | OC + projection | multigrid CG | 0.30 | 171 | 0.170987 | - | - | 0.000862 | 1339.9 |
+| Lug bracket, Gmsh mesh | 20 336 Tri3 | OC + projection | Cholesky | 0.35 | 211 | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
+| Engine mount, Abaqus mesh | 39 936 Tet4 | OC + projection | multigrid CG | 0.25 | 265 | 0.443669 | - | - | 0.0484 | 278.5 |
 
-The volume constraint is satisfied to between `1.1e-11` and `8.0e-11` relative
-in every OC case, and at every recorded iteration; MMA treats it as an
-explicit constraint and meets it to `3.8e-05` at the returned design.
+Every OC run meets the volume constraint at its returned design to between
+`1.1e-11` and `9.6e-11` relative. Without the projection it holds at every
+recorded iteration too; with it, the starting design and the first design
+after each `beta` step are analysed before an update puts them back on the
+target. MMA treats the volume as an explicit constraint and meets it at
+`-2.0e-4`, on the feasible side. The optimisation times come from one
+4-core machine: the direct solver runs on one core and the multigrid solver
+on four.
 
 "Stiffness gain" compares against a *uniform plate of the same mass*, not
 against the solid domain. In this 2-D idealisation `K` and `M` both scale
@@ -221,6 +231,52 @@ compliance, with the corner visibly rounded
 constraint bounds the *relaxed* stress of the density model; the re-solve of
 the thresholded structure is the number that says whether the part meets the
 limit, and both are reported.
+
+### Heaviside projection: what it buys
+
+![The MBB beam with and without the Heaviside projection](docs/figures/mbb_beam_projection.png)
+
+The MBB beam and the solid bracket, each run with and without the
+projection:
+
+| | MBB beam | MBB beam, projected | Solid bracket | Solid bracket, projected |
+|---|---:|---:|---:|---:|
+| Grey level | 0.279 | **0.021** | 0.336 | **0.013** |
+| Thresholded structure / optimised compliance | 0.851 | **0.995** | 0.609 | **0.983** |
+| Thresholded structure [J] | 188.60 | 188.63 | 0.1763 | 0.1787 |
+| Thresholded volume fraction | 0.510 | 0.501 | 0.312 | 0.302 |
+
+Without a projection the reported compliance describes a grey field: the
+thresholded part is 15 % (MBB) and 39 % (bracket) stiffer than the
+optimiser said. With it, the reported compliance and the part agree to
+0.5 % and 1.7 %. The part itself changes little, so what the projection
+buys is a number that means what it says. At a sharp projection the design
+change never settles, so the projected decks stop on the compliance
+instead: a spread below 0.1 % over 10 iterations
+([details](docs/benchmarks.md)).
+
+### Real geometry
+
+Two parts drawn and meshed in Gmsh by `python/scripts/make_meshes.py`, read
+through the mesh-file readers, with their physical groups as the supports,
+the loads and the solid rings around the holes:
+
+| | Lug bracket | Engine mount |
+|---|---:|---:|
+| Mesh file | Gmsh MSH 4.1 | Abaqus / CalculiX `.inp` |
+| Elements, DOFs | 20 336 Tri3, 20 834 | 39 936 Tet4, 25 920 |
+| Solver chosen by `auto` | Cholesky | multigrid CG |
+| Iterations, stop | 211, objective stall at `beta` 32 | 265, objective stall at `beta` 16 |
+| Thresholded / optimised compliance | 0.996 | 0.955 |
+| Against the baseline | **1.147** times as stiff as the equal-mass plate | 1.95 times the full part's compliance at 25 % of its mass |
+| `f1`, full part to optimised | 2202 to **2902 Hz** | 1278 to **1795 Hz** |
+| Optimisation time | 37.7 s | 278.5 s |
+
+The engine mount's rings take almost half of its 25 % material budget. Its
+first run, started from a uniform 0.25, stopped before the first update:
+the move limit could not bring the part down to its budget in one step,
+and the optimiser said so instead of returning an infeasible design. The
+deck now starts at 0.15 ([details](docs/benchmarks.md)).
 
 ### Three dimensions
 
@@ -265,8 +321,9 @@ solid on each run's own mesh ([details](docs/benchmarks.md)).
 
 Compliance optimisation raises the fundamental frequency of the cantilever
 (+16 %) and the bracket (+41 %) at equal mass, and **lowers** it sharply for the
-wing rib (-74 %). In every case the *higher* modes fall, because a truss has
-local member modes a continuous plate does not. A compliance objective sees only
+wing rib (-74 %). In every plane case the *higher* modes fall, because a
+truss has local member modes a continuous plate does not; the solid designs
+keep `f2` and `f3` above the solid block's but lose `f4`. A compliance objective sees only
 the static load path; a design with a vibration requirement needs that
 requirement in the optimisation, which this single-constraint optimiser cannot
 carry. Discussion in [`docs/benchmarks.md`](docs/benchmarks.md) and
@@ -288,7 +345,7 @@ that changed how the rest of this project is set up:
 | A minimum length scale is not free | **36.9 %** more reported compliance between a 3.75 mm and a 15 mm filter radius |
 | The local optimum costs something real | Two runs of the same problem reached designs **1.3 %** apart on the same objective |
 | One load case was doing nothing | `up_reversal` is exactly `-0.5` times `down_limit`, so its compliance is `0.25 C_down` to ten digits and the compliance objective cannot see it |
-| The runs are reproducible to the last bit | The study was run twice on two separately compiled binaries; all 41 points reproduced with a relative difference of **exactly zero** |
+| The runs are reproducible to the last bit | The study was run on three separately compiled binaries, the last one after the cached-pattern assembly and the new stall criterion went in; all 41 points reproduced with a relative difference of **exactly zero** every time |
 
 Full tables, figures and reasoning in
 [`docs/aerospace_study.md`](docs/aerospace_study.md).
@@ -595,8 +652,9 @@ Things this project deliberately does, because the opposite is easy and wrong:
   material and reports its own compliance, mass and peak stress, because the
   objective the optimiser minimised is not the compliance of the part a
   threshold would produce - on the bracket the extracted structure comes out
-  9-29 % stiffer. The modal analysis of an "optimised structure" runs on the
-  same sub-mesh;
+  9-29 % stiffer. With the Heaviside projection the two agree to within 2 %,
+  and 4.5 % on the engine mount. The modal analysis of an "optimised
+  structure" runs on the same sub-mesh;
 * **no manufacturability is claimed.** A filter radius is a minimum length
   scale, not a manufacturing constraint. No draw direction, tool access, wall
   thickness, overhang angle or fillet is modelled, and the exported STL is
@@ -628,7 +686,7 @@ Things this project deliberately does, because the opposite is easy and wrong:
   subspace-iteration starting basis and the node-perturbation generator, both
   with explicit default seeds. The threaded solvers give the same bits on any
   number of threads, and the aerospace study reproduced all 41 points exactly
-  on a separately compiled binary.
+  on three separately compiled binaries.
 
 ## Assumptions and limitations
 

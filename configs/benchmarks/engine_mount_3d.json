@@ -66,13 +66,13 @@
   "topology": {
     "enabled": true,
     "volume_fraction": 0.25,
-    // The solid rings are about 13 % of the domain volume, and they count
-    // towards the 25 % budget. Started at the volume fraction (0.25), the
-    // free elements would put the whole design well above the target, and a
-    // move limit of 0.1 cannot bring it down in one step: the first OC
-    // bisection has no volume to bracket and stops the run. Started at 0.15,
-    // the design (rings included, at the first beta) sits within 0.4 % of
-    // the target.
+    // The solid rings are 12 % of the domain volume, and they count towards
+    // the 25 % budget, so they take almost half of it. Started at the volume
+    // fraction (0.25), the free elements would put the whole design well
+    // above the target, and a move limit of 0.1 cannot bring it down in one
+    // step: the first OC bisection has no volume to bracket and stops the
+    // run. Started at 0.15, the design (rings included, at the first beta)
+    // sits within 0.4 % of the target.
     "initial_density": 0.15,
     "simp": { "penalty": 3.0, "emin_ratio": 1e-9 },
     "filter": { "type": "density", "radius_elements": 1.8 },

@@ -7,7 +7,7 @@ is refreshed by `make results`; this document adds the interpretation.
 Reproduce all of it with:
 
 ```bash
-make benchmarks     # all six cases plus the two analysis decks, about 20 minutes
+make benchmarks     # all eleven decks, two analysis decks and the unconstrained L-bracket, about an hour
 make figures        # every figure and the animations
 make results        # refresh the generated tables
 ```
@@ -22,27 +22,38 @@ part.
 
 ## Summary
 
-| Case | Elements | DOFs | Method | `nu` target | Iterations | Stop reason | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Runtime [s] |
-|------|---------:|-----:|--------|------------:|-----------:|-------------|---------------:|---------------------:|---------------:|-----:|------------:|
-| `cantilever_beam` | 12 800 Q4 | 26 082 | OC | 0.40 | 362 | design change | 1.11252 | 1.37813 | **1.239** | 0.0947 | 44.4 |
-| `mbb_beam` | 10 800 Q4 | 22 082 | OC | 0.50 | 434 | design change | 221.551 | 259.521 | **1.171** | 0.279 | 50.2 |
-| `aerospace_bracket` | 38 400 Q4 | 77 602 | OC | 0.35 | 375 | objective stall | 3.00015 | 3.19665 | **1.065** | 0.116 | 422.5 |
-| `wing_rib` | 12 500 Q4 | 25 602 | OC | 0.40 | 530 | objective stall | 1.35608 | 1.21194 | **0.894** | 0.221 | 56.0 |
-| `l_bracket_stress` | 4 096 Q4 | 8 450 | MMA + stress | 0.35 | 240 | objective stall | 0.09006 | (see section 5) | - | 0.116 | 10.6 |
-| `bracket_3d` | 4 096 Hex8 | 15 147 | OC | 0.30 | 157 | design change | 0.28951 | n/a (solid) | - | 0.336 | 442.0 |
+| Case | Elements | DOFs | Method | Solver | `nu` target | Iterations | Stop reason | Compliance [J] | Equal-mass plate [J] | Stiffness gain | Grey | Optimisation [s] |
+|------|---------:|-----:|--------|--------|------------:|-----------:|-------------|---------------:|---------------------:|---------------:|-----:|-----------------:|
+| `cantilever_beam` | 12 800 Q4 | 26 082 | OC | Cholesky | 0.40 | 362 | design change | 1.11252 | 1.37813 | **1.239** | 0.0947 | 48.9 |
+| `mbb_beam` | 10 800 Q4 | 22 082 | OC | Cholesky | 0.50 | 434 | design change | 221.551 | 259.521 | **1.171** | 0.279 | 56.6 |
+| `mbb_beam_projected` | 10 800 Q4 | 22 082 | OC + projection (`beta` 32) | Cholesky | 0.50 | 218 | objective stall | 189.654 | 259.521 | **1.368** | 0.0207 | 31.6 |
+| `aerospace_bracket` | 38 400 Q4 | 77 602 | OC | Cholesky | 0.35 | 375 | objective stall | 3.00015 | 3.19665 | **1.065** | 0.116 | 443.9 |
+| `wing_rib` | 12 500 Q4 | 25 602 | OC | Cholesky | 0.40 | 530 | objective stall | 1.35608 | 1.21194 | **0.894** | 0.221 | 64.9 |
+| `l_bracket_stress` | 4 096 Q4 | 8 450 | MMA + stress | Cholesky | 0.35 | 494 | design change | 0.0895584 | (see section 5) | - | 0.118 | 22.1 |
+| `bracket_3d` | 4 096 Hex8 | 15 147 | OC | Cholesky | 0.30 | 157 | design change | 0.289513 | n/a (solid) | - | 0.336 | 450.5 |
+| `bracket_3d_projected` | 4 096 Hex8 | 15 147 | OC + projection (`beta` 16) | multigrid CG | 0.30 | 190 | objective stall | 0.181884 | n/a (solid) | - | 0.0125 | 99.6 |
+| `lug_bracket_2d` | 20 336 Tri3 | 20 834 | OC + projection (`beta` 32) | Cholesky | 0.35 | 211 | objective stall | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
+| `engine_mount_3d` | 39 936 Tet4 | 25 920 | OC + projection (`beta` 16) | multigrid CG | 0.25 | 265 | objective stall | 0.443669 | n/a (solid) | - | 0.0484 | 278.5 |
+| `bracket_3d_large` | 110 592 Hex8 | 356 475 | OC + projection (`beta` 16) | multigrid CG | 0.30 | 171 | objective stall | 0.170987 | n/a (solid) | - | 0.000862 | 1339.9 |
 
 "Stiffness gain" is the compliance of an equal-mass *uniform* plate divided by
 the optimised compliance, so above 1 means the optimisation paid off. The
 wing rib's value below 1 is real and is explained in its own section - it is the
 most interesting result in the set. The L-bracket's baseline plate would fill
 the passive void quadrant, so the ratio is not a fair one there and is not
-quoted; a solid has no thickness to thin, so the 3-D bracket has no such
-baseline at all (section 6).
+quoted; a solid has no thickness to thin, so the solid cases have no such
+baseline at all (section 6). A projected run's gain is higher than its
+unprojected twin's because its objective describes the thresholded part
+rather than a grey field (section 7), not because the part is stiffer.
 
-**Volume constraint.** Satisfied in every case to the multiplier-bisection
-tolerance: the relative violations are `-3.0e-11`, `-1.5e-11`, `-7.2e-11` and
-`+1.1e-11`. The constraint also holds at *every recorded iteration*, not only at
-the end.
+**Volume constraint.** Every OC run meets it at the returned design to the
+multiplier-bisection tolerance: the relative violations lie between `1.1e-11`
+and `9.6e-11` in magnitude. Without the projection it also holds at every
+recorded iteration. With it, two kinds of iterate are analysed before an
+update has put them on the target: the starting design seen through the
+first projection, off by up to 16 % (the lug bracket), and the first design
+after each `beta` step, off by up to 1.8 % (the projected solid bracket).
+The MMA run meets it at `-2.0e-4`, on the feasible side (section 5).
 
 ## The equal-mass baseline
 
@@ -522,6 +533,75 @@ at 15 147 DOFs, where the plane bracket needs 1.18 s per iteration for
 solver and the projection (section 7) costs 0.52 s per iteration, and
 section 10 solves it at 23.5 times the unknowns.
 
+## 7. Heaviside projection: the same problems with and without it
+
+A density filter leaves a band of intermediate density along every boundary
+between material and void, and a threshold has to decide what that band
+becomes. The Heaviside projection (`docs/topology_optimization.md`, section
+3b) passes the filtered density through a smoothed step at `eta = 0.5` whose
+sharpness `beta` rises in steps, so the density the finite-element model
+sees tends to 0 or 1. Two pairs of runs show what it changes:
+
+* `mbb_beam_projected` is section 2's MBB beam with the projection, `beta`
+  from 1 to 32, doubling every 40 iterations;
+* `bracket_3d_projected` is section 6's solid bracket with the projection,
+  `beta` from 1 to 16, solved with the multigrid solver.
+
+Mesh, material, supports, loads, volume fraction and filter are those of
+the unprojected decks. The stopping settings differ, for the reason given
+at the end of this section: every projected deck uses a move limit of 0.1
+and an objective-stall criterion of 0.1 % over 10 iterations.
+
+| Run | Projection | Iterations, stop | Grey | Grey before projection | Optimised compliance [J] | Thresholded structure [J] | Thresholded / optimised | Thresholded volume fraction | Optimisation [s] |
+|-----|------------|------------------|-----:|-----------------------:|-------------------------:|--------------------------:|------------------------:|----------------------------:|-----------------:|
+| `mbb_beam` | none | 434, design change | 0.279 | - | 221.551 | 188.602 | 0.851 | 0.510 | 56.6 (Cholesky) |
+| `mbb_beam_projected` | `beta` 1 to 32 | 218, objective stall | 0.0207 | 0.324 | 189.654 | 188.630 | **0.995** | 0.501 | 31.6 (Cholesky) |
+| `bracket_3d` | none | 157, design change | 0.336 | - | 0.289513 | 0.176349 | 0.609 | 0.312 | 450.5 (Cholesky) |
+| `bracket_3d_projected` | `beta` 1 to 16 | 190, objective stall | 0.0125 | 0.354 | 0.181884 | 0.178738 | **0.983** | 0.302 | 99.6 (multigrid CG) |
+
+"Thresholded structure" is the design cut at a physical density of 0.5 and
+re-solved as solid material, and its volume fraction is what that cut
+keeps.
+
+![Projection summary](figures/projection_summary.png)
+
+![MBB beam with and without the projection](figures/mbb_beam_projection.png)
+
+Four things to read from it:
+
+* **the reported compliance describes the part.** Without the projection
+  the thresholded structure is 15 % (MBB) and 39 % (bracket) stiffer than
+  the compliance the optimiser reported, because the threshold promotes the
+  grey band to solid material. With it, the two agree to 0.5 % and 1.7 %;
+* **the part itself changes little.** The two MBB structures have the same
+  compliance to 0.02 % (188.630 J and 188.602 J), and the projected one
+  keeps 1.8 % less material. The projected bracket's structure is 1.4 %
+  more compliant than the unprojected one's, at 3.1 % less material. What
+  the projection buys is an objective that means what it says, not a
+  stiffer part;
+* **the grey band is still in the design variables.** The density before
+  projection stays grey, 0.324 and 0.354: the projection does not remove
+  the filter's boundary band, it maps it to solid or void at `eta`. That is
+  also why it gives no minimum length scale (`docs/limitations.md`);
+* **the stopping rule has to change with it.** The MBB deck with only the
+  projection switched on (`sparlab_topopt --projection`, schedule `beta` 1
+  to 32 every 50 iterations) ran to its 600-iteration cap. At `beta = 32`
+  single elements on the solid-void interface flip by the whole move limit
+  of 0.2, so the design change never fell to 0.01. The compliance moved
+  within a 0.39 % band over the last 101 iterations, far above that deck's
+  stall tolerance of `5e-5`. Its design was as good as the projected deck's
+  (grey level 0.029, thresholded / optimised 0.989), but neither criterion
+  could say so. With a move limit of 0.1 and a stall criterion of 0.1 %
+  over 10 iterations, the MBB beam stops after 218 iterations, 18 of them
+  at `beta = 32`, and the bracket after 190, 30 of them at `beta = 16`.
+
+The runtimes are not a measure of the projection alone. The MBB pair
+differs in its stopping settings as well, and the bracket pair in its
+solver too: 2.87 s per iteration with Cholesky against 0.52 s with
+multigrid. The convergence figures mark the design analysed right after
+each `beta` step. Its volume is off the target, by up to 0.8 % on the MBB
+beam and 1.8 % on the bracket, until the next update restores it.
+
 ## 8. Lug bracket from a Gmsh mesh (Tri3)
 
 `configs/benchmarks/lug_bracket_2d.json` - real geometry instead of a box.
@@ -582,6 +662,83 @@ The exported `structure_after.stl` (16 156 triangles) is closed and
 2-manifold. The same mesh at `nu = 0` is one of the cross-validation
 problems: scikit-fem agrees to `6e-13` and CalculiX to `4.3e-6`
 (`docs/verification.md`, section 14).
+
+## 9. Engine mount from an Abaqus mesh (Tet4, multigrid)
+
+`configs/benchmarks/engine_mount_3d.json` - a solid part read from a mesh
+file. A 160 x 60 x 12 mm base slab with four vertical 10 mm bolt holes
+carries an 80 x 60 x 78 mm upright block, through which a 20 mm pin hole
+runs along `y`. `python/scripts/make_meshes.py` draws and meshes it in Gmsh
+(4 mm element size) and writes an Abaqus / CalculiX input file: 39 936
+linear tetrahedra, 8 640 nodes and 25 920 DOFs, 24 888 of them free, with
+a tetrahedron quality of `0.230` minimum and `0.755` mean. The mesh is in
+millimetres and is read with `mesh.scale = 0.001`. Its element sets are the
+deck's regions. The bolt-hole faces (`bolt_holes`) are clamped. The pin
+hole (`pin_hole`) carries a 12 kN downward and a 5 kN lateral load as two
+equally weighted load cases. Rings of 6 mm around the bolt holes and 8 mm
+around the pin hole (`rings`, 7 201 tetrahedra, 12 % of the volume) are
+kept solid. Volume fraction 0.25 with the rings counted, density filter of
+1.8 mean edge lengths (8.9 mm, 205 tetrahedra on average), `p = 3`, OC with
+a move limit of 0.1, and the Heaviside projection from `beta = 1` to 16.
+With 24 888 free unknowns the `auto` solver chooses multigrid CG.
+
+![Engine mount mesh and boundary conditions](figures/engine_mount_3d_mesh_bcs.png)
+
+![Engine mount before and after optimisation](figures/engine_mount_3d_topology.png)
+
+| Quantity | Value |
+|----------|-------|
+| Iterations, stop reason | 265, objective stall at `beta = 16`: compliance spread `9.9e-4` over the last 11 iterations |
+| Compliance, starting design to optimised | 29.83 J to **0.44367 J**; `vertical` 0.65638 J, `lateral` 0.23096 J |
+| Full solid part | 0.21705 J at 1.3136 kg |
+| Volume fraction | 0.25000000 (violation `-8.8e-11`) |
+| Grey level, projected / before projection | **0.048** / 0.354 |
+| Interpretation at `rho >= 0.5` | 12 059 of 39 936 tetrahedra, **1** connected group, nothing discarded |
+| Thresholded structure re-solved | 0.42352 J (**0.955** of the objective) at 0.3281 kg; peak von Mises 116.6 MPa under the vertical load |
+| Geometry export | 5 818 triangles, closed, 4 non-manifold edges, enclosed volume equal to the cell volume to `4e-15` |
+| Multigrid hierarchy | 3 levels of 24 888, 2 598 and 186 unknowns; operator complexity 1.50 |
+| Linear solver work | 13 404 CG iterations over 532 solves, 25.2 per solve |
+| Runtime | 278.5 s for 265 iterations (1.05 s each); 292.4 s in total |
+
+**Modal comparison.**
+
+| Structure | Mass [kg] | f1 [Hz] | f2 [Hz] | f3 [Hz] | f4 [Hz] |
+|-----------|----------:|--------:|--------:|--------:|--------:|
+| Full solid part | 1.3136 | 1278.0 | 3001.9 | 3149.8 | 6478.3 |
+| Optimised topology | 0.3281 | **1795.4** | 4249.7 | 4604.0 | 5157.0 |
+
+Three things to read from it:
+
+* **the starting design matters when passive material fills the budget.**
+  The rings are 12 % of the part and 48 % of its material budget. The first
+  run of this deck started from a uniform 0.25 and stopped before its first
+  update: *"the optimality-criteria bisection cannot bracket the volume
+  target 0.000116869 m^3: the move-limited box yields volumes in
+  [0.000117276, 0.000200172] m^3"*. With a move limit of 0.1 the free
+  elements could fall no lower than 0.15 in one step, which still left the
+  part 0.35 % over its budget. The deck now starts at 0.15, where the first
+  design is 0.35 % over the target and the first update can reach it. The
+  run failed with the reason rather than returning an infeasible design;
+* **the objective is 4.5 % pessimistic here.** The grey level ends at
+  0.048, higher than on the other projected runs: `beta` stops at 16, and
+  a radius of 1.8 mean edge lengths averages over 205 tetrahedra. The
+  thresholded part is correspondingly 4.5 % stiffer than the compliance
+  the optimiser reported;
+* **the multigrid solver handles a real tetrahedral mesh as it handles the
+  structured blocks.** It needs 25.2 CG iterations per solve, against 23.5
+  on the 356 475-DOF bracket. The operator complexity is higher, 1.50
+  against 1.16. The tetrahedral matrix is the sparser one, 40 entries per
+  row against 77, while its first coarse level holds 181 per row against
+  141, so the coarse levels weigh more next to the fine one. A static
+  analysis of the full part, both load cases, takes 0.72 s with multigrid
+  CG and 6.1 s with the sparse Cholesky factorisation, and the two agree on
+  the compliance to 12 digits.
+
+The first frequency of the optimised part is 40.5 % above the solid
+part's, at 25 % of its mass; `f2` and `f3` rise too, and `f4` falls. The
+same mesh is a
+cross-validation problem: scikit-fem agrees to `1.5e-12` and CalculiX to
+`2.0e-6` (`docs/verification.md`, section 14).
 
 ## 10. Solid bracket at 356 475 DOFs (Hex8, multigrid)
 
@@ -659,35 +816,50 @@ surface has 32 non-manifold edges.
 
 ![Cantilever convergence history](figures/cantilever_beam_convergence.png)
 
-Both stopping criteria are exercised across the cases: the two beam benchmarks
-and the solid bracket stop on the design change, the two aerospace plane cases
-and the stress-constrained L-bracket on the objective stall. Final indicator
-values:
+Both stopping criteria are exercised. The cantilever, the MBB beam, the
+stress-constrained L-bracket and the unprojected solid bracket stop on the
+design change; the aerospace bracket, the wing rib and all five projected
+runs stop on the objective stall. The stall measure is the relative spread
+`(max - min) / |C|` of the last `objective_window + 1` compliances, which an
+oscillating design cannot satisfy mid-cycle. Final indicator values:
 
-| Case | Stop reason | Final `max |dx|` | Final relative `dC` over 20 iterations |
-|------|-------------|-----------------:|---------------------------------------:|
-| `cantilever_beam` | design change | 0.00857 | `6.7e-05` |
-| `mbb_beam` | design change | 0.00697 | `6.2e-05` |
-| `aerospace_bracket` | objective stall | 0.0202 | `4.9e-05` |
-| `wing_rib` | objective stall | 0.0113 | `4.9e-05` |
-| `l_bracket_stress` (MMA) | objective stall | 0.0198 | `1.5e-05` (and feasible, largest constraint `-3.8e-05`) |
-| `bracket_3d` | design change | 0.00988 | `1.4e-04` |
+| Case | Stop reason | Final `max |dx|` | Final compliance spread | Window [iterations] |
+|------|-------------|-----------------:|------------------------:|--------------------:|
+| `cantilever_beam` | design change | 0.00857 | `6.6e-05` | 21 |
+| `mbb_beam` | design change | 0.00697 | `6.2e-05` | 21 |
+| `mbb_beam_projected` | objective stall | 0.1 | `9.5e-04` | 11 |
+| `aerospace_bracket` | objective stall | 0.0202 | `4.9e-05` | 21 |
+| `wing_rib` | objective stall | 0.0112 | `4.9e-05` | 21 |
+| `l_bracket_stress` | design change | 0.00936 | `1.2e-03` | 21 |
+| `bracket_3d` | design change | 0.00988 | `1.4e-04` | 21 |
+| `bracket_3d_projected` | objective stall | 0.1 | `9.1e-04` | 11 |
+| `lug_bracket_2d` | objective stall | 0.1 | `9.7e-04` | 11 |
+| `engine_mount_3d` | objective stall | 0.1 | `9.9e-04` | 11 |
+| `bracket_3d_large` | objective stall | 0.1 | `2.1e-04` | 11 |
+
+The projected runs all stop on the stall with the design change at the move
+limit of 0.1. At a sharp projection single elements on the solid-void
+interface flip between their bounds while the compliance stands still
+(section 7).
 
 The objective criterion is what makes the fine-mesh cases terminate. A measured
 example on the cantilever benchmark, with both criteria disabled and the cap
 raised to 800 iterations:
 
-| Iteration | Compliance [J] | `max |dx|` | Relative `dC` over 20 |
-|----------:|---------------:|-----------:|----------------------:|
+| Iteration | Compliance [J] | `max |dx|` | Compliance spread over 21 iterations |
+|----------:|---------------:|-----------:|-------------------------------------:|
 | 250 | 1.115120 | 0.0873 | `5.0e-04` |
 | 400 | 1.112387 | 0.0787 | `9.7e-05` |
 | 600 | 1.111742 | 0.0429 | `5.7e-05` |
 | 800 | 1.111238 | 0.0011 | `1.3e-06` |
 
-The compliance improves by 0.35% between iteration 250 and iteration 800, while
-`max |dx|` keeps oscillating between 0.004 and 0.12 - thin members migrating one
-cell at a time long after the objective has settled. A design-change-only rule
-would report non-convergence on a design that is converged for engineering
+The compliance improves by 0.35% between iteration 250 and iteration 800,
+while `max |dx|` stays between 0.004 and 0.09 in nine iterations out of ten,
+reaches the move limit of 0.2 around iteration 260, and falls below 0.004
+only after iteration 775 - thin members migrating one cell at a time long
+after the objective has settled. The benchmark deck stops at iteration 362,
+0.12 % above the 800-iteration compliance. A design-change-only rule would
+report non-convergence on a design that is converged for engineering
 purposes, which is exactly why both indicators are tracked and both are
 recorded.
 
@@ -724,10 +896,11 @@ Fitted slopes of `log(time)` against `log(DOFs)` over the largest three sizes:
 | One back-substitution | 1.20 | between `O(n)` and the `O(n log n)` of the factor's nonzero count |
 | Objective + gradient | 1.56 | dominated by the factorisation |
 
-Assembly costs 0.015 s at 194 922 DOFs, a tenth of what earlier revisions
-of this document measured. `K` is now assembled into a cached sparsity
-pattern instead of from triplets (`docs/formulation.md`). The factorisation
-dominates: one optimiser iteration costs essentially one factorisation,
+Assembly costs 0.015 s at 194 922 DOFs. `K` is now assembled into a cached
+sparsity pattern instead of from triplets (`docs/formulation.md`), and the
+previous commit's binary, timed in the same session, needs 0.16 s for the
+same matrix. The factorisation dominates: one optimiser iteration costs
+essentially one factorisation,
 3.95 s at 194 922 DOFs. A 400-iteration run on a 440 x 220 mesh would take
 about 26 minutes with this solver. The benchmark runs agree with the table:
 0.12 to 0.14 s per iteration at 22 000 to 26 000 DOFs (cantilever, MBB
@@ -738,6 +911,15 @@ bracket).
 for a fixed-stencil structured Q4 mesh. The growth comes from fill-in during
 the elimination: the factor holds 22 entries per DOF on the smallest mesh and
 99 on the largest.
+
+**How far to trust an absolute time.** The factorisation code did not change
+in this revision, yet at 194 922 DOFs, in one session and alternating, the
+previous binary measured 3.77 s and 3.87 s and the new one 4.15 s and
+4.06 s. The table's 3.93 s comes from a third run, and earlier revisions of
+this document quoted 3.28 s. Differences of 10 to 20 % between builds and
+sessions are noise from code layout, memory placement and the shared
+machine. Compare slopes and ratios measured in one run, not absolute times
+across documents.
 
 ### Solid elements (Hex8), sparse Cholesky
 
@@ -833,16 +1015,27 @@ second in 3-D.
 
 From the `timings_s` block of each summary:
 
-| Case | Optimisation [s] | Modal [s] | Solid reference [s] | Output [s] | Total [s] |
-|------|-----------------:|----------:|--------------------:|-----------:|----------:|
-| `cantilever_beam` | 44.45 | 2.49 | 0.11 | 0.38 | 47.44 |
-| `mbb_beam` | 50.17 | - | 0.09 | 0.24 | 50.56 |
-| `aerospace_bracket` | 422.50 | 12.24 | 1.12 | 2.09 | 438.07 |
-| `wing_rib` | 55.97 | 2.00 | 0.09 | 0.68 | 58.79 |
-| `l_bracket_stress` | 10.57 | - | 0.03 | 0.12 | 10.78 |
-| `bracket_3d` | 441.96 | 6.28 | 2.57 | 0.38 | 451.42 |
+| Case | Optimisation [s] | Modal [s] | Solid reference [s] | Re-solve [s] | Output [s] | Total [s] |
+|------|-----------------:|----------:|--------------------:|-------------:|-----------:|----------:|
+| `cantilever_beam` | 48.9 | 3.09 | 0.12 | 0.04 | 0.49 | 52.7 |
+| `mbb_beam` | 56.6 | - | 0.09 | 0.03 | 0.28 | 57.2 |
+| `mbb_beam_projected` | 31.6 | - | 0.09 | 0.03 | 0.26 | 32.2 |
+| `aerospace_bracket` | 443.9 | 15.99 | 1.24 | 0.15 | 2.45 | 464.3 |
+| `wing_rib` | 64.9 | 2.49 | 0.12 | 0.04 | 0.89 | 68.6 |
+| `l_bracket_stress` | 22.1 | - | 0.03 | 0.01 | 0.10 | 22.2 |
+| `bracket_3d` | 450.5 | 6.73 | 3.17 | 0.16 | 0.33 | 460.9 |
+| `bracket_3d_projected` | 99.6 | 22.06 | 0.52 | 0.26 | 0.32 | 122.9 |
+| `lug_bracket_2d` | 37.7 | 1.72 | 0.10 | 0.03 | 0.78 | 40.6 |
+| `engine_mount_3d` | 278.5 | 10.15 | 0.53 | 0.16 | 1.67 | 292.4 |
+| `bracket_3d_large` | 1339.9 | 320.75 | 7.82 | 4.36 | 6.58 | 1681.0 |
+| `l_bracket_unconstrained` | 3.8 | - | 0.03 | 0.01 | 0.10 | 4.0 |
 
-The optimisation loop dominates everywhere, which is the intended cost profile:
-modal analysis of both the solid domain and the extracted topology costs a few
-percent, and all of the file output - including the density snapshots that drive
-the animation - costs under 0.5%.
+The optimisation loop dominates everywhere, which is the intended cost
+profile. The modal analyses of the solid domain and of the extracted
+topology cost a few percent with the direct solver, where one factorisation
+serves every solve of the subspace iteration. With multigrid CG each of
+those solves is a new CG run, and the share rises to 18 % on the projected
+bracket and 19 % on the 356 475-DOF bracket. All of the file output,
+including the density snapshots that drive the animations, costs under 2 % of
+every run longer than ten seconds, and 2.5 % of the 4 s unconstrained
+L-bracket.

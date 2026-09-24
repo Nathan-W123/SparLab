@@ -18,9 +18,9 @@
   // compliance wanders inside a band of a few tenths of a percent. The same
   // deck with only the projection switched on (sparlab_topopt --projection)
   // measured exactly that: at its 600-iteration cap the design change was
-  // still 0.2 and the compliance had spread over 0.4 % in the last 100
-  // iterations, so neither of mbb_beam's criteria could fire
-  // (docs/benchmarks.md, section 7).
+  // still 0.2 and the compliance had moved within a 0.39 % band over the
+  // last 101 iterations, so neither of mbb_beam's criteria could fire. This
+  // deck stops after 218 iterations (docs/benchmarks.md, section 7).
   // ---------------------------------------------------------------------------
   "name": "mbb_beam_projected",
   "description": "MBB beam half model, 50% volume fraction, Heaviside projection (beta 1 -> 32)",

@@ -205,8 +205,15 @@ below `change_tolerance`, up to `beta_max`. Convergence is only declared at
 `beta_max`, the objective-stall window restarts at every step (the objective
 itself changes with `beta`), and every iteration records its `beta` in
 `history.csv`. Under OC the bisection on the multiplier measures the volume
-of the *projected* density that the candidate update would produce, so the
-volume constraint holds on the material that is actually analysed.
+of the *projected* density that the candidate update would produce, so every
+update meets the volume constraint on the material that is actually
+analysed. Two kinds of iterate are analysed before an update has put them on
+the target: the uniform start seen through the first projection (unless it
+sits at `eta`, a fixed point of the map), and the first design after each
+`beta` step, which is the previous update seen through a sharper
+projection. On the benchmarks the first is off the target by up to 16 % and
+the second by up to 1.8 %; the next update restores the volume, and the
+convergence figure names both.
 
 **Verification.** `sparlab_verify --study sensitivity-projection` checks the
 gradient through filter and projection against central differences on a Q4
@@ -220,9 +227,10 @@ map and its derivative, the compliance, volume and stress-constraint
 gradients through it on a distorted Q4, a Hex8 and a Tet4 mesh, the `beta`
 schedule, the configuration checks and an end-to-end run.
 
-**What it buys** is measured on the benchmarks - the same deck with and
+**What it buys** is measured on the benchmarks - the same problem with and
 without the projection, the grey level, and the ratio between the compliance
-of the thresholded structure and the objective - in `docs/benchmarks.md`.
+of the thresholded structure and the objective - in `docs/benchmarks.md`,
+section 7.
 
 ## 4. Sensitivity analysis
 
@@ -501,9 +509,11 @@ The second criterion is not a convenience. On a fine mesh the design change
 stalls at a value well above `1e-2`, because thin members *migrate* one cell at
 a time long after the objective has settled: a measured example on the
 cantilever benchmark shows the compliance improving by only 0.35% between
-iteration 250 and iteration 800 while `max |dx|` still oscillates between 0.004
-and 0.12. A design-change-only rule would run to the iteration cap and report
-non-convergence on a design that is, for engineering purposes, converged.
+iteration 250 and iteration 800, while `max |dx|` stays between 0.004 and 0.09
+in nine iterations out of ten, reaches the move limit of 0.2 around iteration
+260, and falls below 0.004 only after iteration 775. A design-change-only rule
+would run to the iteration cap and report non-convergence on a design that
+is, for engineering purposes, converged.
 
 Every result records which criterion fired (`stop_reason`), the final value of
 both indicators, and - when neither was met - a warning stating that the

@@ -22,7 +22,7 @@ import numpy as np
 from . import fields as fld
 from . import solid as sd
 from . import style as st
-from .loaders import CaseResults, ResultError
+from .loaders import CaseResults, ResultError, load_json
 
 DOMAIN_TINT = "#dcdad2"
 PASSIVE_SOLID = "#4a3aa7"
@@ -125,7 +125,12 @@ def _element_value_note(mesh) -> str:
 
 def plot_mesh_and_bcs(case: CaseResults, path: str) -> str:
     mesh = case.mesh
-    fig, ax = _axes3d(7.8, 4.8)
+    # A tall part (the engine mount's upright) draws a taller box, whose axis
+    # labels the layout engine does not see; the figure grows with the
+    # height-to-length ratio so they stay clear of the footnote.
+    extent = mesh.extent
+    tallness = (extent[5] - extent[4]) / max(extent[1] - extent[0], 1.0e-30)
+    fig, ax = _axes3d(7.8, 4.8 + 2.0 * float(np.clip(tallness - 0.25, 0.0, 0.75)))
     # Draw in the order added rather than by mplot3d's per-artist depth sort,
     # so markers inside holes and passive regions stay visible on top.
     ax.computed_zorder = False
@@ -169,7 +174,6 @@ def plot_mesh_and_bcs(case: CaseResults, path: str) -> str:
                    marker=marker, s=9, color=st.series_color(slot), depthshade=False,
                    label=f"{label} ({nodes.size} nodes)", zorder=5)
 
-    extent = mesh.extent
     reference = max(extent[1] - extent[0], extent[3] - extent[2], extent[5] - extent[4])
     load_slots = [1, 4, 5, 7]
     for index, name in enumerate(mesh.load_case_names):
@@ -201,7 +205,12 @@ def plot_mesh_and_bcs(case: CaseResults, path: str) -> str:
         f"{mesh.num_elements} {mesh.element_type} elements, {mesh.num_nodes} nodes, "
         f"{len(mesh.prescribed)} prescribed DOFs",
     )
-    st.legend(ax, loc="upper right", fontsize=8)
+    # The legend sits over the top of the box, so it gets an opaque backing
+    # in the page colour rather than letting the edges run through its text.
+    st.legend(ax, loc="upper right", fontsize=8, frameon=True, facecolor=st.SURFACE,
+              edgecolor="none", framealpha=0.92)
+    if ax.get_legend() is not None:
+        ax.get_legend().set_zorder(20)  # above the outline (drawn in order added)
     st.annotate_note(
         fig,
         "The tinted body is the design domain, drawn through its boundary faces "
@@ -456,6 +465,27 @@ def plot_mode_shapes(case: CaseResults, path: str, tag: str = "",
 # ---------------------------------------------------------------------------
 # Topology optimisation
 # ---------------------------------------------------------------------------
+def initial_density(case: CaseResults) -> float:
+    """The uniform value the free design variables started from.
+
+    Newer summaries record it; for older ones the echoed deck says whether
+    `topology.initial_density` overrode the default start at the volume
+    fraction.
+    """
+    setup = case.summary.get("optimization_setup", {})
+    if setup.get("initial_density") is not None:
+        return float(setup["initial_density"])
+    deck = os.path.join(case.directory, "config.json")
+    if os.path.isfile(deck):
+        try:
+            value = (load_json(deck).get("topology") or {}).get("initial_density")
+            if value is not None and float(value) >= 0.0:
+                return float(value)
+        except (ResultError, ValueError, TypeError):
+            pass
+    return float(setup.get("volume_fraction_target", float("nan")))
+
+
 def density_field_label(case: CaseResults) -> str:
     """What the plotted density is: filtered, and projected when the run used
     the Heaviside projection (with its final sharpness)."""
@@ -490,9 +520,12 @@ def plot_final_topology(case: CaseResults, path: str) -> str:
                edge_color=(0.0, 0.0, 0.0, 0.07), linewidth=0.12)
     _domain_outline(before, mesh, color=st.INK_SECONDARY, linewidth=0.9)
     sd.set_solid_axes(before, mesh.nodes, margin=0.06, view=_view(mesh))
+    start = initial_density(case)
+    target = float(setup.get("volume_fraction_target", float("nan")))
     before.set_title(
-        f"before: design domain, uniform density "
-        f"{setup.get('volume_fraction_target', float('nan')):g}",
+        f"before: design domain, uniform density {start:g}"
+        if abs(start - target) < 1.0e-12
+        else f"before: uniform start {start:g}, target {target:g}",
         loc="left", fontsize=9,
     )
 

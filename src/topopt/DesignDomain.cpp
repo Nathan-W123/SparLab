@@ -34,6 +34,7 @@ DesignDomain::DesignDomain(const FemModel& model, Scalar volume_fraction,
     os << "initial density must lie in [0, 1] (got " << start << ")";
     throw ConfigError(os.str());
   }
+  initial_density_ = start;
   initial_ = Vector::Constant(num_elements_, start);
 
   for (const PassiveRegionSpec& spec : passive) {

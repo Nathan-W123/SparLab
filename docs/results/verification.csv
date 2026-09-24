@@ -1,10 +1,14 @@
 study,kind,metric,value,tolerance,passed,note
 "patch test (constant strain, distorted mesh)",verification,"max relative error in u, strain and stress",4.065758146820642e-15,1e-10,True,
-solver agreement (sparse vs dense),verification,max relative displacement difference vs dense LU,7.0376408130304235e-12,1e-08,True,
+solver agreement (sparse vs dense),verification,max relative displacement difference vs dense LU,8.965132791255309e-12,1e-08,True,
 sensitivity (analytical vs central differences),verification,min over steps of max relative error,2.1774898295377493e-08,1e-05,True,best at h = 1e-05; 6 of 72 candidates excluded at bounds
 mesh convergence (cantilever tip deflection),verification + validation,relative error vs Timoshenko on the finest mesh (nu = 0),0.0004780592408224092,0.02,True,"observed order 2.31 (nu = 0), 2.28 (nu = 0.3)"
 modal frequencies (cantilever vs Euler-Bernoulli),validation,f1 relative error on the finest mesh,0.005521506451250159,0.02,True,"mass conservation error <= 4.84e-14, axial-mode error 4.02e-06 vs fixed-free rod theory"
 "patch test 3-D (constant strain, distorted Hex8 mesh)",verification,"max relative error in u, strain and stress",1.6263032587282568e-15,1e-10,True,
 "sensitivity 3-D (analytical vs central differences, Hex8)",verification,min over steps of max relative error,1.555223017257125e-08,1e-05,True,best at h = 1e-05; 2 of 36 candidates excluded at bounds
-mesh convergence 3-D (Hex8 cantilever tip deflection),verification + validation,relative error vs Timoshenko on the finest mesh,0.005415023866583161,0.03,True,observed order 2.63 (self-convergence)
-modal frequencies 3-D (Hex8 cantilever vs Euler-Bernoulli),validation,f1 (weak axis) relative error on the finest mesh,0.010632605803743719,0.03,True,"strong-axis error 0.00333, mass conservation error <= 4.89e-14"
+mesh convergence 3-D (Hex8 cantilever tip deflection),verification + validation,relative error vs Timoshenko on the finest mesh,0.005415023762596856,0.03,True,observed order 2.63 (self-convergence)
+modal frequencies 3-D (Hex8 cantilever vs Euler-Bernoulli),validation,f1 (weak axis) relative error on the finest mesh,0.010632605778318625,0.03,True,"strong-axis error 0.00333, mass conservation error <= 4.89e-14"
+"patch test (constant strain, distorted Tri3 and Tet4 meshes)",verification,max relative displacement / strain / stress error,9.17054337560656e-15,1e-10,True,
+mesh convergence (Tri3 and Tet4 cantilever tip deflection),verification + validation,larger finest-mesh relative error vs Timoshenko,0.016563509001407753,0.03,True,"Tri3: finest error 0.42 %, observed order 2.27; Tet4: finest error 1.66 %, observed order 3.22; "
+"multigrid CG (agreement with Cholesky, iterations under refinement)",verification,max relative displacement difference vs LDL^T,4.3739043614992495e-12,1e-08,True,Hex8: AMG iterations 14 -> 16 over the multi-level sizes; Tet4: AMG iterations 16 -> 20 over the multi-level sizes; iteration growth coarsest -> finest 1.25 (limit 1.6)
+sensitivity through the Heaviside projection (Q4 and Tet4),verification,"worst over beta of the best max(scaled entry error, directional error)",9.650325185853831e-08,1e-05,True,

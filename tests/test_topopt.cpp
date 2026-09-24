@@ -262,6 +262,12 @@ TEST_CASE("design domain bounds, passive regions and feasibility checks",
     REQUIRE(domain.upper_bounds().minCoeff() == Approx(1.0));
     // Uniform start at the volume fraction.
     REQUIRE(domain.initial_design().minCoeff() == Approx(0.4));
+    REQUIRE(domain.initial_density() == Approx(0.4));
+    // An explicit start is kept and reported as such.
+    const DesignDomain low_start(fixture.model, 0.4, 0.15, {});
+    REQUIRE(low_start.initial_density() == Approx(0.15));
+    REQUIRE(low_start.initial_design().maxCoeff() == Approx(0.15));
+    REQUIRE(low_start.volume_fraction() == Approx(0.4));
     REQUIRE(domain.volume_target() ==
             Approx(0.4 * fixture.model.domain_volume()));
     REQUIRE(domain.fraction_of(domain.initial_design()) == Approx(0.4));

@@ -64,6 +64,9 @@ class DesignDomain {
 
   Scalar domain_volume() const { return domain_volume_; }
   Scalar volume_fraction() const { return volume_fraction_; }
+  /// Starting value of the free variables: `initial_density` when one was
+  /// given, otherwise the volume fraction.
+  Scalar initial_density() const { return initial_density_; }
   Scalar volume_target() const { return volume_fraction_ * domain_volume_; }
   Scalar passive_solid_volume() const { return solid_volume_; }
   Scalar passive_void_volume() const { return void_volume_; }
@@ -88,6 +91,7 @@ class DesignDomain {
   Index num_solid_ = 0;
   Index num_void_ = 0;
   Scalar volume_fraction_ = 0.5;
+  Scalar initial_density_ = 0.5;
   Scalar domain_volume_ = 0.0;
   Scalar solid_volume_ = 0.0;
   Scalar void_volume_ = 0.0;

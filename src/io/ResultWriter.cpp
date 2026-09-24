@@ -875,6 +875,7 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
     setup.set("volume_fraction_target",
               json::Value::make_number(domain.volume_fraction()));
     setup.set("volume_target_m3", json::Value::make_number(domain.volume_target()));
+    setup.set("initial_density", json::Value::make_number(domain.initial_density()));
     setup.set("domain_volume_m3", json::Value::make_number(domain.domain_volume()));
     setup.set("num_design_variables", json::Value::make_number(domain.num_elements()));
     setup.set("num_free_variables",

@@ -333,7 +333,7 @@ measured ones; change them to study the solver, not to make a run work.
 |-----|------|---------|---------|
 | `enabled` | bool | `false` | `sparlab_topopt` requires `true` |
 | `volume_fraction` | number | `0.4` | target `nu`, in `(0, 1]`; measured on the physical density over the **whole** domain, passive regions included |
-| `initial_density` | number | `-1` | starting value for free variables; negative means "use `volume_fraction`" |
+| `initial_density` | number | `-1` | starting value for free variables; negative means "use `volume_fraction`". The value used is recorded as `optimization_setup.initial_density`. Start below the target when passive solid regions take a large share of the budget, or the first update may not reach it (`engine_mount_3d`) |
 
 **`simp`**
 
