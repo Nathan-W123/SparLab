@@ -42,6 +42,7 @@ namespace {
 struct BenchRow {
   Index nx = 0;
   Index ny = 0;
+  Index nz = 0;
   Index num_elements = 0;
   Index num_dofs = 0;
   Index nonzeros = 0;
@@ -52,16 +53,21 @@ struct BenchRow {
   Scalar compliance = 0.0;
 };
 
-FemModel build_bench_model(Index nx, Index ny) {
+FemModel build_bench_model(Index nx, Index ny, Index nz) {
   StructuredMeshSpec spec;
   spec.nx = nx;
   spec.ny = ny;
+  spec.nz = nz;
   spec.lx = 2.0;
   spec.ly = 1.0;
+  spec.lz = 0.5;
 
+  const bool solid = nz > 0;
   IsotropicMaterial material(70.0e9, 0.3, 2700.0, "bench");
-  FemModel model(make_structured_quad_mesh(spec), material, 0.01,
-                 StressState::PlaneStress, IntegrationOptions());
+  FemModel model(solid ? make_structured_hex_mesh(spec) : make_structured_quad_mesh(spec),
+                 material, solid ? 1.0 : 0.01,
+                 solid ? StressState::ThreeDimensional : StressState::PlaneStress,
+                 IntegrationOptions());
 
   DisplacementConstraint root;
   root.region.name = "left_edge";
@@ -71,6 +77,7 @@ FemModel build_bench_model(Index nx, Index ny) {
   root.region.members.push_back(box);
   root.fix_x = true;
   root.fix_y = true;
+  root.fix_z = solid;
   model.constraints().push_back(root);
 
   LoadCaseSpec load;
@@ -118,7 +125,7 @@ Scalar log_log_slope(const std::vector<Scalar>& x, const std::vector<Scalar>& y)
 int main(int argc, char** argv) {
   return app::run_guarded([&]() -> int {
     const std::vector<std::string> known = {"output", "sizes", "repeats", "aspect",
-                                            "verbosity", "help"};
+                                            "dim", "verbosity", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help")) {
       return app::print_usage(
@@ -126,6 +133,8 @@ int main(int argc, char** argv) {
           {{"--sizes <list>", "comma-separated nx values (ny = nx / aspect)"},
            {"--repeats <n>", "repetitions per size; the minimum is reported"},
            {"--aspect <a>", "nx / ny ratio of the benchmark plate (default 2)"},
+           {"--dim <2|3>", "2 for the Q4 plate (default), 3 for a Hex8 block with "
+                           "nz = ny / 2"},
            {"--output <dir>", "output directory (default results/benchmark)"},
            {"--verbosity <lvl>", "trace|debug|info|warn|error|silent"},
            {"--help", "show this message"}});
@@ -137,19 +146,24 @@ int main(int argc, char** argv) {
     const int repeats = std::max(1, cli.integer("repeats", 3));
     const Scalar aspect = cli.number("aspect", 2.0);
     if (!(aspect > 0.0)) throw ConfigError("--aspect must be positive");
+    const int dim = cli.integer("dim", 2);
+    if (dim != 2 && dim != 3) throw ConfigError("--dim must be 2 or 3");
 
-    std::vector<Scalar> sizes = cli.has("sizes")
-                                    ? cli.number_list("sizes")
-                                    : std::vector<Scalar>{20, 40, 80, 160, 240, 320};
+    std::vector<Scalar> sizes =
+        cli.has("sizes") ? cli.number_list("sizes")
+        : dim == 2       ? std::vector<Scalar>{20, 40, 80, 160, 240, 320}
+                         : std::vector<Scalar>{8, 16, 24, 32, 40};
 
-    CsvWriter csv(path_join(out_dir, "runtime_scaling.csv"),
-                  {"nx", "ny", "num_elements", "num_dofs", "stiffness_nonzeros",
+    CsvWriter csv(path_join(out_dir, dim == 2 ? "runtime_scaling.csv"
+                                              : "runtime_scaling_3d.csv"),
+                  {"nx", "ny", "nz", "num_elements", "num_dofs", "stiffness_nonzeros",
                    "assemble[s]", "factorize[s]", "solve[s]", "objective_gradient[s]",
                    "compliance[J]"});
 
     std::vector<BenchRow> rows;
     std::cout << std::left << std::setw(8) << "nx" << std::setw(8) << "ny"
-              << std::setw(12) << "elements" << std::setw(12) << "DOFs"
+              << std::setw(8) << "nz" << std::setw(12) << "elements" << std::setw(12)
+              << "DOFs"
               << std::setw(14) << "assemble[s]" << std::setw(14) << "factorize[s]"
               << std::setw(14) << "solve[s]" << std::setw(16) << "obj+grad[s]" << "\n";
     std::cout << std::string(98, '-') << "\n";
@@ -157,13 +171,15 @@ int main(int argc, char** argv) {
     for (Scalar size : sizes) {
       const Index nx = static_cast<Index>(std::llround(size));
       const Index ny = std::max<Index>(1, static_cast<Index>(std::llround(size / aspect)));
+      const Index nz = dim == 3 ? std::max<Index>(1, ny / 2) : 0;
       if (nx < 1) throw ConfigError("--sizes must contain positive element counts");
 
       BenchRow row;
       row.nx = nx;
       row.ny = ny;
+      row.nz = nz;
 
-      FemModel model = build_bench_model(nx, ny);
+      FemModel model = build_bench_model(nx, ny, nz);
       Assembler assembler(model);
       row.num_elements = model.mesh().num_elements();
       row.num_dofs = model.dofs().num_dofs();
@@ -198,6 +214,7 @@ int main(int argc, char** argv) {
       // a topology-optimisation iteration.
       {
         const Scalar cell = 2.0 / static_cast<Scalar>(nx);
+        (void)nz;
         DensityFilter filter(model.mesh(), FilterType::Density, 1.5 * cell);
         DesignDomain domain(model, 0.5, 0.5, {});
         SimpOptions simp;
@@ -213,14 +230,14 @@ int main(int argc, char** argv) {
       }
 
       csv.row({static_cast<Scalar>(row.nx), static_cast<Scalar>(row.ny),
-               static_cast<Scalar>(row.num_elements),
+               static_cast<Scalar>(row.nz), static_cast<Scalar>(row.num_elements),
                static_cast<Scalar>(row.num_dofs), static_cast<Scalar>(row.nonzeros),
                row.assemble, row.factorize, row.solve, row.objective,
                row.compliance});
       rows.push_back(row);
 
       std::cout << std::left << std::setw(8) << row.nx << std::setw(8) << row.ny
-                << std::setw(12) << row.num_elements << std::setw(12) << row.num_dofs
+                << std::setw(8) << row.nz << std::setw(12) << row.num_elements << std::setw(12) << row.num_dofs
                 << std::setw(14) << app::format(row.assemble, 4) << std::setw(14)
                 << app::format(row.factorize, 4) << std::setw(14)
                 << app::format(row.solve, 4) << std::setw(16)
@@ -252,6 +269,8 @@ int main(int argc, char** argv) {
     summary.set("estimator",
                 json::Value::make_string("minimum over repeats (least noise-polluted)"));
     summary.set("linear_solver", json::Value::make_string("SimplicialLDLT (AMD)"));
+    summary.set("dim", json::Value::make_number(dim));
+    summary.set("element", json::Value::make_string(dim == 2 ? "Quad4" : "Hex8"));
 
     json::Value exponents = json::Value::make_object();
     exponents.set("assemble", json::Value::make_number(log_log_slope(dofs, t_assemble)));
@@ -263,16 +282,25 @@ int main(int argc, char** argv) {
     summary.set("scaling_exponent_vs_dofs", exponents);
     summary.set("note",
                 json::Value::make_string(
-                    "Exponents are least-squares slopes of log(time) vs log(DOFs) over "
-                    "the largest three sizes. Assembly is O(n). A 2-D sparse Cholesky "
-                    "with a good fill-reducing ordering is close to O(n^1.5) in theory; "
-                    "on these sizes the measured value also carries cache effects."));
+                    dim == 2
+                        ? "Exponents are least-squares slopes of log(time) vs log(DOFs) "
+                          "over the largest three sizes. Assembly is O(n). A 2-D sparse "
+                          "Cholesky with a good fill-reducing ordering is close to "
+                          "O(n^1.5) in theory; on these sizes the measured value also "
+                          "carries cache effects."
+                        : "Exponents are least-squares slopes of log(time) vs log(DOFs) "
+                          "over the largest three sizes. Assembly is O(n). A 3-D sparse "
+                          "Cholesky with nested-dissection-quality ordering is O(n^2) "
+                          "in theory and its fill grows as O(n^(4/3)); the AMD ordering "
+                          "used here is somewhat worse, which is the cost that makes "
+                          "3-D optimisation loops expensive."));
 
     json::Value records = json::Value::make_array();
     for (const BenchRow& row : rows) {
       json::Value rec = json::Value::make_object();
       rec.set("nx", json::Value::make_number(row.nx));
       rec.set("ny", json::Value::make_number(row.ny));
+      rec.set("nz", json::Value::make_number(row.nz));
       rec.set("num_elements", json::Value::make_number(row.num_elements));
       rec.set("num_dofs", json::Value::make_number(row.num_dofs));
       rec.set("stiffness_nonzeros", json::Value::make_number(row.nonzeros));
@@ -284,7 +312,8 @@ int main(int argc, char** argv) {
     }
     summary.set("records", records);
 
-    std::ofstream out(path_join(out_dir, "runtime_scaling.json"));
+    std::ofstream out(path_join(out_dir, dim == 2 ? "runtime_scaling.json"
+                                                    : "runtime_scaling_3d.json"));
     if (!out) throw IoError("cannot write the benchmark summary");
     out << json::dump(summary, 2) << '\n';
     out.close();

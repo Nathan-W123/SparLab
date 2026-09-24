@@ -23,6 +23,7 @@ set(SPARLAB_TEST_SOURCES
   test_modal.cpp
   test_topopt.cpp
   test_io.cpp
+  test_solid.cpp
 )
 
 add_executable(sparlab_tests ${SPARLAB_TEST_SOURCES})
