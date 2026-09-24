@@ -211,7 +211,7 @@ std::vector<Triangle> read_stl(const std::string& path) {
       const float x = read_float(in);
       const float y = read_float(in);
       const float z = read_float(in);
-      *p = Vector3(x, y, z);
+      *p = Vector3(static_cast<Scalar>(x), static_cast<Scalar>(y), static_cast<Scalar>(z));
     }
     std::uint16_t attribute = 0;
     in.read(reinterpret_cast<char*>(&attribute), sizeof(attribute));
