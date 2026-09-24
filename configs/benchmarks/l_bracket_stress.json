@@ -1,6 +1,6 @@
 {
   // ---------------------------------------------------------------------------
-  // Benchmark 6: stress-constrained L-bracket (MMA).
+  // Benchmark 5: stress-constrained L-bracket (MMA).
   //
   // The canonical stress-constrained test case. A square design domain has its
   // upper-right quadrant removed (passive void), is clamped along the top of the
@@ -19,6 +19,12 @@
   // decks: with the adaptive p-norm scale the constraint surface moves between
   // iterations, and at 0.2 a handful of corner elements oscillate between
   // their bounds instead of settling.
+  //
+  // Even at 0.1 the design spends long stretches in a cycle of period 5 at
+  // the move limit before it settles, so the iteration cap is 600: the run
+  // converges on the design-change criterion (max |dx| <= 0.01) in about 500
+  // iterations. The objective-stall criterion measures the compliance spread
+  // over its whole window, so the cycle cannot trigger it.
   //
   // Units are SI throughout: metres, newtons, pascals, kilograms.
   // ---------------------------------------------------------------------------
@@ -84,7 +90,7 @@
     "filter": { "type": "density", "radius_elements": 1.5 },
     "optimizer": {
       "method": "mma",
-      "max_iterations": 300,
+      "max_iterations": 600,
       "change_tolerance": 1e-2,
       "objective_tolerance": 5e-5,
       "objective_window": 20,

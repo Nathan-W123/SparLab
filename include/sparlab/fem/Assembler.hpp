@@ -17,6 +17,19 @@
 /// This is the dominant cost saving in a topology optimisation loop. The
 /// generic per-element path is always available and the two are checked against
 /// each other in the test suite.
+///
+/// **Cached sparsity.** The pattern of a stiffness (or consistent mass) matrix
+/// depends only on the mesh: one dim x dim block for every pair of nodes that
+/// share an element. It is built once, together with the position of each
+/// element's node blocks in it, and every later assembly scatters the scaled
+/// element matrices straight into the value array - no triplet list, no
+/// sort, memory proportional to the matrix itself. Contributions reach each
+/// entry in element order, exactly as the triplet assembly sums them, so the
+/// two paths give bitwise identical matrices (the tests check it). The free /
+/// prescribed blocks are likewise cached as index maps into the full matrix
+/// for the current constraint set. An element with a zero scale factor, whose
+/// entries a triplet assembly would leave out of the pattern, falls back to
+/// the triplet path so the result stays the same.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -62,17 +75,49 @@ class Assembler {
   /// Total structural mass of the model [kg] for the given element factors.
   Scalar total_mass(const Vector* scale = nullptr) const;
 
+  /// Use the cached-pattern path (default) or the triplet path. Both give the
+  /// same matrices; the switch exists so the tests can compare them.
+  void set_pattern_assembly(bool enabled) { use_pattern_ = enabled; }
+  bool pattern_assembly() const { return use_pattern_; }
+
  private:
+  struct Pattern {
+    bool ready = false;
+    Index size = 0;
+    std::vector<StorageIndex> outer;
+    std::vector<StorageIndex> inner;
+    /// Offset of local node a's rows within local node b's columns, per
+    /// element: block_offset[(e * npe + a) * npe + b].
+    std::vector<Index> block_offset;
+  };
+  struct Reduction {
+    std::vector<Index> key;          ///< constraint partition the map was built for
+    Index rows = 0;
+    Index cols = 0;
+    std::vector<StorageIndex> outer;
+    std::vector<StorageIndex> inner;
+    std::vector<Index> source;       ///< value index in the full matrix
+  };
+
   void build_cache();
   Matrix compute_element_stiffness(Index e) const;
   Matrix compute_element_mass(Index e) const;
+  void build_pattern() const;
+  bool matches_pattern(const SparseMatrix& full) const;
+  template <typename ElementMatrix>
+  SparseMatrix scatter(const ElementMatrix& element_matrix, const Vector* scale) const;
+  static SparseMatrix from_reduction(const Reduction& map, const SparseMatrix& full);
 
   const FemModel& model_;
   bool uniform_ = false;
+  bool use_pattern_ = true;
   Matrix cached_k_;
   Matrix cached_m_;
   mutable std::vector<Matrix> per_element_k_;
   mutable std::vector<Matrix> per_element_m_;
+  mutable Pattern pattern_;
+  mutable Reduction free_free_;
+  mutable Reduction free_prescribed_;
 };
 
 }  // namespace sparlab

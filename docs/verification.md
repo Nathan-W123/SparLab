@@ -29,7 +29,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Study | Kind | Metric | Value | Tolerance | Result |
 |-------|------|--------|-------|-----------|--------|
 | Patch test, distorted mesh | verification | max relative error in `u`, strain and stress | `4.07e-15` | `1e-10` | PASS |
-| Solver agreement | verification | max relative displacement difference vs dense LU | `7.04e-12` | `1e-8` | PASS |
+| Solver agreement (7 solvers, multigrid and `auto` included) | verification | max relative displacement difference vs dense LU | `8.97e-12` | `1e-8` | PASS |
 | Topology sensitivity | verification | min over steps of the max relative gradient error | `2.18e-08` | `1e-5` | PASS |
 | Mesh convergence | verification + validation | relative tip-deflection error vs Timoshenko, finest mesh, `nu = 0` | `4.78e-04` | `0.02` | PASS |
 | Modal frequencies | validation | `f1` relative error vs Euler-Bernoulli, finest mesh | `5.52e-03` | `0.02` | PASS |
@@ -37,17 +37,22 @@ All numbers in this document come from `results/verification/summary.json`,
 | Topology sensitivity 3-D, Hex8 | verification | min over steps of the max relative gradient error | `1.56e-08` | `1e-5` | PASS |
 | Mesh convergence 3-D, Hex8 cantilever | verification + validation | relative tip-deflection error vs Timoshenko, finest mesh | `5.42e-03` | `0.03` | PASS |
 | Modal frequencies 3-D, Hex8 cantilever | validation | `f1` (weak axis) relative error vs Euler-Bernoulli, finest mesh | `1.06e-02` | `0.03` | PASS |
+| Patch test, distorted Tri3 and Tet4 meshes | verification | max relative error in `u`, strain and stress | `9.17e-15` | `1e-10` | PASS |
+| Mesh convergence, Tri3 and Tet4 cantilevers | verification + validation | larger of the two finest-mesh errors vs Timoshenko | `1.66e-02` | `0.03` | PASS |
+| Multigrid CG vs Cholesky, Hex8 and Tet4 | verification | max relative displacement difference vs LDL^T; iteration growth under refinement at most `1.6x` | `4.37e-12` | `1e-8` | PASS |
+| Sensitivity through the Heaviside projection, Q4 and Tet4 | verification | worst over `beta = 2, 8, 32` of the best scaled-entry or directional error | `9.65e-08` | `1e-5` | PASS |
 
 Supporting measurements from the same runs:
 
 | Quantity | Value |
 |----------|-------|
-| Observed convergence order, tip deflection | `2.31` at `nu = 0`, `2.28` at `nu = 0.3` (Q4); `2.63` (Hex8) |
+| Observed convergence order, tip deflection | `2.31` at `nu = 0`, `2.28` at `nu = 0.3` (Q4); `2.63` (Hex8); `2.27` (Tri3); `3.22` (Tet4, still pre-asymptotic - section 15) |
+| Multigrid CG iterations, coarsest to finest multi-level mesh | `14 -> 16` (Hex8), `16 -> 20` (Tet4); Jacobi CG `238 -> 699` and `481 -> 729` on the same meshes |
 | Mass conservation, `sum(M)/dim` vs `rho V` | `<= 4.84e-14` relative (Q4), `<= 4.89e-14` (Hex8) |
 | Axial mode vs fixed-free rod theory | `4.02e-06` relative |
 | Elements excluded from the FD check at active bounds | 6 of 72 (Q4), 2 of 36 (Hex8) |
 
-And from the cross-validation against two independent codes (section 11):
+And from the cross-validation against two independent codes (section 14):
 
 | Problem | Reference | Max relative nodal-displacement difference | Tolerance | Result |
 |---------|-----------|-------------------------------------------:|----------:|--------|
@@ -57,6 +62,21 @@ And from the cross-validation against two independent codes (section 11):
 | Solid block, tip load, 1 280 Hex8 | CalculiX, `C3D8` | `3.39e-06` | `1e-5` | PASS |
 | Solid block, top pressure | scikit-fem, `ElementHex1` | `1.42e-11` | `1e-7` | PASS |
 | Solid block, top pressure | CalculiX, `C3D8` | `2.43e-06` | `1e-5` | PASS |
+| Plane cantilever, 2 880 Tri3, `nu = 0` | scikit-fem, `ElementTriP1` | `1.66e-11` | `1e-7` | PASS |
+| Plane cantilever, 2 880 Tri3, `nu = 0` | CalculiX, `CPS3` | `8.86e-07` | `1e-5` | PASS |
+| Solid block, 7 680 Tet4, tip load / top pressure | scikit-fem, `ElementTetP1` | `1.72e-12` / `9.46e-12` | `1e-7` | PASS |
+| Solid block, 7 680 Tet4, tip load / top pressure | CalculiX, `C3D4` | `3.64e-06` / `2.97e-06` | `1e-5` | PASS |
+| Gmsh lug bracket, 20 336 Tri3, `nu = 0`, two load cases | scikit-fem, `ElementTriP1` | `6.09e-13` / `7.52e-14` | `1e-7` | PASS |
+| Gmsh lug bracket, 20 336 Tri3, `nu = 0`, two load cases | CalculiX, `CPS3` | `2.76e-06` / `4.29e-06` | `1e-5` | PASS |
+| Gmsh lug bracket, `nu = 0.33` (the benchmark material) | scikit-fem, `ElementTriP1` | `5.04e-13` / `2.42e-13` | `1e-7` | PASS |
+| Gmsh lug bracket, `nu = 0.33` | CalculiX, `CPS3` | `5.63e-04` / `1.14e-03` | - | INFO |
+| Gmsh engine mount, 39 936 Tet4, two load cases | scikit-fem, `ElementTetP1` | `1.48e-12` / `5.28e-13` | `1e-7` | PASS |
+| Gmsh engine mount, 39 936 Tet4, two load cases | CalculiX, `C3D4` | `1.71e-06` / `1.98e-06` | `1e-5` | PASS |
+
+The two `INFO` rows are not a disagreement between codes but between
+idealisations: CalculiX expands its plane elements into a layer of solid
+elements, which reproduces plane stress only at `nu = 0` - the same mesh at
+`nu = 0` agrees to the `.frd` rounding floor (section 14).
 
 ## 1. Element-level verification
 
@@ -95,10 +115,17 @@ Every item is a unit test in `tests/test_element.cpp`.
   dense equivalent strictly positive.
 * **DOF round-trip.** `expand(restrict_to_free(u))` reproduces `u` at free DOFs
   and the prescribed values at constrained ones.
-* **Solver agreement.** All five backends - `SimplicialLDLT`, `SimplicialLLT`,
-  `SparseLU`, diagonally preconditioned CG, and dense `PartialPivLU` - on one
-  6x4 plate agree within `1e-8` relative on the displacement field and `1e-9` on
-  the compliance. The dedicated study on a 12x4 plate measures `7.04e-12`.
+* **Solver agreement.** The direct backends - `SimplicialLDLT`,
+  `SimplicialLLT`, `SparseLU`, dense `PartialPivLU` - and the iterative ones -
+  diagonally preconditioned CG, multigrid CG, and `auto` - agree on one 6x4
+  plate within `1e-8` relative on the displacement field and `1e-9` on the
+  compliance. The dedicated study on a 12x4 plate (with the multigrid coarse
+  size lowered to 16 unknowns, so it builds a real hierarchy on 130 DOFs)
+  measures at most `8.97e-12`, from the multigrid solver in 41 iterations.
+* **Cached-pattern assembly.** The assembly that scatters into the recorded
+  sparsity pattern is bitwise identical to the triplet assembly for `K` and
+  `M`, on Q4, Tri3, Hex8 and Tet4 meshes, with and without SIMP scale
+  factors (`tests/test_multigrid.cpp`).
 
 ### Reaction-force equilibrium
 
@@ -500,32 +527,201 @@ discrete problem - nodes, connectivity, supports, consistent nodal loads - is
 solved by two independent codes and the nodal displacements compared node by
 node (`python/scripts/cross_validate.py`, `make cross-validation`):
 
-* **scikit-fem 12.0.2** rebuilds the problem with `ElementQuad1` /
-  `ElementHex1`, the same Lame constants (`lambda* = 2 lambda G/(lambda+2G)`
-  for plane stress) and the same integration order. It is the *same element
-  formulation* in an independent implementation, so the only expected
-  difference is linear-solver round-off - and that is what is measured:
-  `1.5e-10` (Q4) and `5.6e-12`, `1.4e-11` (Hex8) relative;
-* **CalculiX 2.21** (`ccx`) runs the exported `.inp` decks. `C3D8` is the same
-  trilinear element as SparLab's Hex8; the measured differences of `3.4e-06`
-  and `2.4e-06` are within the six-significant-digit rounding of its `.frd`
-  result file (floor `5e-6`), i.e. as close as the file format allows one to
-  see. `CPS4` is a plane element CalculiX expands through the thickness - a
-  different discretisation of the plane problem - and it agrees to
-  `8.7e-07`.
+* **scikit-fem 12.0.2** rebuilds the problem with `ElementQuad1`,
+  `ElementTriP1`, `ElementHex1` or `ElementTetP1`, the same Lame constants
+  (`lambda* = 2 lambda G/(lambda+2G)` for plane stress) and the same
+  integration order. It is the *same element formulation* in an independent
+  implementation, so the only expected difference is linear-solver round-off
+  - and that is what is measured, from `7.5e-14` to `1.5e-10` relative over
+  the seven problems;
+* **CalculiX 2.21** (`ccx`) runs the exported `.inp` decks. `C3D8` and `C3D4`
+  are the same trilinear hexahedron and linear tetrahedron as SparLab's; the
+  differences, `1.7e-06` to `3.6e-06`, are within the six-significant-digit
+  rounding of its `.frd` result file (floor `5e-6`), i.e. as close as the
+  file format allows one to see - including the 39 936-tetrahedron engine
+  mount read from a Gmsh file, which SparLab solves with the multigrid
+  solver.
+* **CalculiX's plane elements are a different idealisation.** `CPS4` and
+  `CPS3` are expanded internally into a layer of solid elements with the
+  plane-stress condition imposed on it. That reproduces plane stress only
+  for `nu = 0`, and the measurement says so: the Gmsh lug bracket at `nu = 0`
+  agrees to `2.8e-06` and `4.3e-06`, within the `.frd` floor, while the same
+  mesh at its real `nu = 0.33` differs by `5.6e-04` and `1.1e-03`. The plane
+  decks judged against CalculiX therefore run at `nu = 0` (the cantilevers
+  and `lug_bracket_nu0_analysis`); the `nu = 0.33` comparison is recorded as
+  informational (`passed: null`, `INFO` in the tables), and scikit-fem - the
+  same plane element - is the verification for it.
 
 Tolerances are `1e-7` for scikit-fem and `1e-5` for CalculiX, both recorded
 in the summary with the `.frd` floor. The comparison exits non-zero if any
-pair exceeds its tolerance; CI runs the scikit-fem half on every push.
+judged pair exceeds its tolerance; CI runs the scikit-fem half on all seven
+problems on every push.
+
+## 15. The linear simplices (Tri3, Tet4)
+
+`tests/test_unstructured.cpp` and `sparlab_verify --study patch-test-simplex |
+mesh-convergence-simplex`.
+
+**Element level.** `K_e` symmetric, exactly three (Tri3) or six (Tet4) zero
+eigenvalues and the rest positive, a linear field reproduced exactly, the
+closed-form consistent mass summing to `dim rho V`, a constant edge or face
+traction split equally with the exact resultant, and inverted or flat cells
+rejected with a `MeshError`.
+
+**Patch test.** The constant-strain fields of sections 4 and 11 on triangle and tetrahedron
+meshes split from perturbed Q4 and Hex8 grids (interior nodes moved by up to
+40 % and 30 % of the cell size, and undistorted for comparison):
+interior displacement, strain and stress agree with the exact field to
+`9.17e-15` - round-off, as for the bilinear and trilinear elements.
+
+**Mesh convergence.** The same two cantilevers as sections 6 and 11, meshed
+by splitting the structured cells, so every simplex mesh has exactly the
+nodes of a Q4 or Hex8 mesh:
+
+| Element | DOFs | Error vs Timoshenko, coarsest to finest | Q4 / Hex8 on the same beam |
+|---------|------|-----------------------------------------|-----------------------------|
+| Tri3 (`nu = 0.3`) | 126 to 21 186 | `37.7 %, 13.4 %, 3.87 %, 1.14 %, 0.42 %` | `0.85 %` at 2 754 DOFs, `0.22 %` at 41 730 |
+| Tet4 (`nu = 0`) | 306 to 59 211 | `50.2 %, 20.7 %, 6.25 %, 2.90 %, 1.66 %` | `1.21 %` at 8 775 DOFs, `0.54 %` at 26 481 |
+
+The constant-strain elements lock in bending exactly as expected: they
+approach the beam value from below, and on the *same nodes* the Tet4 error is
+about five times the Hex8 error (`6.25 %` against `1.21 %` at 8 775 DOFs,
+`2.90 %` against `0.54 %` at 26 481). The Tri3 needs roughly three times the
+unknowns of the Q4 for the same error (interpolating the Q4 curve: 2.6x to
+2.8x over the measured range). The order of the error against
+Timoshenko rises towards 2 under refinement - `1.28, 1.72, 1.89, 1.95` for
+the Tet4 - and the Tri3's last step (`1.44`) is already limited by the
+modelling gap between the beam and plane elasticity, the same gap the Q4
+curve levels off at. The self-convergence order the study also records
+(`2.27` Tri3, `3.22` Tet4) is measured against the finest mesh, which for
+the Tet4 is itself still `1.7 %` from the beam value, so it overstates the
+rate; the error against the independent reference is the number to read.
+The study passes at `1.66e-02` against a tolerance of `0.03`.
+
+## 16. Meshes read from files
+
+`tests/test_unstructured.cpp` (the reader cases) and the two Gmsh parts:
+
+* Gmsh 2.2 and 4.1 files, written by the test itself, round-trip triangle
+  and tetrahedron meshes node for node, with their physical groups as node
+  and element sets;
+* a clockwise triangle and a mirrored tetrahedron are re-ordered and
+  counted; unused nodes are dropped and counted; a mesh in millimetres read
+  with `scale = 0.001` has the right extent; coincident nodes are reported,
+  and merged on request;
+* malformed and unsupported files fail with a message naming the cause and,
+  where there is one, the Gmsh option that fixes it: mixed triangles and
+  quadrilaterals (`Mesh.RecombineAll`), second-order cells
+  (`Mesh.ElementOrder = 1`), a binary file or an unsupported version, a
+  plane mesh off `z = 0`, a cell referencing a missing node, a file holding
+  only boundary elements (`Mesh.SaveAll`), a truncated section, a folded
+  cell, a missing file and an unknown extension;
+* SparLab's own CalculiX decks read back node for node through the Abaqus
+  reader, which also handles `*INCLUDE`, `*NSET` / `*ELSET` with `GENERATE`,
+  continuation lines, and refuses `*INSTANCE` translations and multi-part
+  assemblies it cannot place;
+* a deck addresses a group by name for supports, loads and passive regions,
+  resolves a relative mesh path against its own directory, and a group that
+  does not exist, or a node set used as an element region, is an error
+  listing the sets the mesh has.
+
+The two committed parts (`configs/meshes/`) are then solved and
+cross-validated like the structured meshes (section 14): the 20 336-triangle
+lug bracket and the 39 936-tetrahedron engine mount agree with scikit-fem to
+`1e-12` and better, and with CalculiX to its `.frd` rounding wherever the two
+codes solve the same problem.
+
+## 17. The multigrid solver
+
+`tests/test_multigrid.cpp` and `sparlab_verify --study multigrid`.
+
+**The hierarchy's defining identities**, on a distorted Q4 and a Tet4
+mesh: a near-null space of dimension 3 and 6; the tentative prolongator
+reproduces it exactly (`P_hat B_c = B` to `1e-12` relative) with
+orthonormal columns; every coarse operator equals `P^T A P`; the levels
+shrink; the operator complexity lies between 1 and 3. On a distorted Hex8
+mesh the V-cycle is symmetric (`<M^-1 x, y> = <x, M^-1 y>` to `1e-11`) and
+positive definite, and reduces the error, for both smoothers - which is
+what plain CG needs of a preconditioner.
+
+**Agreement with the direct solver** on every element type, including a
+SIMP-contrast model (densities down to the `1e-9` floor): the displacement
+differs from LDL^T by less than the requested tolerance allows. A reused
+hierarchy - aggregates kept, numbers refreshed - is bitwise equal to one
+built from scratch for the new matrix. Warm starts reach the same answer in
+fewer iterations (none, from the exact solution), and one thread and many
+give bitwise identical results. An unsupported model is reported as
+under-constrained by the coarse factorisation, and malformed input is
+rejected.
+
+**Iterations under refinement.** The study solves a cantilever block
+(`nx x nx/2 x nx/4` cells, tip load) to a relative residual of `1e-10` with
+multigrid CG, Jacobi CG and LDL^T:
+
+| Element | DOFs | Levels | MG iterations | Jacobi iterations | Difference MG vs LDL^T |
+|---------|------|-------:|--------------:|------------------:|-----------------------:|
+| Hex8 | 2 295 | 2 | 14 | 238 | `7.2e-13` |
+| Hex8 | 15 147 | 2 | 14 | 469 | `2.2e-12` |
+| Hex8 | 47 775 | 3 | 16 | 699 | `3.7e-12` |
+| Tet4 | 6 825 | 2 | 16 | 481 | `2.8e-12` |
+| Tet4 | 21 090 | 3 | 20 | 729 | `4.4e-12` |
+
+Jacobi's count grows with `1/h`, as `sqrt(kappa)` must; the multigrid
+count barely moves, which is the property the solver exists for. The
+smallest meshes of the study (up to 1 092 DOFs) sit below the coarse-grid
+size, where the "hierarchy" is the direct coarse solve and converges in one
+iteration; the growth limit is judged over the multi-level meshes only
+(worst `1.25x`, against a limit of `1.6x`). Timings are in
+`results/verification/multigrid_scaling.csv` and the larger comparison in
+`docs/benchmarks.md`: for one solve at these sizes Jacobi CG is about as fast
+as multigrid, because its cheap iterations cost about what the multigrid
+setup does; the direct solver is 45 times slower at 47 775 Hex8 DOFs
+(40.9 s against 0.90 s).
+
+## 18. The Heaviside projection
+
+`tests/test_projection.cpp` and `sparlab_verify --study
+sensitivity-projection`.
+
+* The map keeps `rho_bar(0) = 0` and `rho_bar(1) = 1` for every `beta`
+  from 0.5 to 64, is monotone, is within `1e-6` of the identity at
+  `beta = 1e-3` and a step at `beta = 256`, and its derivative matches a
+  central difference of the map itself.
+* The compliance and volume gradients through filter and projection match
+  central differences on a distorted Q4, a Hex8 and a Tet4 mesh, and the
+  stress-constraint gradient on a Q4 and a Hex8 mesh.
+* The `beta` schedule steps on its interval, early on convergence when asked,
+  caps at `beta_max`, and a deck switches the projection on with its
+  schedule; the sensitivity filter is refused.
+* End to end, a projected run finishes at `beta_max` with a much lower grey
+  level than the same run unprojected.
+
+The study checks the gradient at `beta = 2, 8, 32` on a 12x6 Q4 and a
+5x2x2-cell Tet4 mesh (72 and 120 design variables), at three steps each:
+
+| Element | `beta = 2` | `beta = 8` | `beta = 32` |
+|---------|-----------:|-----------:|------------:|
+| Q4 | `6.3e-08` | `8.4e-09` | `9.7e-08` |
+| Tet4 | `9.4e-09` | `1.2e-08` | `5.0e-08` |
+
+Each entry is the best step's worse of the scaled entry error and the
+directional-derivative error. At `beta = 32` the plain relative error of the
+worst entry is between `1.37` and `1.76` on the Q4 mesh, depending on the
+step: far from the threshold the projection's derivative is tiny, so the
+analytical entry is near zero and its central difference is round-off.
+Judging each entry against
+`max(|analytical|, |FD|, 1e-3 ||gradient||_inf)` separates that from a real
+error, and the directional derivative along the full gradient, which no
+entry can hide in, agrees to `1e-9`.
 
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
 
 * **no comparison against experiment**;
-* the cross-validation covers linear static displacements on two problems.
-  Stresses, natural frequencies and the optimised designs are not compared
-  with another code;
+* the cross-validation covers linear static displacements on seven
+  problems, two of them read from mesh files. Stresses, natural frequencies
+  and the optimised designs are not compared with another code;
 * plane strain is unit-tested but no verification *study* runs in it;
 * the sensitivity checks run on 72- and 36-element meshes (they need two
   extra solves per element per step); the gradients are not FD-verified at
@@ -534,8 +730,16 @@ Stated plainly, since the absence matters as much as the presence:
   - that the relaxed aggregate bounds the stress of a part - is checked only
   by the re-solve of the thresholded structure, which is a consistency check,
   not a proof;
-* the Hex8 mesh-convergence study reaches 26 481 DOFs; the direct solver's
-  `O(n^2.3)` factorisation cost is what stopped it there;
+* the Hex8 mesh-convergence study still stops at 26 481 DOFs and runs on
+  the direct solver, so its numbers stay comparable with earlier runs; the
+  Tet4 study reaches 59 211 DOFs, where `auto` has switched to multigrid;
+* the multigrid solver is verified against the direct solver up to 47 775
+  DOFs in the study and at the benchmark sizes in `docs/benchmarks.md`;
+  beyond the direct solver's reach (the 356 475- and 830 115-DOF runs) there
+  is no second solution to compare with, only the residual checks;
+* the mesh readers are tested on files written by the tests and by Gmsh
+  4.15.2; files from other generators (Abaqus/CAE, HyperMesh, Salome) use the
+  same keywords but have not been tried;
 * no convergence study of the *optimised topology* against mesh size in the
   verification suite - that lives in the design study, where the
   `mesh_fixed_r` and `mesh_fixed_cells` arms address it directly.

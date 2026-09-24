@@ -2,7 +2,10 @@
 
 Everything in SparLab is strict SI. There are no unit-conversion helpers and no
 implicit scaling anywhere in the code, so a value read from a result file is
-already in the unit its column header states.
+already in the unit its column header states. The one conversion factor is
+explicit: a mesh file drawn in millimetres is read with `mesh.scale = 0.001`,
+applied once as the file is read and recorded in the summary. A mesh whose
+extent comes out above 20 m or below 0.1 mm draws a warning naming that key.
 
 ## Units
 
@@ -88,6 +91,26 @@ The six faces are numbered `0: bottom (0 3 2 1)`, `1: top (4 5 6 7)`,
 right-hand normal points out of the element. That winding is what the STL
 export relies on for outward normals.
 
+### Simplices
+
+A Tri3 lists its three nodes counter-clockwise (positive area), with edges
+`0: (0 1)`, `1: (1 2)`, `2: (2 0)`. A Tet4 lists its four nodes so that
+`(x1 - x0) . ((x2 - x0) x (x3 - x0)) > 0` - positive volume, the VTK
+convention - with faces `0: (0 2 1)`, `1: (0 1 3)`, `2: (1 2 3)`,
+`3: (0 3 2)`, opposite nodes 3, 2, 0 and 1 and wound outward like the
+hexahedron's. `structured_tri` and `structured_tet` meshes keep the node
+numbering of the grid they split: element `2 elem(i, j) + s` is triangle `s`
+of cell `(i, j)`, and element `6 elem(i, j, k) + s` tetrahedron `s` of the
+cell.
+
+### Meshes read from a file
+
+Nodes keep the order of the file, renumbered consecutively from 0 after the
+nodes no cell uses are dropped; cells keep the order of the file. A cell in
+the opposite orientation to the one above (a clockwise triangle, a mirrored
+tetrahedron or hexahedron) is re-ordered as it is read, and the number of
+such cells is recorded under `mesh.file.cells_reoriented`.
+
 ## Degrees of freedom
 
 `dim` translations per node, numbered node-major:
@@ -164,8 +187,9 @@ factor.
 * A design variable `x_e` and a physical density `rho_e` both live in `[0, 1]`
   and are dimensionless.
 * The volume fraction is `sum_e rho_e v_e / sum_e v_e`, with `v_e` the element
-  volume in `m^3`. It is computed on the **physical** (filtered) density, which
-  is the quantity the constraint is written on.
+  volume in `m^3`. It is computed on the **physical** density - filtered, and
+  projected when the Heaviside projection is on - which is the quantity the
+  constraint is written on.
 * Passive solid regions count towards the volume budget. A mass constraint on a
   real part includes its attachment bosses, so the budget must too.
 * Mass is `rho_material * sum_e rho_e v_e`, i.e. the SIMP density multiplies the
@@ -192,18 +216,25 @@ Every tolerance is configurable and every run records the value it used in
 
 | Tolerance | Default | What it bounds |
 |-----------|---------|----------------|
-| `solver.linear.residual_tolerance` | `1e-8` | scaled residual `\|\|Ku-f\|\| / \|\|f\|\|` after each solve |
+| `solver.linear.residual_tolerance` | `1e-8` | scaled residual `\|\|Ku-f\|\| / \|\|f\|\|` after each solve, whatever the solver |
 | `solver.linear.pivot_tolerance` | `1e-14` | smallest / largest LDL^T pivot before the system is called singular |
-| `solver.linear.iterative_tolerance` | `1e-12` | requested relative residual for the CG solver |
+| `solver.linear.iterative_tolerance` | `1e-12` | relative residual the CG solvers (Jacobi and multigrid) iterate to |
+| `solver.linear.amg.coarse_pivot_tolerance` | `1e-13` | smallest / largest pivot of the multigrid's coarsest factorisation before the model is called under-constrained |
 | `solver.equilibrium_tolerance` | `1e-6` | relative global force-balance error |
 | `modal.tolerance` | `1e-10` | relative eigenvalue change between subspace iterations |
 | `modal.residual_tolerance` | `1e-6` | relative eigenpair residual, also part of the stopping rule |
 | `topology.optimizer.change_tolerance` | `1e-2` | `max \|dx\|` between iterations |
-| `topology.optimizer.objective_tolerance` | `5e-5` | relative compliance change over `objective_window` iterations |
+| `topology.optimizer.objective_tolerance` | `0` (off; `5e-5` in most decks) | relative spread `(max - min) / \|c_k\|` of the last `objective_window + 1` compliances |
 | `topology.optimizer.volume_tolerance` | `1e-10` | relative volume error of the multiplier bisection (OC) |
 | `topology.optimizer.constraint_tolerance` | `1e-4` | largest MMA constraint value an iterate may have and still count as feasible; convergence requires it |
-| `topology.optimizer.mma.subproblem_tolerance` | `1e-7` | interior-point residual of the MMA subproblem |
+| `topology.optimizer.mma.subproblem_tolerance` | `1e-7` | final barrier parameter of the MMA subproblem; each level converges to a KKT residual of 0.9 times its barrier |
+| `topology.optimizer.mma.max_newton_iterations` | `500` | Newton iterations per barrier level before the subproblem is reported as failed |
 | `topology.stress.feasibility_tolerance` | `1e-3` | relative margin used when the summary reports whether the relaxed stress maximum meets the limit |
+
+The decks that use the multigrid solver (`bracket_3d_projected`,
+`bracket_3d_large`, `engine_mount_3d`) set `iterative_tolerance` to `1e-10`.
+The multigrid verification study runs at that tolerance and measures how far
+the displacement then sits from the direct solution (`docs/verification.md`).
 
 Exceeding a solver tolerance raises an exception with a diagnosis; exceeding an
 optimiser tolerance is reported as non-convergence in both the console output
@@ -212,9 +243,22 @@ and `summary.json`. Nothing is silently accepted.
 ## Determinism
 
 The only randomness in the code is the filler part of the subspace-iteration
-starting basis and the node perturbation of `make_perturbed_quad_mesh` and
-`make_perturbed_hex_mesh`. All take an explicit seed (`modal.seed`, default
+starting basis and the node perturbation of the `make_perturbed_*_mesh`
+generators (quadrilateral, hexahedral, and the triangle and tetrahedron meshes
+split from them). All take an explicit seed (`modal.seed`, default
 `20240917`) and default to deterministic values, so repeated runs of the same
 deck on the same build give bit-identical results. The MMA subproblem solver
 and the stress-constraint scaling are deterministic by construction: they
 start from fixed values and involve no random choice.
+
+Threads do not change results either. The multigrid solver is SparLab's
+only OpenMP code: its parallel kernels write disjoint rows, and every inner
+product sums fixed-size chunks in a fixed order, so a solve gives the same
+bits on one thread as on many (a test asserts it). Eigen threads one more
+kernel when OpenMP is on, the matrix-vector product inside its
+Jacobi-preconditioned CG, and computes each row of it on a single thread,
+so that solver is deterministic too. The element loops -
+assembly, sensitivities, stress recovery - run sequentially in element
+order. The two committed meshes come from Gmsh run
+single-threaded with fixed options by `python/scripts/make_meshes.py`, which
+records the Gmsh version and every option beside each mesh.

@@ -32,6 +32,34 @@ ComplianceObjective::ComplianceObjective(const FemModel& model,
   analysis_options_.check_model = false;
 }
 
+void ComplianceObjective::set_projection(Scalar beta, Scalar eta) {
+  if (filter_.type() == FilterType::Sensitivity) {
+    throw ConfigError(
+        "the Heaviside projection needs the density filter (or none): the sensitivity "
+        "filter modifies the gradient heuristically, so there is no chain rule to "
+        "extend through the projection");
+  }
+  if (!(beta > 0.0) || !(eta > 0.0 && eta < 1.0)) {
+    throw ConfigError("projection needs beta > 0 and eta in (0, 1)");
+  }
+  projection_ = true;
+  beta_ = beta;
+  eta_ = eta;
+}
+
+Vector ComplianceObjective::physical_density(const Vector& x) const {
+  Vector rho = filter_.to_physical(x).cwiseMax(0.0).cwiseMin(1.0);
+  return projection_ ? heaviside_project(rho, beta_, eta_) : rho;
+}
+
+Vector ComplianceObjective::chain_to_design(const ObjectiveEvaluation& eval,
+                                            const Vector& d_dphysical) const {
+  if (eval.projection_derivative.size() == d_dphysical.size()) {
+    return filter_.pull_back(d_dphysical.cwiseProduct(eval.projection_derivative));
+  }
+  return filter_.pull_back(d_dphysical);
+}
+
 ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gradients) {
   const Index ne = model_.mesh().num_elements();
   if (x.size() != ne) {
@@ -43,17 +71,27 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
   if (!x.allFinite()) throw ConfigError("design vector contains NaN or Inf");
 
   ObjectiveEvaluation out;
-  out.physical_density = filter_.to_physical(x);
   // Filtering is a convex combination, so the result stays in [0,1] up to
   // round-off; clamp to keep pow() well defined.
-  out.physical_density = out.physical_density.cwiseMax(0.0).cwiseMin(1.0);
+  out.filtered_density = filter_.to_physical(x).cwiseMax(0.0).cwiseMin(1.0);
+  if (projection_) {
+    out.physical_density = heaviside_project(out.filtered_density, beta_, eta_);
+    out.projection_derivative = heaviside_derivative(out.filtered_density, beta_, eta_);
+  } else {
+    out.physical_density = out.filtered_density;
+  }
   out.stiffness_factors = simp_stiffness_factors(out.physical_density, simp_);
 
   Timer timer;
+  if (!solver_) solver_ = make_linear_solver(analysis_options_.linear);
   analysis_ = std::make_unique<StaticAnalysis>(model_, assembler_, analysis_options_);
   StaticAnalysis& analysis = *analysis_;
+  analysis.use_external_solver(solver_.get());
   analysis.prepare(&out.stiffness_factors);
   out.assemble_seconds = timer.elapsed_seconds();
+  adjoint_iterations_ = 0;
+  const bool warm = analysis_options_.linear.warm_start && solver_->iterative();
+  previous_displacements_.resize(model_.load_vectors().size());
 
   timer.reset();
   const std::vector<Vector>& loads = model_.load_vectors();
@@ -71,7 +109,12 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
 
   Vector ue(edofs);
   for (std::size_t l = 0; l < loads.size(); ++l) {
-    const Vector u = analysis.solve_load_vector(loads[l]);
+    Vector& previous = previous_displacements_[l];
+    const Vector u = analysis.solve_load_vector(
+        loads[l], warm && previous.size() == loads[l].size() ? &previous : nullptr);
+    out.linear_iterations += analysis.last_iterations();
+    total_linear_iterations_ += analysis.last_iterations();
+    if (warm) previous = u;
     ++num_solves_;
     const Scalar c = loads[l].dot(u);
     out.load_case_compliance.push_back(c);
@@ -97,8 +140,15 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
 
   if (need_gradients) {
     out.dc_dphysical = dc_dphys;
-    out.dc_dx = filter_.transform_gradient(x, dc_dphys);
-    out.dv_dx = filter_.pull_back(domain_.element_volumes());
+    if (projection_) {
+      // Through the projection first, then the (linear) density filter.
+      out.dc_dx = filter_.pull_back(dc_dphys.cwiseProduct(out.projection_derivative));
+      out.dv_dx = filter_.pull_back(
+          domain_.element_volumes().cwiseProduct(out.projection_derivative));
+    } else {
+      out.dc_dx = filter_.transform_gradient(x, dc_dphys);
+      out.dv_dx = filter_.pull_back(domain_.element_volumes());
+    }
 
     if (out.dc_dx.maxCoeff() > 0.0) {
       // For minimum compliance the gradient must be non-positive everywhere.
@@ -117,12 +167,24 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
   return out;
 }
 
-Vector ComplianceObjective::solve_adjoint(const Vector& rhs) {
+Vector ComplianceObjective::solve_adjoint(const Vector& rhs, int slot) {
   if (!analysis_) {
     throw ModelError("solve_adjoint called before the objective was evaluated");
   }
   ++num_solves_;
-  return analysis_->solve_homogeneous(rhs);
+  const bool warm = slot >= 0 && analysis_options_.linear.warm_start && solver_->iterative();
+  if (warm && static_cast<std::size_t>(slot) >= previous_adjoints_.size()) {
+    previous_adjoints_.resize(static_cast<std::size_t>(slot) + 1);
+  }
+  const Vector* guess = nullptr;
+  if (warm && previous_adjoints_[static_cast<std::size_t>(slot)].size() == rhs.size()) {
+    guess = &previous_adjoints_[static_cast<std::size_t>(slot)];
+  }
+  Vector lambda = analysis_->solve_homogeneous(rhs, guess);
+  adjoint_iterations_ += analysis_->last_iterations();
+  total_linear_iterations_ += analysis_->last_iterations();
+  if (warm) previous_adjoints_[static_cast<std::size_t>(slot)] = lambda;
+  return lambda;
 }
 
 Scalar ComplianceObjective::compliance_at(const Vector& x) {
@@ -194,6 +256,9 @@ SensitivityCheckResult verify_sensitivities(ComplianceObjective& objective,
         std::max({std::abs(entry.analytical), std::abs(entry.finite_difference),
                   1.0e-30});
     entry.relative_error = entry.absolute_error / scale;
+    result.max_scaled_error = std::max(
+        result.max_scaled_error,
+        entry.absolute_error / std::max(scale, 1.0e-3 * result.gradient_infinity_norm));
 
     result.max_absolute_error = std::max(result.max_absolute_error, entry.absolute_error);
     result.max_relative_error = std::max(result.max_relative_error, entry.relative_error);

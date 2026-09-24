@@ -4,6 +4,7 @@
 #include "sparlab/core/Logging.hpp"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <numeric>
 #include <sstream>
@@ -36,26 +37,37 @@ class DisjointSet {
 };
 
 /// Components of an element subset connected through shared faces (edges in
-/// 2-D). A face is identified by its sorted node list.
+/// 2-D). A face is identified by its sorted node list; sorting one flat array
+/// of face keys and uniting the owners of equal keys scales to large meshes.
+/// The components themselves do not depend on the order of the unions.
 std::vector<std::vector<Index>> components_by_face(const Mesh& mesh,
                                                    const std::vector<Index>& subset) {
   const std::vector<std::vector<int>>& local = element_local_faces(mesh.element_type());
-  std::map<std::vector<Index>, Index> first_owner;  // face -> local subset index
   DisjointSet ds(subset.size());
 
-  std::vector<Index> key;
+  struct Record {
+    std::array<Index, 4> key;
+    Index owner;  // index into `subset`
+  };
+  // Sized up front and filled by index (see Mesh::boundary_faces).
+  std::vector<Record> records(subset.size() * local.size());
+  std::size_t next = 0;
   for (std::size_t s = 0; s < subset.size(); ++s) {
     const Index* nodes = mesh.element_nodes(subset[s]);
     for (const std::vector<int>& face : local) {
-      key.clear();
-      for (int a : face) key.push_back(nodes[a]);
-      std::sort(key.begin(), key.end());
-      const auto it = first_owner.find(key);
-      if (it == first_owner.end()) {
-        first_owner.emplace(key, static_cast<Index>(s));
-      } else {
-        ds.unite(it->second, static_cast<Index>(s));
-      }
+      Record& r = records[next++];
+      r.key.fill(-1);
+      for (std::size_t a = 0; a < face.size(); ++a) r.key[a] = nodes[face[a]];
+      std::sort(r.key.begin(), r.key.begin() + static_cast<long>(face.size()));
+      r.owner = static_cast<Index>(s);
+    }
+  }
+  std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) {
+    return a.key != b.key ? a.key < b.key : a.owner < b.owner;
+  });
+  for (std::size_t i = 1; i < records.size(); ++i) {
+    if (records[i].key == records[i - 1].key) {
+      ds.unite(records[i - 1].owner, records[i].owner);
     }
   }
 
@@ -118,6 +130,30 @@ SubMeshResult extract_element_subset(const Mesh& mesh,
   }
 
   out.mesh = Mesh(std::move(coords), std::move(connectivity), mesh.element_type());
+  // Named sets follow the retained entities, so a deck region that names a
+  // mesh-file group still selects the right nodes on the extracted structure.
+  for (const auto& entry : mesh.node_sets()) {
+    std::vector<Index> mapped;
+    for (Index n : entry.second) {
+      const Index m = out.old_to_new_node[static_cast<std::size_t>(n)];
+      if (m >= 0) mapped.push_back(m);
+    }
+    out.mesh.set_node_set(entry.first, std::move(mapped));
+  }
+  if (!mesh.element_sets().empty()) {
+    std::vector<Index> old_to_new_element(static_cast<std::size_t>(mesh.num_elements()), -1);
+    for (std::size_t k = 0; k < elements.size(); ++k) {
+      old_to_new_element[static_cast<std::size_t>(elements[k])] = static_cast<Index>(k);
+    }
+    for (const auto& entry : mesh.element_sets()) {
+      std::vector<Index> mapped;
+      for (Index e : entry.second) {
+        const Index m = old_to_new_element[static_cast<std::size_t>(e)];
+        if (m >= 0) mapped.push_back(m);
+      }
+      out.mesh.set_element_set(entry.first, std::move(mapped));
+    }
+  }
   out.mesh.validate();
   return out;
 }

@@ -25,11 +25,25 @@ CASES = [
     "block_3d_analysis",
     "cantilever_beam",
     "mbb_beam",
+    "mbb_beam_projected",
     "aerospace_bracket",
     "wing_rib",
     "l_bracket_stress",
     "bracket_3d",
+    "bracket_3d_projected",
+    "lug_bracket_2d",
+    "engine_mount_3d",
+    "bracket_3d_large",
 ]
+
+#: Variants of another benchmark (the same problem with the projection on):
+#: only their topology and convergence figures are drawn, the rest would repeat
+#: the parent.
+MINIMAL_CASES = {"mbb_beam_projected", "bracket_3d_projected"}
+
+#: Cases whose density animation is skipped: 110k hexahedra per frame make the
+#: GIF slow to render and large, and the small-multiples figure shows the same.
+NO_ANIMATION_CASES = {"bracket_3d_large"}
 
 #: The stress-constrained case and the unconstrained run of the same deck
 #: (sparlab_topopt --no-stress) that the comparison figure sets beside it.
@@ -65,7 +79,9 @@ def main(argv=None) -> int:
             continue
         argv_case = [os.path.join(SCRIPTS, "plot_case.py"),
                      "--case", directory, "--figures", args.figures]
-        if args.no_animation:
+        if case in MINIMAL_CASES:
+            argv_case.append("--minimal")
+        elif args.no_animation or case in NO_ANIMATION_CASES:
             argv_case.append("--no-animation")
         if not run(f"figures for {case}", argv_case):
             failures.append(f"{case}: plot_case.py failed")
@@ -89,6 +105,12 @@ def main(argv=None) -> int:
         else:
             failures.append(f"stress comparison: {constrained} and {unconstrained} "
                             "must both exist (scripts/run_all_benchmarks.sh writes them)")
+
+    if not args.only or "mbb_beam_projected" in cases:
+        if not run("Heaviside projection figures",
+                   [os.path.join(SCRIPTS, "plot_projection.py"),
+                    "--results", args.results, "--figures", args.figures]):
+            failures.append("projection figures failed")
 
     study_dir = os.path.join(args.results, "study")
     if os.path.isdir(study_dir):

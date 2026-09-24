@@ -157,18 +157,47 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
     SparseMatrix a = k;
     if (sigma != 0.0) a = k - sigma * m;
 
-    LinearSolverOptions lin;
-    lin.type = LinearSolverType::SimplicialLdlt;
+    LinearSolverOptions lin = options.linear;
+    const bool iterative_type = lin.type == LinearSolverType::AmgCg ||
+                                lin.type == LinearSolverType::ConjugateGradient ||
+                                lin.type == LinearSolverType::Auto;
+    if (sigma > 0.0 && iterative_type) {
+      // A positive shift can make K - sigma M indefinite, which CG cannot
+      // handle; the factorisation handles it and its pivots report trouble.
+      log::info("modal analysis: shift sigma = ", sigma,
+                " > 0, so the shifted matrix may be indefinite; using a sparse "
+                "Cholesky factorisation instead of ", to_string(lin.type));
+      lin.type = LinearSolverType::SimplicialLdlt;
+    }
     auto solver = make_linear_solver(lin);
+    DofLayout layout;
+    layout.dim = model.dim();
+    layout.coordinates = &model.mesh().coordinates();
+    layout.unknowns = &model.dofs().free_dofs();
+    solver->set_layout(layout);
     solver->factorize(a);
+    result.linear_solver = solver->name();
+    const bool warm = solver->iterative() && lin.warm_start;
 
     Matrix x = starting_subspace(k, m, q, options.seed);
     Vector prev = Vector::Constant(m_req, std::numeric_limits<Scalar>::max());
+    Vector mu_previous;
 
     for (int iter = 1; iter <= options.max_iterations; ++iter) {
       const Matrix y = m * x;
       Matrix xbar(n, q);
-      for (int c = 0; c < q; ++c) xbar.col(c) = solver->solve(y.col(c));
+      for (int c = 0; c < q; ++c) {
+        // Near convergence (K - sigma M)^-1 M x = x / (lambda - sigma): the
+        // Ritz pair of the last iteration is an initial guess close to the
+        // answer.
+        if (warm && mu_previous.size() == q && mu_previous(c) - sigma > 0.0) {
+          const Vector guess = x.col(c) / (mu_previous(c) - sigma);
+          xbar.col(c) = solver->solve_from(y.col(c), guess);
+        } else {
+          xbar.col(c) = solver->solve(y.col(c));
+        }
+        result.linear_iterations += solver->last_iterations();
+      }
       if (!xbar.allFinite()) {
         throw SolverError(
             "subspace iteration produced a non-finite basis; the shifted matrix "
@@ -192,6 +221,7 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
 
       const Vector mu = ges.eigenvalues();
       x = xbar * ges.eigenvectors();
+      mu_previous = mu;
 
       const Vector current = mu.head(m_req);
       Scalar change = 0.0;

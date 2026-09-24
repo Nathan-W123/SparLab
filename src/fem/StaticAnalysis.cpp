@@ -52,6 +52,37 @@ StaticAnalysis::StaticAnalysis(const FemModel& model, const Assembler& assembler
   }
   if (options_.check_model) require_well_posed(model_);
   prescribed_ = model_.dofs().prescribed_vector();
+  layout_.dim = model_.dim();
+  layout_.coordinates = &model_.mesh().coordinates();
+  layout_.unknowns = &model_.dofs().free_dofs();
+}
+
+void StaticAnalysis::use_external_solver(LinearSolver* solver) {
+  external_solver_ = solver;
+  prepared_ = false;
+}
+
+LinearSolver& StaticAnalysis::active_solver() {
+  if (external_solver_ != nullptr) return *external_solver_;
+  if (!owned_solver_) owned_solver_ = make_linear_solver(options_.linear);
+  return *owned_solver_;
+}
+
+const LinearSolver& StaticAnalysis::solver() const {
+  if (external_solver_ != nullptr) return *external_solver_;
+  if (!owned_solver_) throw ModelError("StaticAnalysis::solver() called before prepare()");
+  return *owned_solver_;
+}
+
+int StaticAnalysis::last_iterations() const {
+  return prepared_ ? solver().last_iterations() : 0;
+}
+
+Vector StaticAnalysis::free_guess(const Vector* initial_guess) const {
+  if (initial_guess == nullptr || initial_guess->size() != model_.dofs().num_dofs()) {
+    return Vector();
+  }
+  return model_.dofs().restrict_to_free(*initial_guess);
 }
 
 void StaticAnalysis::prepare(const Vector* stiffness_scale) {
@@ -62,12 +93,14 @@ void StaticAnalysis::prepare(const Vector* stiffness_scale) {
   } else {
     k_fp_ = SparseMatrix(model_.dofs().num_free(), model_.dofs().num_constrained());
   }
-  solver_ = make_linear_solver(options_.linear);
-  solver_->factorize(k_ff_);
+  LinearSolver& solver = active_solver();
+  solver.set_layout(layout_);
+  solver.factorize(k_ff_);
   prepared_ = true;
 }
 
-Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
+Vector StaticAnalysis::solve_load_vector(const Vector& applied_force,
+                                         const Vector* initial_guess) {
   if (!prepared_) prepare();
   if (applied_force.size() != model_.dofs().num_dofs()) {
     std::ostringstream os;
@@ -86,7 +119,9 @@ Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
     rhs -= k_fp_ * up;
   }
 
-  const Vector uf = solver_->solve(rhs);
+  LinearSolver& solver = active_solver();
+  const Vector guess = solver.iterative() ? free_guess(initial_guess) : Vector();
+  const Vector uf = guess.size() > 0 ? solver.solve_from(rhs, guess) : solver.solve(rhs);
   if (!uf.allFinite()) {
     throw SolverError(
         "the linear solver returned a non-finite displacement field; the reduced "
@@ -95,7 +130,7 @@ Vector StaticAnalysis::solve_load_vector(const Vector& applied_force) {
   return model_.dofs().expand(uf);
 }
 
-Vector StaticAnalysis::solve_homogeneous(const Vector& rhs) {
+Vector StaticAnalysis::solve_homogeneous(const Vector& rhs, const Vector* initial_guess) {
   if (!prepared_) prepare();
   if (rhs.size() != model_.dofs().num_dofs()) {
     std::ostringstream os;
@@ -103,7 +138,11 @@ Vector StaticAnalysis::solve_homogeneous(const Vector& rhs) {
        << model_.dofs().num_dofs() << " DOFs";
     throw ModelError(os.str());
   }
-  const Vector reduced = solver_->solve(model_.dofs().restrict_to_free(rhs));
+  LinearSolver& solver = active_solver();
+  const Vector guess = solver.iterative() ? free_guess(initial_guess) : Vector();
+  const Vector free_rhs = model_.dofs().restrict_to_free(rhs);
+  const Vector reduced =
+      guess.size() > 0 ? solver.solve_from(free_rhs, guess) : solver.solve(free_rhs);
   if (!reduced.allFinite()) {
     throw SolverError(
         "the adjoint solve returned a non-finite field; the reduced stiffness matrix is "
@@ -144,7 +183,8 @@ StaticSolution StaticAnalysis::build_solution(const std::string& name, Scalar we
       throw SolverError(os.str());
     }
   }
-  sol.solver_iterations = solver_->last_iterations();
+  sol.solver_iterations = active_solver().last_iterations();
+  sol.solver_name = active_solver().name();
 
   // Reactions from the full residual r = K u - f.
   const Vector residual = k_full_ * sol.displacement - applied_force;

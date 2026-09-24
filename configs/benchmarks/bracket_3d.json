@@ -1,6 +1,6 @@
 {
   // ---------------------------------------------------------------------------
-  // Benchmark 5: solid wall bracket (three-dimensional, Hex8).
+  // Benchmark 6: solid wall bracket (three-dimensional, Hex8).
   //
   // A rectangular block is bonded to a wall over its x = 0 face and carries two
   // load cases at its free end: a downward limit load along the bottom tip edge

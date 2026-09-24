@@ -90,7 +90,7 @@
       //  * change_tolerance 1e-2 is the classic SIMP/OC criterion. On fine
       //    meshes it is met only intermittently, because thin members migrate
       //    one cell at a time long after the objective has settled.
-      //  * objective_tolerance 2e-5 over a 20-iteration window is the backstop
+      //  * objective_tolerance 5e-5 over a 20-iteration window is the backstop
       //    that actually terminates fine-mesh runs. Measured on the cantilever
       //    benchmark, stopping at this point gives a compliance within about
       //    0.1% of an 800-iteration run (see docs/benchmarks.md).

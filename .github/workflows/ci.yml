@@ -107,20 +107,32 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j "$(nproc)"
 
-      - name: Static and modal analysis (2-D and 3-D)
+      - name: Static and modal analysis (Q4, Hex8, Tri3, Tet4, Gmsh meshes)
         run: |
-          ./build/bin/sparlab_solve --config configs/verification/cantilever_analysis.json \
-                                    --output results/cantilever_analysis --export-calculix
-          ./build/bin/sparlab_solve --config configs/verification/block_3d_analysis.json \
-                                    --output results/block_3d_analysis --export-calculix
+          for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
+                      block_tet_analysis lug_bracket_nu0_analysis; do
+            ./build/bin/sparlab_solve --config configs/verification/$case.json \
+                                      --output results/$case --export-calculix
+          done
+          # The two parts read from Gmsh / Abaqus-format meshes, as static
+          # analyses (their topology blocks are ignored by sparlab_solve).
+          for case in lug_bracket_2d engine_mount_3d; do
+            ./build/bin/sparlab_solve --config configs/benchmarks/$case.json \
+                                      --output results/${case}_analysis --export-calculix
+          done
 
       - name: Cross-validation against scikit-fem
         # CalculiX is not installed on the runner, so only the scikit-fem
         # comparison runs; it exits non-zero if a displacement field differs
         # beyond the documented tolerance.
         run: |
-          python3 python/scripts/cross_validate.py --skip-calculix \
-              --case results/cantilever_analysis --case results/block_3d_analysis \
+          CASES=()
+          for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
+                      block_tet_analysis lug_bracket_nu0_analysis \
+                      lug_bracket_2d_analysis engine_mount_3d_analysis; do
+            CASES+=(--case results/$case)
+          done
+          python3 python/scripts/cross_validate.py --skip-calculix "${CASES[@]}" \
               --output results/cross_validation
 
       - name: Topology optimization on reduced meshes
@@ -147,21 +159,53 @@ jobs:
             --output results/bracket_3d \
             --nx 16 --ny 8 --nz 4 --max-iterations 20 --modes 4
 
-      - name: Runtime scaling (small sizes)
+      - name: Heaviside projection, multigrid and real geometry (reduced)
+        # The projection with beta continuation (plane MBB beam with and
+        # without it; the solid bracket deck, which also selects the
+        # multigrid solver), and the two parts whose meshes are read from
+        # files. File meshes cannot be coarsened from the command line, so
+        # those run at full resolution with a short iteration budget.
         run: |
-          ./build/bin/sparlab_bench --sizes 20,40,80 --repeats 1 --output results/benchmark
-          ./build/bin/sparlab_bench --dim 3 --sizes 8,16 --repeats 1 --output results/benchmark
+          ./build/bin/sparlab_topopt --config configs/benchmarks/mbb_beam.json \
+            --output results/mbb_beam --nx 90 --ny 30 --max-iterations 80
+          ./build/bin/sparlab_topopt --config configs/benchmarks/mbb_beam_projected.json \
+            --output results/mbb_beam_projected --nx 90 --ny 30 --max-iterations 80
+          ./build/bin/sparlab_topopt --config configs/benchmarks/bracket_3d_projected.json \
+            --output results/bracket_3d_projected \
+            --nx 16 --ny 8 --nz 4 --max-iterations 30 --modes 3
+          ./build/bin/sparlab_topopt --config configs/benchmarks/lug_bracket_2d.json \
+            --output results/lug_bracket_2d --max-iterations 40 --modes 3
+          ./build/bin/sparlab_topopt --config configs/benchmarks/engine_mount_3d.json \
+            --output results/engine_mount_3d --max-iterations 8 --modes 2
+
+      - name: Runtime scaling (small sizes, direct and multigrid)
+        run: |
+          B=./build/bin/sparlab_bench
+          $B --sizes 20,40,80 --repeats 1 --output results/benchmark
+          $B --sizes 20,40,80 --repeats 1 --solver amg_cg --output results/benchmark
+          $B --dim 3 --sizes 8,16 --repeats 1 --output results/benchmark
+          $B --dim 3 --sizes 8,16,24 --repeats 1 --solver amg_cg --output results/benchmark
+          $B --dim 3 --sizes 8,16 --repeats 1 --solver conjugate_gradient --no-objective \
+             --output results/benchmark
+          $B --dim 3 --element tet --sizes 8,16 --repeats 1 --output results/benchmark
+          $B --dim 3 --element tet --sizes 8,16,24 --repeats 1 --solver amg_cg \
+             --output results/benchmark
 
       - name: Regenerate figures and tables
         run: |
           for case in cantilever_analysis block_3d_analysis cantilever_beam \
-                      l_bracket_stress bracket_3d; do
+                      l_bracket_stress bracket_3d lug_bracket_2d engine_mount_3d; do
             python3 python/scripts/plot_case.py --case results/$case \
                                                 --figures ci-figures --no-animation
+          done
+          for case in mbb_beam_projected bracket_3d_projected; do
+            python3 python/scripts/plot_case.py --case results/$case \
+                                                --figures ci-figures --minimal
           done
           python3 python/scripts/plot_comparison.py \
               --constrained results/l_bracket_stress \
               --unconstrained results/l_bracket_unconstrained --figures ci-figures
+          python3 python/scripts/plot_projection.py --results results --figures ci-figures
           python3 python/scripts/plot_verification.py \
               --verification results/verification --benchmark results/benchmark \
               --cross-validation results/cross_validation \

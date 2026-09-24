@@ -17,6 +17,24 @@ Scalar default_tolerance(const Mesh& mesh) {
   return 1.0e-9 * std::max(diag, 1.0e-30);
 }
 
+std::string available_sets(const Mesh& mesh) {
+  std::ostringstream os;
+  if (mesh.node_sets().empty() && mesh.element_sets().empty()) {
+    os << "the mesh carries no named sets (only a mesh read from a file with physical "
+          "groups or *NSET / *ELSET cards does)";
+    return os.str();
+  }
+  os << "available node sets:";
+  for (const auto& entry : mesh.node_sets()) {
+    os << " '" << entry.first << "' (" << entry.second.size() << ")";
+  }
+  os << "; element sets:";
+  for (const auto& entry : mesh.element_sets()) {
+    os << " '" << entry.first << "' (" << entry.second.size() << ")";
+  }
+  return os.str();
+}
+
 /// Distance from `center` measured in the plane normal to `axis`.
 Scalar radial_distance(const Vector3& x, const Vector3& center, int axis) {
   Vector3 d = x - center;
@@ -45,6 +63,7 @@ bool Selector::contains(const Vector3& x, Scalar tol) const {
     case SelectorKind::NodeIds:
     case SelectorKind::ElementIds:
     case SelectorKind::NearestNode:
+    case SelectorKind::Group:
       // Handled by the group, which needs mesh-wide information.
       return false;
   }
@@ -75,6 +94,25 @@ std::vector<Index> SelectorGroup::select_nodes(const Mesh& mesh) const {
         hit[static_cast<std::size_t>(id)] = 1;
       }
       continue;
+    }
+    if (sel.kind == SelectorKind::Group) {
+      const auto nodes = mesh.node_sets().find(sel.group);
+      if (nodes != mesh.node_sets().end()) {
+        for (Index n : nodes->second) hit[static_cast<std::size_t>(n)] = 1;
+        continue;
+      }
+      const auto elements = mesh.element_sets().find(sel.group);
+      if (elements != mesh.element_sets().end()) {
+        for (Index e : elements->second) {
+          const Index* en = mesh.element_nodes(e);
+          for (int a = 0; a < mesh.nodes_per_elem(); ++a) {
+            hit[static_cast<std::size_t>(en[a])] = 1;
+          }
+        }
+        continue;
+      }
+      throw ConfigError("region '" + name + "' names mesh group '" + sel.group +
+                        "', which the mesh does not define; " + available_sets(mesh));
     }
     if (sel.kind == SelectorKind::NearestNode) {
       Index best = -1;
@@ -116,6 +154,22 @@ std::vector<Index> SelectorGroup::select_elements(const Mesh& mesh) const {
     if ((sel.kind == SelectorKind::Circle || sel.kind == SelectorKind::Annulus) &&
         (sel.axis < 0 || sel.axis > 2)) {
       throw ConfigError("region '" + name + "' has a circle/annulus axis outside 0..2");
+    }
+    if (sel.kind == SelectorKind::Group) {
+      const auto elements = mesh.element_sets().find(sel.group);
+      if (elements == mesh.element_sets().end()) {
+        const bool node_set = mesh.node_sets().count(sel.group) > 0;
+        throw ConfigError(
+            "region '" + name + "' names mesh group '" + sel.group + "' as an element " +
+            "region, " +
+            (node_set ? std::string("but it is a node set (a boundary group); element "
+                                    "regions need a group of cells - a physical surface "
+                                    "in 2-D or a physical volume in 3-D. ")
+                      : std::string("which the mesh does not define; ")) +
+            available_sets(mesh));
+      }
+      for (Index e : elements->second) hit[static_cast<std::size_t>(e)] = 1;
+      continue;
     }
     if (sel.kind == SelectorKind::ElementIds) {
       for (Index id : sel.ids) {

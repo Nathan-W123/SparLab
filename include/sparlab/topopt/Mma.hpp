@@ -65,8 +65,14 @@ struct MmaOptions {
   /// absolute residual target of the Newton solver unreachable. Well-scaled
   /// problems never trigger it.
   Scalar constraint_scale_cap = 10.0;
-  /// Newton iterations allowed per barrier level.
-  int max_inner_iterations = 200;
+  /// Newton iterations allowed per barrier level (deck key
+  /// `mma.max_newton_iterations`). Svanberg's reference code stops at 200 and
+  /// carries on regardless; here running out is an error, so the budget is
+  /// larger: the step to the final barrier can knock the multipliers off the
+  /// central path when a constraint is active, and the stress-constrained
+  /// L-bracket has needed about 220 steps there to recover. A subproblem that
+  /// converges within the budget is unaffected by its size.
+  int max_inner_iterations = 500;
 
   void validate() const;
 };

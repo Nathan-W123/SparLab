@@ -13,7 +13,10 @@ make results        # refresh the generated tables
 ```
 
 Machine for every timing below: 4-core container, GCC 13.3.0, `-O3 -DNDEBUG`,
-Eigen 3.4.0, `SimplicialLDLT` with AMD ordering, single-threaded element loop.
+Eigen 3.4.0. The element loops and the sparse Cholesky factorisation
+(`SimplicialLDLT`, AMD ordering) run on one core. The multigrid solver's
+kernels use OpenMP on all four, and so does the matrix-vector product inside
+Eigen's Jacobi-preconditioned CG; both give the same bits on one core.
 Absolute times will differ elsewhere; the scaling exponents are the portable
 part.
 
@@ -84,7 +87,7 @@ support 8.9 elements), `p = 3`, no continuation.
 | Volume fraction | 0.40000000 (violation `-3.0e-11`) |
 | Grey level | 0.0947 |
 | Interpretation at `rho >= 0.5` | 5 122 of 12 800 elements, **1** connected group, **0** discarded as islands |
-| Runtime | 44.4 s, 362 iterations, 363 linear solves, 0.123 s/iteration |
+| Runtime | 48.9 s, 362 iterations, 363 linear solves, 0.135 s/iteration |
 
 The result is the expected two-bar / tied-arch layout: a straight tension
 member along the top, a compression member along the bottom, and a diagonal web
@@ -148,7 +151,7 @@ at 60 x 20.
 | Volume fraction | 0.50000000 (violation `-1.5e-11`) |
 | Grey level | 0.279 |
 | Interpretation at `rho >= 0.5` | 5 507 of 10 800 elements, **1** connected group, **0** islands |
-| Runtime | 50.2 s, 434 iterations |
+| Runtime | 56.6 s, 434 iterations |
 
 The topology is the familiar MBB result: solid top and bottom flanges joined by
 a diagonal truss web that fans from the load point to the roller, with the
@@ -227,7 +230,7 @@ the hole wall. 1 520 elements are passive solid and 528 passive void, leaving
 | Volume fraction | 0.35000000 (violation `-7.2e-11`) |
 | Grey level | 0.116 |
 | Interpretation at `rho >= 0.5` | 13 476 of 38 400 elements, **1** connected group, **0** islands |
-| Runtime | 422.5 s, 375 iterations, 1 128 linear solves, 1.127 s/iteration |
+| Runtime | 443.9 s, 375 iterations, 1 128 linear solves, 1.184 s/iteration |
 
 The topology is a symmetric double fan: two pairs of diagonal members running
 from each bolt collar out to the lug, tied by a vertical member at the lug and
@@ -292,7 +295,7 @@ at mid chord (`fitting_load`, 0.6).
 | Volume fraction | 0.40000000 (violation `+1.1e-11`) |
 | Grey level | 0.221 |
 | Interpretation at `rho >= 0.5` | 5 063 of 12 500 elements, **1** connected group, **0** islands |
-| Runtime | 56.0 s, 530 iterations, 1 593 linear solves |
+| Runtime | 64.9 s, 530 iterations, 1 593 linear solves |
 
 The topology is a recognisable lightened rib web: a heavy vertical post under
 the mid-chord fitting, diagonal braces fanning from it to both spar
@@ -378,34 +381,34 @@ constraint switched off (`--no-stress`) as the reference.
 
 | Quantity | Constraint off | Constraint on |
 |----------|---------------:|--------------:|
-| Iterations, stop reason | 115, objective stall | 240, objective stall |
-| Linear solves (one adjoint per iteration when constrained) | 116 | 481 |
+| Iterations, stop reason | 115, objective stall | 494, design change |
+| Linear solves (one adjoint per iteration when constrained) | 116 | 989 |
 | Compliance, uniform start | 1.35322 J | 1.35322 J |
-| Compliance, optimised | 0.085276 J | **0.090060 J** (+5.6 %) |
-| Volume fraction | 0.349999 (`-2.1e-06`) | 0.349987 (`-3.8e-05`, feasible) |
-| Grey level | 0.122 | 0.116 |
-| Relaxed stress peak of the design, `rho^0.5 sigma_vm` | 15.6 MPa (1.66 x limit) | 9.24 MPa (**0.983** x limit) |
-| p-norm aggregate over the limit, and its scale | - | 1.180, `c = 0.842` |
-| Interpretation at `rho >= 0.5` | 1 440 elements, 1 group, 0 islands | 1 435 elements, 1 group, 0 islands |
-| Re-solved structure: compliance | 0.075180 J | 0.079859 J (+6.2 %) |
-| Re-solved structure: peak von Mises | 10.13 MPa (**1.078** x limit) | 7.51 MPa (**0.799** x limit) |
-| Runtime | 4.4 s | 10.6 s |
+| Compliance, optimised | 0.085276 J | **0.089558 J** (+5.0 %) |
+| Volume fraction | 0.349999 (`-2.1e-06`) | 0.349929 (`-2.0e-04`, feasible) |
+| Grey level | 0.122 | 0.118 |
+| Relaxed stress peak of the design, `rho^0.5 sigma_vm` | 15.6 MPa (1.66 x limit) | 9.34 MPa (**0.994** x limit) |
+| p-norm aggregate over the limit, and its scale | - | 1.187, `c = 0.842` |
+| Interpretation at `rho >= 0.5` | 1 440 elements, 1 group, 0 islands | 1 438 elements, 1 group, 0 islands |
+| Re-solved structure: compliance | 0.075180 J | 0.079330 J (+5.5 %) |
+| Re-solved structure: peak von Mises | 10.13 MPa (**1.078** x limit) | 7.62 MPa (**0.810** x limit) |
+| Runtime | 3.8 s | 22.1 s |
 
 The unconstrained design does what a compliance objective always does at a
 re-entrant corner: it fills it, and concentrates stress there. Its re-solved
 structure exceeds the 9.4 MPa limit by 7.8 % at the corner (the yellow spot in
 the upper panel). With the constraint on, the corner is rounded - material
 moves from the corner into a second diagonal - and the re-solved structure
-sits at 80 % of the limit, a **26 % lower peak stress for 5.6 % more
+sits at 81 % of the limit, a **25 % lower peak stress for 5.0 % more
 compliance**. That is the trade a stress constraint is for.
 
 Three readings of the table need care:
 
 * the constraint acts on the **relaxed** stress of the SIMP model, whose peak
-  at the returned design is 0.983 of the limit: active, feasible, and
+  at the returned design is 0.994 of the limit: active, feasible, and
   hovering just inside the limit as the adaptive p-norm scale is re-fitted
   each iteration (`l_bracket_stress_convergence.png`, fourth panel). The
-  re-solved structure's 0.799 is a different, better number because
+  re-solved structure's 0.810 is a different, better number because
   thresholding promotes the corner's intermediate densities to solid
   material and its stress drops. Both are reported; the second is the one
   that says whether the *structure* meets the limit;
@@ -420,10 +423,28 @@ Three readings of the table need care:
 **Convergence.** MMA with a stress constraint oscillates more than OC on a
 compliance-only problem, because the constraint surface moves with the
 p-norm scale. At the compliance decks' move limit of 0.2 the run hit its
-300-iteration cap with a handful of corner elements still flipping between
-their bounds (feasible, but not converged); at 0.1 it stops on the
-objective-stall criterion after 240 iterations, feasible, with a final design
-change of 0.020. The MMA subproblem took 32-92 Newton iterations per step.
+cap with a handful of corner elements still flipping between their bounds
+(feasible, but not converged). At 0.1 the design still spends long stretches
+in a cycle of period 5 at the move limit - around iteration 120 the relaxed
+stress ratio goes round `0.96, 1.09, 1.14, 1.03, 0.83` with every step at
+the move limit - before it settles, and it converges on the
+design-change criterion after 494 iterations (`max |dx| = 0.0094`),
+feasible, with the largest constraint value at `-2.0e-4`.
+
+Two changes in this version of the code are visible here. An earlier build
+stopped this deck after 240 iterations on the objective-stall criterion,
+which then compared two compliances 20 iterations apart; a cycle whose
+period divides the window returns to the same compliance, and on a slightly
+different trajectory (round-off from unrelated changes is enough) the test
+fired at iteration 129 in the middle of the cycle, with the design still
+moving by the full move limit. The criterion now measures the spread of the
+whole window, which a cycle cannot satisfy (`docs/topology_optimization.md`
+section 8). And one MMA subproblem on the way - iteration 123 - needed 392
+Newton iterations in all, about 220 of them at the final barrier level,
+where the previous budget was 200 per level: the step to the final barrier
+threw the multipliers off the central path. The budget is now 500, and
+running out of it remains an error. The other 493 subproblems took 21 to
+192 Newton iterations each (median 58).
 
 ## 6. Solid bracket (Hex8)
 
@@ -450,7 +471,7 @@ interpreted structure.
 | Interpretation at `rho >= 0.5` | 1 278 of 4 096 elements, **1** connected group, **0** discarded as islands |
 | Re-solved structure | 0.176349 J (ratio **0.609** to the SIMP field) at 1.5150 kg; peak von Mises 12.7 MPa |
 | Geometry export | 5 356 triangles, closed, 32 non-manifold edges, enclosed volume equal to the cell volume to `3.5e-14` |
-| Runtime | 442.0 s for 157 iterations (2.82 s each), 316 linear solves; 451.4 s in total with both modal analyses |
+| Runtime | 450.5 s for 157 iterations (2.87 s each), 316 linear solves with the sparse Cholesky solver; 460.9 s in total with both modal analyses |
 
 The topology is a cantilevered box girder: two webs along the sides joined by
 a tapered top flange, thinning towards the tip where the bending moment is
@@ -494,10 +515,145 @@ into shells at those edges; the summary and the console report the count, and
 the interpretation threshold and connectivity rule - not the STL writer -
 decide whether such cells belong to one part.
 
-The run is the most expensive in the set at 2.8 s per iteration for 15 147
-DOFs, where the plane bracket manages 1.1 s per iteration for 77 602: the
-direct solver's fill-in grows far faster in three dimensions (see *Runtime
-and scaling* below).
+The deck names the sparse Cholesky solver, which costs 2.87 s per iteration
+at 15 147 DOFs, where the plane bracket needs 1.18 s per iteration for
+77 602. The direct solver's fill-in grows far faster in three dimensions
+(see *Runtime and scaling* below). The same bracket with the multigrid
+solver and the projection (section 7) costs 0.52 s per iteration, and
+section 10 solves it at 23.5 times the unknowns.
+
+## 8. Lug bracket from a Gmsh mesh (Tri3)
+
+`configs/benchmarks/lug_bracket_2d.json` - real geometry instead of a box.
+A 200 x 100 mm, 6 mm thick 7075-T6 plate with 10 mm corner radii, two 16 mm
+bolt holes on the left and a 20 mm lug hole on the right, drawn and meshed
+in Gmsh by `python/scripts/make_meshes.py`: element size 1.5 mm, 20 336
+linear triangles, 10 417 nodes, 20 834 DOFs, triangle quality `0.761`
+minimum and `0.993` mean. The mesh is in millimetres and is read with
+`mesh.scale = 0.001`. Its physical groups are the deck's regions: the
+bolt-hole edges (`bolt_holes`, 68 nodes) are clamped, the lug-hole edge
+(`load_hole`, 42 nodes) takes a 4 kN downward and a 2.5 kN sideways pin load
+as two equally weighted load cases, and an 8 mm rim around every hole
+(`hole_rims`, 2 114 triangles) is kept solid so the holes stay holes. Volume
+fraction 0.35 with the rims counted, density filter of 2.5 mean edge lengths
+(3.7 mm, about 41 triangles), `p = 3`, OC with a move limit of 0.1, and the
+Heaviside projection from `beta = 1` to 32, doubling at most every 40
+iterations.
+
+![Lug bracket mesh and boundary conditions](figures/lug_bracket_2d_mesh_bcs.png)
+
+![Lug bracket optimised topology](figures/lug_bracket_2d_topology.png)
+
+| Quantity | Value |
+|----------|------:|
+| Iterations, stop reason | 211, objective stall at `beta = 32` |
+| Compliance, uniform start to optimised | 6.494 J to **0.8289 J** (7.8x) |
+| Equal-mass uniform plate, stiffness gain | 0.9506 J, **1.147** |
+| Volume fraction (relative violation) | 0.35000 (`9.6e-11`) |
+| Grey level, projected / before projection | **0.0039** / 0.176 |
+| Interpretation at `rho >= 0.5` | 7 165 triangles, 1 group, nothing discarded |
+| Thresholded structure re-solved | 0.8255 J (**0.996** of the objective), peak von Mises 128.6 MPa under the downward pin load |
+| `f1` full plate (and equal-mass plate) / optimised | 2202 Hz / **2902 Hz** |
+| Linear solver | `auto`: sparse Cholesky, 20 698 free unknowns |
+| Runtime | 40.6 s, 0.18 s per iteration |
+
+Three things to read from it:
+
+* **the objective is the structure.** With the projection at `beta = 32`
+  the physical density is almost binary, and the thresholded part re-solved
+  as solid aluminium is within 0.4 % of the compliance the optimiser
+  minimised. Without a projection the compliance of the MBB beam's
+  thresholded structure is 15 % below its objective and the solid bracket's
+  39 % below (section 7);
+* **it stops on the objective, as the deck says it will.** At a sharp
+  projection single triangles on the solid-void boundary keep flipping by
+  the whole move limit while the compliance is stationary, so the design
+  change never falls to 0.01. The run ends at the final `beta` when the
+  compliance spread over the last 11 iterations falls below 0.1 %
+  (`9.7e-4`), with the design change still at 0.1;
+* **real geometry changes what the baseline means.** The bolt and lug holes
+  and the rims are in both the optimised part and the equal-mass plate, so
+  the 1.147 gain is a like-for-like comparison, and the first frequency
+  rises by 32 % at 35 % of the plate's mass, while `f2` to `f4` fall (5578,
+  5694 and 8037 Hz against 7193, 7838 and 16255), the member-mode pattern
+  the rectangular cases show.
+
+The exported `structure_after.stl` (16 156 triangles) is closed and
+2-manifold. The same mesh at `nu = 0` is one of the cross-validation
+problems: scikit-fem agrees to `6e-13` and CalculiX to `4.3e-6`
+(`docs/verification.md`, section 14).
+
+## 10. Solid bracket at 356 475 DOFs (Hex8, multigrid)
+
+`configs/benchmarks/bracket_3d_large.json` - the bracket of section 6 on a
+mesh three times finer in every direction: 96 x 48 x 24 Hex8 with a 2.5 mm
+cell, 110 592 elements, 118 825 nodes and 356 475 DOFs, 352 800 of them
+free. Block, material, supports and load cases are section 6's. The filter
+radius stays at 1.5 cells (3.75 mm, 18.3 elements on average), so the finer
+mesh can resolve thinner members instead of reproducing the coarse design.
+The Heaviside projection runs from `beta = 1` to 16, doubling every 40
+iterations, with OC and a move limit of 0.1. The linear solver is conjugate
+gradients preconditioned by smoothed-aggregation multigrid with a degree-3
+Chebyshev smoother. Each solve starts from the previous design's
+displacements, and each new hierarchy reuses the previous design's
+aggregates.
+
+![Large solid bracket before and after](figures/bracket_3d_large_topology.png)
+
+| Quantity | Value |
+|----------|-------|
+| Iterations, stop reason | 171, objective stall at `beta = 16`: compliance spread `2.1e-4` over the last 11 iterations, design change still at the move limit |
+| Compliance, uniform start to optimised | 3.3297 J to **0.170987 J** (19.5x); `down_limit` 0.20564 J, `lateral` 0.10169 J |
+| Full solid domain | 0.078258 J at 4.8557 kg |
+| Volume fraction | 0.30000000 (violation `-2.1e-11`) |
+| Grey level, projected / before projection | **0.00086** / 0.124 |
+| Interpretation at `rho >= 0.5` | 33 164 of 110 592 elements, **1** connected group, nothing discarded |
+| Thresholded structure re-solved | 0.170942 J (**0.9997** of the objective) at 1.4561 kg; peak von Mises 38.3 MPa under `down_limit` |
+| Geometry export | 52 744 triangles, closed and 2-manifold, enclosed volume equal to the cell volume to `3.9e-13` |
+| Multigrid hierarchy | 3 levels of 352 800, 29 376 and 1 188 unknowns; operator complexity 1.157 |
+| Linear solver work | 8 086 CG iterations over 344 solves, 23.5 per solve, each to a relative residual of `1e-10`; 1.12 s for the last hierarchy setup |
+| Runtime | 1 340 s for 171 iterations (7.84 s each); 1 681 s in total, 321 s of it in the two modal analyses |
+
+**Modal comparison.**
+
+| Structure | Mass [kg] | f1 [Hz] | f2 [Hz] | f3 [Hz] | f4 [Hz] |
+|-----------|----------:|--------:|--------:|--------:|--------:|
+| Full solid domain | 4.8557 | 829.6 | 1466.4 | 2521.0 | 4167.8 |
+| Optimised topology | 1.4561 | **1042.5** | 1787.4 | 2821.4 | 2947.4 |
+
+Four things to read from it:
+
+* **the finer mesh finds a better structure.** Compare each design with the
+  full solid on its own mesh, because the two meshes do not give the same
+  answer for the solid. The coarse mesh is stiffer, and the tip loads act
+  on an edge, where the displacement under the load keeps growing as the
+  mesh is refined. The solid's compliance is 4.4 % higher on this mesh
+  than on the 32 x 16 x 8 one. On that basis the thresholded structure here
+  is 2.18 times as compliant as the solid block, at 30 % of its mass. The
+  coarse-mesh designs, thresholded and re-solved the same way, reach 2.35
+  without the projection (section 6) and 2.39 with it (section 7). The
+  first frequency here is 1042.5 Hz, 25.7 % above the solid block's. The
+  coarse designs reach 917.1 and 942.3 Hz, against 835.0 Hz for their
+  solid;
+* **the objective is the structure.** At `beta = 16` the grey level is
+  0.00086, and the thresholded part re-solved as solid aluminium is within
+  0.03 % of the compliance the optimiser minimised;
+* **the multigrid solver is what makes the run possible.** The CG iteration
+  count grows slowly with the mesh. This run needs 23.5 iterations per
+  solve, and the projected bracket of section 7 needs 18.1 at 23.5 times
+  fewer unknowns. A sparse Cholesky factorisation at this size was not
+  attempted. Extrapolating the measured `n^2.35` growth from 43 s at
+  47 775 unknowns (*Runtime and scaling* below) gives roughly 100 minutes
+  per factorisation. That is an extrapolation, not a measurement, and
+  memory would be the other limit;
+* **the modal analyses are a fifth of the cost.** They take 321 s against
+  1 340 s for the optimisation. Subspace iteration needs many solves with
+  the same matrix, which a factorisation makes cheap. Here each of those
+  solves is a new CG run (4 485 CG iterations for the two analyses).
+
+The finer mesh also removes section 6's edge-only contacts between retained
+cells: `structure_after.stl` is 2-manifold, where the coarse design's
+surface has 32 non-manifold edges.
 
 ## Convergence behaviour
 
@@ -537,68 +693,141 @@ recorded.
 
 ## Runtime and scaling
 
+`sparlab_bench` times one compliance evaluation on a tip-loaded cantilever of
+increasing size, phase by phase. The phases are assembling `K`, factorising
+it or setting up the multigrid hierarchy, one solve, and "objective +
+gradient", which is everything one optimiser iteration does for one load
+case. Each time is the minimum over the repeats. `make scaling` runs every
+table below, and `docs/results/README.md` carries all of them in full.
+
+### Plane stress (Q4), sparse Cholesky
+
 ![Runtime scaling](figures/runtime_scaling.png)
 
 | Mesh | Elements | DOFs | Nonzeros | Assemble [s] | Factorise [s] | Solve [s] | Obj+grad [s] |
 |------|---------:|-----:|---------:|-------------:|--------------:|----------:|-------------:|
-| 20 x 10 | 200 | 462 | 7 192 | 0.000116 | 0.000426 | 1.16e-05 | 0.00065 |
-| 40 x 20 | 800 | 1 722 | 28 792 | 0.000774 | 0.00235 | 6.55e-05 | 0.00346 |
-| 80 x 40 | 3 200 | 6 642 | 115 192 | 0.00318 | 0.0151 | 0.000375 | 0.0214 |
-| 120 x 60 | 7 200 | 14 762 | 259 192 | 0.00682 | 0.0425 | 0.00107 | 0.0554 |
-| 160 x 80 | 12 800 | 26 082 | 460 792 | 0.0142 | 0.0873 | 0.00231 | 0.107 |
-| 240 x 120 | 28 800 | 58 322 | 1 036 792 | 0.0342 | 0.494 | 0.00869 | 0.552 |
-| 320 x 160 | 51 200 | 103 362 | 1 843 192 | 0.0693 | 1.30 | 0.0199 | 1.49 |
-| 440 x 220 | 96 800 | 194 922 | 3 484 792 | 0.137 | 3.28 | 0.0422 | 3.58 |
+| 20 x 10 | 200 | 462 | 7 192 | 1.76e-05 | 0.000516 | 1.56e-05 | 0.000918 |
+| 40 x 20 | 800 | 1 722 | 28 792 | 8.01e-05 | 0.00291 | 7.12e-05 | 0.00309 |
+| 80 x 40 | 3 200 | 6 642 | 115 192 | 0.000289 | 0.0196 | 0.000441 | 0.0181 |
+| 120 x 60 | 7 200 | 14 762 | 259 192 | 0.000992 | 0.0574 | 0.00152 | 0.0563 |
+| 160 x 80 | 12 800 | 26 082 | 460 792 | 0.00194 | 0.114 | 0.00409 | 0.111 |
+| 240 x 120 | 28 800 | 58 322 | 1 036 792 | 0.00419 | 0.591 | 0.0106 | 0.601 |
+| 320 x 160 | 51 200 | 103 362 | 1 843 192 | 0.00802 | 1.56 | 0.0244 | 1.68 |
+| 440 x 220 | 96 800 | 194 922 | 3 484 792 | 0.0146 | 3.93 | 0.0454 | 3.95 |
 
 Fitted slopes of `log(time)` against `log(DOFs)` over the largest three sizes:
 
 | Phase | Slope | Expected |
 |-------|------:|----------|
-| Assemble `K` | 1.15 | `O(n)`; the excess is cache behaviour at 3.5M stored entries |
+| Assemble `K` | 1.03 | `O(n)` |
 | Sparse Cholesky factorisation | **1.57** | close to the `O(n^1.5)` of a good 2-D fill-reducing ordering |
-| One back-substitution | 1.31 | between `O(n)` and the `O(n log n)` of the factor's nonzero count |
-| Objective + gradient | 1.55 | dominated by the factorisation, as the numbers show |
+| One back-substitution | 1.20 | between `O(n)` and the `O(n log n)` of the factor's nonzero count |
+| Objective + gradient | 1.56 | dominated by the factorisation |
 
-The last row is the useful one for planning a run: one optimiser iteration costs
-essentially one factorisation. At 194 922 DOFs that is 3.58 s, so a 400-iteration
-run on a 440 x 220 mesh is about 24 minutes single-threaded. The measured
-benchmark rates - 0.106 to 0.123 s/iteration at 12-13 k elements and 1.127
-s/iteration at 38 k elements with three load cases - are consistent with that.
+Assembly costs 0.015 s at 194 922 DOFs, a tenth of what earlier revisions
+of this document measured. `K` is now assembled into a cached sparsity
+pattern instead of from triplets (`docs/formulation.md`). The factorisation
+dominates: one optimiser iteration costs essentially one factorisation,
+3.95 s at 194 922 DOFs. A 400-iteration run on a 440 x 220 mesh would take
+about 26 minutes with this solver. The benchmark runs agree with the table:
+0.12 to 0.14 s per iteration at 22 000 to 26 000 DOFs (cantilever, MBB
+beam, wing rib), and 1.18 s at 77 602 DOFs with three load cases (aerospace
+bracket).
 
-Stored entries per free DOF is flat with size (15.6 to 17.9), as expected for a
-fixed-stencil structured Q4 mesh: the growth in factorisation cost comes from
-fill-in during elimination, not from the assembled matrix.
+`K` itself stores 15.6 to 17.9 entries per DOF at every size, as expected
+for a fixed-stencil structured Q4 mesh. The growth comes from fill-in during
+the elimination: the factor holds 22 entries per DOF on the smallest mesh and
+99 on the largest.
 
-### Three dimensions
+### Solid elements (Hex8), sparse Cholesky
 
 ![Runtime scaling, Hex8](figures/runtime_scaling_3d.png)
 
 The same protocol on a Hex8 block of `nx x nx/2 x nx/4` cells
 (`sparlab_bench --dim 3`):
 
-| Mesh | Elements | DOFs | Nonzeros | Assemble [s] | Factorise [s] | Solve [s] | Obj+grad [s] |
-|------|---------:|-----:|---------:|-------------:|--------------:|----------:|-------------:|
-| 8 x 4 x 2 | 64 | 405 | 18 018 | 0.000624 | 0.000971 | 2.92e-05 | 0.00184 |
-| 16 x 8 x 4 | 512 | 2 295 | 134 550 | 0.00365 | 0.0273 | 0.000549 | 0.0362 |
-| 24 x 12 x 6 | 1 728 | 6 825 | 442 890 | 0.0223 | 0.358 | 0.00391 | 0.397 |
-| 32 x 16 x 8 | 4 096 | 15 147 | 1 036 350 | 0.0517 | 2.35 | 0.0141 | 2.58 |
-| 40 x 20 x 10 | 8 000 | 28 413 | 2 008 242 | 0.117 | 9.47 | 0.0352 | 9.87 |
+| Mesh | Elements | DOFs | Nonzeros | Assemble [s] | Factorise [s] | Solve [s] | Obj+grad [s] | Factor entries / DOF |
+|------|---------:|-----:|---------:|-------------:|--------------:|----------:|-------------:|---------------------:|
+| 8 x 4 x 2 | 64 | 405 | 18 018 | 5.08e-05 | 0.00132 | 2.38e-05 | 0.00147 | 45 |
+| 16 x 8 x 4 | 512 | 2 295 | 134 550 | 0.000379 | 0.0297 | 0.000434 | 0.0267 | 138 |
+| 24 x 12 x 6 | 1 728 | 6 825 | 442 890 | 0.00195 | 0.394 | 0.00372 | 0.445 | 273 |
+| 32 x 16 x 8 | 4 096 | 15 147 | 1 036 350 | 0.00557 | 2.86 | 0.0137 | 2.96 | 443 |
+| 40 x 20 x 10 | 8 000 | 28 413 | 2 008 242 | 0.0102 | 8.70 | 0.0321 | 8.94 | 559 |
+| 48 x 24 x 12 | 13 824 | 47 775 | 3 451 878 | 0.0203 | 43.4 | 0.0884 | 47.7 | 789 |
 
 | Phase | Slope (3-D) | Slope (2-D) | Expected |
 |-------|------------:|------------:|----------|
-| Assemble `K` | 1.16 | 1.15 | `O(n)` |
-| Sparse Cholesky factorisation | **2.30** | 1.57 | a 3-D fill-reducing ordering is close to `O(n^2)`; the measured slope also carries cache effects |
-| One back-substitution | 1.54 | 1.31 | the factor has `O(n^(4/3))` nonzeros in 3-D |
-| Objective + gradient | 2.26 | 1.55 | factorisation-dominated |
+| Assemble `K` | 1.12 | 1.03 | `O(n)` |
+| Sparse Cholesky factorisation | **2.35** | 1.57 | a 3-D fill-reducing ordering is close to `O(n^2)`; AMD does somewhat worse |
+| One back-substitution | 1.61 | 1.20 | the factor has `O(n^(4/3))` nonzeros in 3-D |
+| Objective + gradient | 2.40 | 1.56 | factorisation-dominated |
 
-The direct solver is what bounds the solid problem size: at 28 413 DOFs one
-factorisation already costs 9.5 s, against 0.09 s for the plane mesh with
-the same DOF count (26 082), and the stored entries per DOF are 44-71 rather
-than 16-18 because an interior node of a hexahedral grid couples to 27 nodes
-rather than 9. The 3-D bracket's
-2.8 s per iteration at 15 147 DOFs is consistent with this table, and a
-finer solid design study needs an iterative solver with a multigrid
-preconditioner rather than more patience.
+At 28 413 DOFs one factorisation costs 8.7 s, against 0.11 s for the plane
+mesh with 26 082. At 47 775 DOFs it costs 43 s, and the factor holds 789
+entries per DOF there, where `K` holds 72. The last step of the table is
+the steepest: 8.7 s to 43.4 s for 1.7 times the unknowns. The Tet4 block (each cell split into six
+tetrahedra, the same nodes) behaves the same way, with a factorisation
+slope of 2.32. With this solver the 3-D bracket of section 6 costs 2.87 s
+per iteration at 15 147 DOFs.
+
+### Direct against multigrid
+
+![Linear solver comparison](figures/solver_scaling.png)
+
+One solve from scratch with each solver: the factorisation plus one
+back-substitution, or the hierarchy setup plus CG from a zero start to a
+relative residual of `1e-10`. The table compares them at the largest mesh
+both ran, then shows the largest mesh multigrid ran:
+
+| Element | Mesh | DOFs | Cholesky [s] | Multigrid CG [s] | Cholesky / multigrid | CG iterations | Levels |
+|---------|------|-----:|-------------:|-----------------:|---------------------:|--------------:|-------:|
+| Q4 | 440 x 220 | 194 922 | 3.98 | 0.571 | **7.0** | 17 | 4 |
+| Q4 | 1000 x 500 | 1 003 002 | - | 3.06 | - | 17 | 5 |
+| Hex8 | 48 x 24 x 12 | 47 775 | 43.5 | 0.637 | **68** | 16 | 3 |
+| Hex8 | 128 x 64 x 32 | 830 115 | - | 13.0 | - | 17 | 4 |
+| Tet4 | 32 x 16 x 8 | 15 147 | 1.90 | 0.325 | **5.9** | 18 | 2 |
+| Tet4 | 64 x 32 x 16 | 109 395 | - | 1.56 | - | 21 | 3 |
+
+Over the largest three sizes of each series the multigrid time grows with
+a slope of 1.03 (Q4), 0.95 (Hex8) and 0.78 (Tet4), against 1.56, 2.35 and
+2.32 for the factorisation. A slope below 1 cannot last. It means the
+setup's fixed costs still weigh on the smaller of those meshes.
+
+![CG iterations against mesh size](figures/solver_iterations.png)
+
+The iteration counts are what the preconditioner buys. Multigrid needs 14
+to 17 CG iterations on the Hex8 block from 2 295 to 830 115 unknowns, and
+14 to 17 on the Q4 plate from 1 722 to 1 003 002. On the Tet4 block it
+needs 16 to 21. Preconditioned only by the diagonal, CG needs 120
+iterations at 405 unknowns and 926 at 109 395 on the Hex8 block, growing
+like `n^0.36`.
+
+For one solve from scratch, Jacobi-preconditioned CG keeps up with
+multigrid longer than those counts suggest. It is as fast up to 28 413
+unknowns on the Hex8 block, and 1.4 times slower at 109 395 (2.38 s
+against 1.69 s). At these sizes the hierarchy setup costs about as much as
+the iterations it saves. The difference is the growth: Jacobi's time
+grows with a slope of 1.47. In an optimisation loop the setup also gets
+cheaper, because the aggregates are reused. The last setup of section 10's
+run took 1.12 s, where the benchmark's setup from scratch on the same mesh
+takes 2.70 s.
+
+What the multigrid solver stores beyond `K` levels off at 52 to 54 entries
+per DOF on the Q4 plate, 152 to 167 on the Hex8 block and about 150 on the
+Tet4 block. The Cholesky factor keeps growing. On the smallest meshes the
+multigrid curves have a bump, in time and in storage. There the coarsest
+level, factorised as a dense matrix of up to 1 500 unknowns, is large next
+to the whole problem.
+
+**The automatic choice** (`solver.linear.type: auto`, the default) keeps the
+factorisation up to 50 000 free unknowns in 2-D and 10 000 in 3-D. That is
+later than the single-solve crossover in these measurements, which lies
+between 6 642 and 26 082 DOFs on the Q4 plate and near 2 300 on the Hex8
+block. The margin is a design choice, not a measurement of whole runs. A
+factorisation serves every load case of an iteration and every solve of a
+modal analysis, and it has no iteration count that can go wrong. At the
+limits one factorisation costs about half a second in 2-D and about a
+second in 3-D.
 
 ## Where the time goes
 

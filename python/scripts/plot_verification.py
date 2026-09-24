@@ -60,6 +60,15 @@ def main(argv=None) -> int:
         ("modal convergence (3-D)",
          lambda: studies.plot_modal_convergence_3d(
              args.verification, figure("verify_modal_convergence_3d.png"))),
+        ("linear simplices vs bilinear / trilinear elements",
+         lambda: studies.plot_mesh_convergence_simplex(
+             args.verification, figure("verify_mesh_convergence_simplex.png"))),
+        ("multigrid CG vs Cholesky and Jacobi CG",
+         lambda: studies.plot_multigrid_study(
+             args.verification, figure("verify_multigrid.png"))),
+        ("sensitivity through the Heaviside projection",
+         lambda: studies.plot_sensitivity_projection(
+             args.verification, figure("verify_sensitivity_projection.png"))),
         ("runtime scaling",
          lambda: studies.plot_runtime_scaling(
              args.benchmark, figure("runtime_scaling.png"))),
@@ -67,6 +76,12 @@ def main(argv=None) -> int:
          lambda: studies.plot_runtime_scaling(
              args.benchmark, figure("runtime_scaling_3d.png"),
              stem="runtime_scaling_3d", dim=3)),
+        ("linear-solver scaling",
+         lambda: studies.plot_solver_scaling(
+             args.benchmark, figure("solver_scaling.png"))),
+        ("CG iterations under refinement",
+         lambda: studies.plot_solver_iterations(
+             args.benchmark, figure("solver_iterations.png"))),
         ("cross-validation",
          lambda: studies.plot_cross_validation(
              args.cross_validation, figure("cross_validation.png"))),

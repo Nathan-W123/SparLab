@@ -51,6 +51,7 @@ struct StaticSolution {
   Index max_displacement_node = -1;
   Scalar scaled_residual = 0.0;       ///< ||K_ff u_f - rhs|| / ||rhs||
   int solver_iterations = 0;
+  std::string solver_name;            ///< the linear solver that produced it
   EquilibriumCheck equilibrium;
 };
 
@@ -72,6 +73,11 @@ class StaticAnalysis {
   StaticAnalysis(const FemModel& model, const Assembler& assembler,
                  StaticAnalysisOptions options = StaticAnalysisOptions());
 
+  /// Solve with `solver`, owned by the caller, instead of a private solver.
+  /// A topology optimisation keeps one solver across design iterations so a
+  /// multigrid hierarchy is reused. The solver must outlive this analysis.
+  void use_external_solver(LinearSolver* solver);
+
   /// Factorise \f$K_{ff}\f$ for the given per-element stiffness factors.
   /// \param stiffness_scale optional \f$E(\rho_e)/E_0\f$ (length num_elements).
   void prepare(const Vector* stiffness_scale = nullptr);
@@ -81,13 +87,24 @@ class StaticAnalysis {
   std::vector<StaticSolution> solve_all(const Vector* stiffness_scale = nullptr);
 
   /// Solve one right-hand side with the current factorisation, returning the
-  /// full displacement vector.
-  Vector solve_load_vector(const Vector& applied_force);
+  /// full displacement vector. `initial_guess` (full length) seeds an
+  /// iterative solver and is ignored by a direct one.
+  Vector solve_load_vector(const Vector& applied_force,
+                           const Vector* initial_guess = nullptr);
 
   /// Solve \f$K_{ff}\,\lambda_f = r_f\f$ with the current factorisation and
   /// zeros at the prescribed DOFs: the adjoint problem of any functional
   /// evaluated on this model, whatever the prescribed displacements.
-  Vector solve_homogeneous(const Vector& rhs);
+  Vector solve_homogeneous(const Vector& rhs, const Vector* initial_guess = nullptr);
+
+  /// Iterations of the last solve (0 for a direct solver).
+  int last_iterations() const;
+
+  /// The solver in use (after `prepare`).
+  const LinearSolver& solver() const;
+
+  /// Where the unknowns of \f$K_{ff}\f$ live, for the multigrid solver.
+  const DofLayout& layout() const { return layout_; }
 
   /// Weighted compliance \f$\sum_l w_l\, f_l^T u_l\f$ with normalised weights.
   static Scalar weighted_compliance(const std::vector<StaticSolution>& solutions,
@@ -102,10 +119,15 @@ class StaticAnalysis {
   StaticSolution build_solution(const std::string& name, Scalar weight,
                                 const Vector& applied_force);
 
+  LinearSolver& active_solver();
+  Vector free_guess(const Vector* initial_guess) const;
+
   const FemModel& model_;
   const Assembler& assembler_;
   StaticAnalysisOptions options_;
-  std::unique_ptr<LinearSolver> solver_;
+  DofLayout layout_;
+  std::unique_ptr<LinearSolver> owned_solver_;
+  LinearSolver* external_solver_ = nullptr;
   SparseMatrix k_full_;
   SparseMatrix k_ff_;
   SparseMatrix k_fp_;

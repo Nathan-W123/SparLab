@@ -24,9 +24,13 @@ import pandas as pd
 from sparlab_viz.loaders import ResultError, load_json
 
 
-BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "aerospace_bracket", "wing_rib",
-                   "l_bracket_stress", "bracket_3d"]
+BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "mbb_beam_projected", "aerospace_bracket",
+                   "wing_rib", "l_bracket_stress", "bracket_3d", "bracket_3d_projected",
+                   "lug_bracket_2d", "engine_mount_3d", "bracket_3d_large"]
 ANALYSIS_CASES = ["cantilever_analysis", "block_3d_analysis"]
+#: Runs on meshes read from files (Gmsh / Abaqus-CalculiX input).
+REAL_GEOMETRY_CASES = ["lug_bracket_2d", "engine_mount_3d"]
+ELEMENT_LABELS = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4"}
 #: The unconstrained run of the stress-constrained deck (sparlab_topopt
 #: --no-stress) that the stress table sets beside it.
 STRESS_REFERENCE = {"l_bracket_stress": "l_bracket_unconstrained"}
@@ -114,10 +118,16 @@ def benchmark_table(results_dir: str) -> Optional[str]:
         if topology and topology.get("frequencies_hz"):
             record["f1_topology_Hz"] = topology["frequencies_hz"][0]
             record["mass_topology_kg"] = topology.get("total_mass_kg")
+        element = mesh.get("element_type") or ("Hex8" if record["dim"] == 3 else "Quad4")
+        record["element_type"] = element
+        solver = (result.get("linear_solver") or {}).get("solver")
+        record["linear_solver"] = solver
+        projection = result.get("projection") or {}
+        record["final_beta"] = projection.get("final_beta")
         frames.append(record)
         rows.append([
             case,
-            f"{record['elements']} {'Hex8' if record['dim'] == 3 else 'Q4'}",
+            f"{record['elements']} {ELEMENT_LABELS.get(element, element)}",
             str(record["method"]),
             _fmt(record["volume_fraction_target"]),
             _fmt(record["volume_fraction_achieved"], 6),
@@ -205,12 +215,16 @@ def cross_validation_table(results_dir: str) -> Optional[str]:
     for case in doc.get("cases", []):
         for load_case in case.get("load_cases", []):
             for code, entry in load_case.get("codes", {}).items():
+                # passed is None for a comparison between two idealisations
+                # (a CalculiX plane element expanded through the thickness at
+                # nu != 0): recorded, not judged.
+                verdict = ("INFO" if entry.get("passed") is None
+                           else "PASS" if entry["passed"] else "FAIL")
                 rows.append([
                     case["case"], case.get("element_type", ""), load_case["load_case"],
                     f"{code} {versions.get(code, '')}".strip(), entry.get("element", ""),
                     _fmt(entry["max_rel_diff"], 3), _fmt(entry.get("rms_rel_diff"), 3),
-                    _fmt(entry["tolerance"], 2),
-                    "PASS" if entry["passed"] else "FAIL",
+                    _fmt(entry["tolerance"], 2), verdict,
                 ])
                 frames.append({"case": case["case"], "load_case": load_case["load_case"],
                                "code": code, **entry})
@@ -366,6 +380,188 @@ def scaling_table(results_dir: str, stem: str = "runtime_scaling") -> Optional[s
     return table + f"\n\nFitted slopes of log(time) vs log(DOFs): {slope_line}.\n"
 
 
+def _mesh_label(record) -> str:
+    text = f"{int(record['nx'])} x {int(record['ny'])}"
+    if record.get("nz"):
+        text += f" x {int(record['nz'])}"
+    return text
+
+
+def solver_comparison_table(results_dir: str, element: str) -> Optional[str]:
+    """Cholesky, multigrid CG and Jacobi CG side by side at every benchmark size
+    of one element type, merged on the number of DOFs."""
+    from sparlab_viz import studies
+
+    tables = studies.load_solver_scaling(os.path.join(results_dir, "benchmark"))
+    series = {solver: tables[(element, solver)][0]
+              for solver in ("ldlt", "amg", "jacobi") if (element, solver) in tables}
+    if not series:
+        return None
+
+    long_rows = []
+    for (elem, solver), (table, _meta) in tables.items():
+        for _, record in table.iterrows():
+            long_rows.append({"element": elem, "solver": solver, **record.to_dict()})
+    pd.DataFrame(long_rows).to_csv(os.path.join(_OUTPUT, "solver_scaling.csv"), index=False)
+
+    def lookup(solver: str, dofs: int):
+        table = series.get(solver)
+        if table is None:
+            return None
+        match = table[table["num_dofs"].astype(int) == dofs]
+        return None if match.empty else match.iloc[0]
+
+    all_dofs = sorted({int(n) for table in series.values() for n in table["num_dofs"]})
+    rows = []
+    for dofs in all_dofs:
+        direct, multigrid, jacobi = (lookup(s, dofs) for s in ("ldlt", "amg", "jacobi"))
+        any_record = next(r for r in (direct, multigrid, jacobi) if r is not None)
+        cells = [_fmt(dofs), _mesh_label(any_record)]
+        if direct is not None:
+            cells += [_fmt(direct["factorize[s]"] + direct["solve[s]"], 3),
+                      _fmt(direct["solver_nonzeros"] / dofs, 3)]
+        else:
+            cells += ["-", "-"]
+        if multigrid is not None:
+            cells += [_fmt(multigrid["factorize[s]"], 3), _fmt(multigrid["solve[s]"], 3),
+                      f"{int(multigrid['iterations'])} ({int(multigrid['levels'])})",
+                      _fmt(multigrid["operator_complexity"], 3),
+                      _fmt(multigrid["solver_nonzeros"] / dofs, 3)]
+        else:
+            cells += ["-"] * 5
+        if jacobi is not None:
+            cells += [_fmt(jacobi["factorize[s]"] + jacobi["solve[s]"], 3),
+                      str(int(jacobi["iterations"]))]
+        else:
+            cells += ["-", "-"]
+        if direct is not None and multigrid is not None:
+            cells.append(_fmt((direct["factorize[s]"] + direct["solve[s]"])
+                              / (multigrid["factorize[s]"] + multigrid["solve[s]"]), 3))
+        else:
+            cells.append("-")
+        rows.append(cells)
+    return _markdown_table(
+        ["DOFs", "mesh", "Cholesky [s]", "Cholesky entries/DOF", "MG setup [s]",
+         "MG solve [s]", "MG iterations (levels)", "MG operator complexity",
+         "MG entries/DOF", "Jacobi CG [s]", "Jacobi iterations",
+         "Cholesky / MG time"],
+        rows,
+    )
+
+
+def multigrid_table(results_dir: str) -> Optional[str]:
+    path = os.path.join(results_dir, "verification", "multigrid_scaling.csv")
+    if not os.path.isfile(path):
+        return None
+    table = pd.read_csv(path)
+    rows = []
+    for _, r in table.iterrows():
+        rows.append([
+            str(r["element"]), str(int(r["nx"])), _fmt(int(r["num_dofs"])),
+            str(int(r["amg_levels"])), _fmt(r["operator_complexity"], 3),
+            str(int(r["amg_iterations"])), _fmt(r["amg_seconds[s]"], 3),
+            str(int(r["jacobi_iterations"])), _fmt(r["jacobi_seconds[s]"], 3),
+            _fmt(r["ldlt_seconds[s]"], 3), _fmt(r["relative_difference_vs_ldlt[-]"], 2),
+        ])
+    return _markdown_table(
+        ["element", "nx", "DOFs", "MG levels", "operator complexity", "MG iterations",
+         "MG [s]", "Jacobi iterations", "Jacobi [s]", "Cholesky [s]",
+         "difference vs Cholesky"],
+        rows,
+    )
+
+
+def simplex_convergence_table(results_dir: str) -> Optional[str]:
+    path = os.path.join(results_dir, "verification", "mesh_convergence_simplex.csv")
+    if not os.path.isfile(path):
+        return None
+    table = pd.read_csv(path)
+    rows = []
+    for _, r in table.iterrows():
+        mesh = f"{int(r['nx'])} x {int(r['ny'])}"
+        if int(r["nz"]) > 0:
+            mesh += f" x {int(r['nz'])}"
+        rows.append([
+            str(r["element"]), mesh, _fmt(int(r["num_elements"])), _fmt(int(r["num_dofs"])),
+            _fmt(r["h[m]"], 4), _fmt(r["tip_mean[m]"], 6), _fmt(r["timoshenko[m]"], 6),
+            _fmt(r["rel_error_timoshenko[-]"], 3), str(r["solver"]),
+        ])
+    return _markdown_table(
+        ["element", "cells", "elements", "DOFs", "h [m]", "tip deflection [m]",
+         "Timoshenko [m]", "relative error", "solver"],
+        rows,
+    )
+
+
+def projection_table(results_dir: str) -> Optional[str]:
+    from sparlab_viz import studies
+
+    try:
+        table = studies.collect_projection(results_dir)
+    except (ResultError, FileNotFoundError):
+        return None
+    table.to_csv(os.path.join(_OUTPUT, "projection.csv"), index=False)
+    rows = []
+    for _, r in table.iterrows():
+        beta = r["final_beta"]
+        rows.append([
+            str(r["problem"]), str(r["run"]),
+            "off" if beta is None or beta != beta else f"beta {beta:g}",
+            _fmt(r["iterations"]), str(r["stop_reason"]),
+            _fmt(r["grey_level"], 3), _fmt(r["filtered_grey_level"], 3),
+            _fmt(r["compliance_J"], 5), _fmt(r["interpreted_compliance_J"], 5),
+            _fmt(r["compliance_vs_simp_ratio"], 4), _fmt(r["seconds"], 4),
+        ])
+    return _markdown_table(
+        ["problem", "run", "projection", "iterations", "stop reason", "grey",
+         "grey before projection", "SIMP compliance [J]", "thresholded compliance [J]",
+         "thresholded / SIMP", "runtime [s]"],
+        rows,
+    )
+
+
+def real_geometry_table(results_dir: str) -> Optional[str]:
+    """The runs whose mesh was read from a file: what was read and how it solved."""
+    rows = []
+    for case in REAL_GEOMETRY_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        mesh = doc.get("mesh", {})
+        source = mesh.get("file", {})
+        quality = mesh.get("quality", {})
+        result = doc.get("optimization_result", {})
+        solver = result.get("linear_solver") or {}
+        solid = doc.get("modal_initial_solid") or {}
+        topology = doc.get("modal_optimised_topology") or {}
+        f_solid = (solid.get("frequencies_hz") or [None])[0]
+        f_topology = (topology.get("frequencies_hz") or [None])[0]
+        rows.append([
+            case,
+            f"{os.path.basename(source.get('path', '?'))} ({source.get('format', '?')} "
+            f"{source.get('version', '')})".replace(" )", ")"),
+            ELEMENT_LABELS.get(mesh.get("element_type"), str(mesh.get("element_type"))),
+            _fmt(mesh.get("num_nodes")), _fmt(mesh.get("num_elements")),
+            _fmt(mesh.get("num_dofs")),
+            f"{_fmt(quality.get('min'), 3)} / {_fmt(quality.get('mean'), 3)}",
+            str(solver.get("solver", "n/a")),
+            ("-" if "LDLT" in str(solver.get("solver", ""))
+             else _fmt(solver.get("iterative_iterations_per_solve"), 3)),
+            _fmt(result.get("iterations")),
+            _fmt(result.get("total_seconds"), 4),
+            f"{_fmt(f_solid, 5)} / {_fmt(f_topology, 5)}",
+        ])
+    if not rows:
+        return None
+    return _markdown_table(
+        ["case", "mesh file", "element", "nodes", "elements", "DOFs",
+         "quality min / mean", "linear solver", "CG iterations per solve",
+         "optimiser iterations", "runtime [s]", "f1 solid / topology [Hz]"],
+        rows,
+    )
+
+
 _OUTPUT = "docs/results"
 
 
@@ -385,20 +581,45 @@ def main(argv=None) -> int:
          "`results/verification/summary.json`. Verification compares against "
          "exact answers for the discrete problem; validation compares against an "
          "independent theory, where a finite gap is expected."),
+        ("Linear simplices: cantilever convergence", simplex_convergence_table(args.results),
+         "From `results/verification/mesh_convergence_simplex.csv`. The Tri3 beam is "
+         "the plane-stress cantilever of the Q4 study at nu = 0.3, the Tet4 beam the "
+         "solid cantilever of the Hex8 study (nu = 0), each meshed by splitting the "
+         "structured cells. The error is against Timoshenko beam theory."),
+        ("Multigrid CG against Cholesky and Jacobi CG", multigrid_table(args.results),
+         "From `results/verification/multigrid_scaling.csv`: one solve of a "
+         "cantilever block to a relative residual of 1e-10, times including the "
+         "preconditioner setup or factorisation. A one-level hierarchy is the "
+         "direct coarse solve (below the coarse-grid size) and converges in one "
+         "iteration."),
         ("Cross-validation against independent codes", cross_validation_table(args.results),
          "Generated from `results/cross_validation/summary.json` by "
          "`python/scripts/cross_validate.py`: node-by-node comparison of the "
-         "nodal displacements with scikit-fem (same element formulation) and "
-         "CalculiX (C3D8 is the same element; CPS4 is a plane element CalculiX "
-         "expands through the thickness). CalculiX results are read from its "
-         ".frd output, which carries six significant digits, so differences "
-         "below 5e-6 relative are its rounding."),
+         "nodal displacements with scikit-fem (same element formulations) and "
+         "CalculiX (C3D8 and C3D4 are the same elements; CPS4 and CPS3 are plane "
+         "elements CalculiX expands into a layer of solids, which matches plane "
+         "stress only at nu = 0, so those rows at nu != 0 are INFO: recorded, not "
+         "judged). CalculiX results are read from its .frd output, which carries "
+         "six significant digits, so differences below 5e-6 relative are its "
+         "rounding."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
          "compliance, so values above 1 mean the optimised design is stiffer at "
          "the same mass; it is a plane-stress quantity and is n/a for the solid "
-         "case."),
+         "cases."),
+        ("Heaviside projection", projection_table(args.results),
+         "Every projected run and, where one exists, the unprojected run of the "
+         "same problem. `grey` is 4 mean(rho (1 - rho)) of the physical density; "
+         "`thresholded / SIMP` re-solves the design cut at 0.5 as solid material "
+         "and divides by the compliance the optimiser minimised, so 1.0 means the "
+         "objective is what the structure delivers."),
+        ("Real geometry (meshes read from files)", real_geometry_table(args.results),
+         "Meshes generated by `python/scripts/make_meshes.py` with Gmsh and read by "
+         "SparLab's Gmsh and Abaqus/CalculiX readers. Quality is 4 sqrt(3) A / "
+         "sum of squared edge lengths for triangles and 6 sqrt(2) V / (rms edge "
+         "length)^3 for tetrahedra: 1 for an equilateral cell, 0 for a degenerate "
+         "one."),
         ("Stress-constrained optimisation", stress_table(args.results),
          "The constraint bounds the relaxed (rho^q) von Mises stress aggregated "
          "with a scaled p-norm; `max relaxed ratio` is the true relaxed maximum "
@@ -415,8 +636,20 @@ def main(argv=None) -> int:
          "wall-clock benchmarks."),
         ("Runtime scaling (3-D, Hex8)", scaling_table(args.results, "runtime_scaling_3d"),
          "Same protocol on a Hex8 block (nx x nx/2 x nx/4 cells). The direct "
-         "solver's fill-in grows much faster in 3-D, which is what limits the "
-         "solid problem size."),
+         "solver's fill-in grows much faster in 3-D, which is what limits it on "
+         "solid problems; the solver comparisons below show the multigrid solver "
+         "on the same blocks."),
+        ("Linear solvers, Q4 plate", solver_comparison_table(args.results, "Quad4"),
+         "One solve from scratch at each size: Cholesky is factorisation plus one "
+         "back-substitution, multigrid (MG) and Jacobi are CG to a relative "
+         "residual of 1e-10 including the preconditioner setup. `entries/DOF` "
+         "counts what the solver stores beyond K itself (factor L and D; coarse "
+         "operators, prolongators and the dense coarsest factor). The long-format "
+         "table is `solver_scaling.csv` beside this file."),
+        ("Linear solvers, Hex8 block", solver_comparison_table(args.results, "Hex8"),
+         "Same protocol on the Hex8 block of the 3-D scaling benchmark."),
+        ("Linear solvers, Tet4 block", solver_comparison_table(args.results, "Tet4"),
+         "Same protocol with each hexahedral cell split into six tetrahedra."),
         ("Design study", study_table(os.path.join(args.results, "study")),
          "One row per arm of the aerospace parametric study; the per-point table "
          "is `aerospace_study.csv` beside this file and the interpretation is in "

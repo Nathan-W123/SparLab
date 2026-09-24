@@ -46,6 +46,13 @@ def load_csv(path: str, required: bool = True) -> Optional[pd.DataFrame]:
 HEX_FACES = np.array([[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
                       [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]], dtype=int)
 
+#: The four outward-wound faces of a positively oriented Tet4 (same table as
+#: the C++ mesh layer).
+TET_FACES = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]], dtype=int)
+
+#: Face table of each solid element type.
+SOLID_FACES = {"Hex8": HEX_FACES, "Tet4": TET_FACES}
+
 
 @dataclass
 class Mesh:
@@ -93,11 +100,17 @@ class Mesh:
     def element_centroids(self) -> np.ndarray:
         return self.nodes[self.elements].mean(axis=1)
 
+    @property
+    def is_simplex(self) -> bool:
+        """True for linear triangles and tetrahedra."""
+        return self.element_type in ("Tri3", "Tet4")
+
     def boundary_faces(self, mask: Optional[np.ndarray] = None,
                        return_owners: bool = False):
-        """Outward-wound boundary quads of a solid mesh (or of a subset of it).
+        """Outward-wound boundary faces of a solid mesh (or of a subset of it).
 
-        Returns an (n_faces, 4) array of node indices: the faces owned by
+        Returns an (n_faces, k) array of node indices - quads (k = 4) for a
+        Hex8 mesh, triangles (k = 3) for a Tet4 mesh: the faces owned by
         exactly one element of the subset, wound so the right-hand normal
         points out of the material. `mask` selects the elements (all when
         None). With `return_owners`, also returns the index (into the full
@@ -106,14 +119,18 @@ class Mesh:
         """
         if self.dim != 3:
             raise ResultError("boundary faces are defined for 3-D meshes only")
+        table = SOLID_FACES.get(self.element_type)
+        if table is None:
+            raise ResultError(f"no face table for element type {self.element_type}")
+        k = table.shape[1]
         ids = (np.arange(self.num_elements) if mask is None
                else np.flatnonzero(np.asarray(mask, bool)))
         elements = self.elements[ids]
         if elements.size == 0:
-            empty = np.empty((0, 4), dtype=int)
+            empty = np.empty((0, k), dtype=int)
             return (empty, np.empty(0, dtype=int)) if return_owners else empty
-        faces = elements[:, HEX_FACES].reshape(-1, 4)          # (6 n, 4)
-        owners = np.repeat(ids, HEX_FACES.shape[0])
+        faces = elements[:, table].reshape(-1, k)               # (f n, k)
+        owners = np.repeat(ids, table.shape[0])
         keys = np.sort(faces, axis=1)
         _unique, first, counts = np.unique(keys, axis=0, return_index=True,
                                            return_counts=True)

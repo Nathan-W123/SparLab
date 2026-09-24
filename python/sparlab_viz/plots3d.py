@@ -116,9 +116,19 @@ def _density_note(mask, threshold: float) -> str:
 # ---------------------------------------------------------------------------
 # Mesh, boundary conditions and loads
 # ---------------------------------------------------------------------------
+def _element_value_note(mesh) -> str:
+    """How an element's stress value was obtained, for the figure text."""
+    if mesh.element_type == "Tet4":
+        return "element values are constant over each linear tetrahedron"
+    return "element values are the average over the 2x2x2 stiffness quadrature points"
+
+
 def plot_mesh_and_bcs(case: CaseResults, path: str) -> str:
     mesh = case.mesh
     fig, ax = _axes3d(7.8, 4.8)
+    # Draw in the order added rather than by mplot3d's per-artist depth sort,
+    # so markers inside holes and passive regions stay visible on top.
+    ax.computed_zorder = False
     faces = mesh.boundary_faces()
     sd.surface(ax, mesh.nodes[faces], color=DOMAIN_TINT,
                edge_color=(0.0, 0.0, 0.0, 0.07), linewidth=0.12)
@@ -198,8 +208,8 @@ def plot_mesh_and_bcs(case: CaseResults, path: str) -> str:
         "with flat shading from a fixed light; the dark lines are its edges. "
         "Each load case is shown as markers at the loaded nodes plus one arrow "
         "for its resultant; arrow length is a fixed fraction of the domain, not "
-        "proportional to the load. Markers are drawn on top of the surface, so "
-        "nodes on hidden faces show through." + passive_note,
+        "proportional to the load. Markers and passive regions are drawn on top "
+        "of the surface, so nodes on hidden faces show through." + passive_note,
     )
     return st.save_figure(fig, path)
 
@@ -312,10 +322,9 @@ def plot_stress_fields(case: CaseResults, load_case: str, path: str,
             else float(stress["von_mises[Pa]"].max()))
     st.figure_title(
         fig, f"{case.name}: stress on the surface, load case '{load_case}'",
-        f"peak von Mises {st.format_si(peak)} Pa; element values are the average "
-        "over the 2x2x2 stiffness quadrature points, shown through the element "
-        "that owns each boundary face. Panels: von Mises, max principal, min "
-        "principal, sigma_xx - each labelled on its own colour bar",
+        f"peak von Mises {st.format_si(peak)} Pa; {_element_value_note(mesh)}, "
+        "shown through the element that owns each boundary face. Panels: von Mises, "
+        "max principal, min principal, sigma_xx - each labelled on its own colour bar",
         ax=axes[0],
     )
     st.annotate_note(
@@ -447,6 +456,16 @@ def plot_mode_shapes(case: CaseResults, path: str, tag: str = "",
 # ---------------------------------------------------------------------------
 # Topology optimisation
 # ---------------------------------------------------------------------------
+def density_field_label(case: CaseResults) -> str:
+    """What the plotted density is: filtered, and projected when the run used
+    the Heaviside projection (with its final sharpness)."""
+    projection = case.summary.get("optimization_result", {}).get("projection")
+    if projection:
+        return (f"Physical density: filtered, then Heaviside-projected (beta = "
+                f"{projection.get('final_beta', 0):g}, eta = {projection.get('eta', 0.5):g})")
+    return "Physical (filtered) density"
+
+
 def plot_final_topology(case: CaseResults, path: str) -> str:
     """The design domain before and the interpreted structure after.
 
@@ -493,7 +512,7 @@ def plot_final_topology(case: CaseResults, path: str) -> str:
 
     st.figure_title(
         fig, f"{case.name}: structure before and after optimisation",
-        "SIMP design at the last iterate. Compliance "
+        f"{density_field_label(case)} at the last iterate. Compliance "
         f"{st.format_si(result.get('compliance_J', float('nan')))} J, volume "
         f"fraction {result.get('volume_fraction', float('nan')):.4f}, grey level "
         f"{result.get('grey_level', float('nan')):.3f}, "

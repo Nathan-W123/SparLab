@@ -3,12 +3,13 @@
 ## 1. The problem
 
 Minimum compliance under a volume constraint, with per-element density design
-variables, on a plane (Q4) or a solid (Hex8) mesh:
+variables, on a plane (Q4 or Tri3) or a solid (Hex8 or Tet4) mesh, structured
+or read from a mesh file:
 
 ```
   min over x      c(x) = sum_l  w_l  f_l^T u_l
-  subject to      K(rho_tilde(x)) u_l = f_l          for every load case l
-                  g(x) = rho_tilde^T v - nu V  <=  0
+  subject to      K(rho_bar(x)) u_l = f_l            for every load case l
+                  g(x) = rho_bar^T v - nu V  <=  0
                   0 <= x_e <= 1                      (tightened on passive elements)
 
   optionally      g_l(x) = c_l  sigma_PN,l(x) / sigma_lim  -  1  <=  0   per load case
@@ -23,14 +24,17 @@ where
 | symbol | meaning |
 |--------|---------|
 | `x` | design variables, one per element |
-| `rho_tilde` | *physical* density, the filtered design variables |
+| `rho_tilde` | filtered density, `Hhat x` (section 3) |
+| `rho_bar` | *physical* density: `rho_tilde`, or its Heaviside projection when that is switched on (section 3b) |
 | `w_l` | load-case weights, normalised to sum to 1 |
 | `v_e` | element volume [m^3] |
 | `V = sum_e v_e` | design-domain volume [m^3] |
 | `nu` | volume-fraction target |
 
 The constraint is written on the **physical** density, not on the design
-variables: that is the volume the structure actually has.
+variables: that is the volume the structure actually has. Without the
+projection `rho_bar = rho_tilde`, and everything below reads the same with
+either symbol.
 
 ## 2. SIMP material interpolation
 
@@ -152,6 +156,74 @@ optimum mesh convergent; specifying it in cells makes the length scale shrink
 with the mesh, which is the classical mesh-dependence pathology. The design
 study runs both arms side by side to show the difference.
 
+On a mesh read from a file the cells vary in size, so `radius_elements`
+multiplies the *mean* cell size (the mean edge length for simplices), and a
+radius in metres is the clearer statement.
+
+## 3b. Heaviside projection
+
+The density filter makes the problem well posed, but it also leaves a band of
+intermediate density about one radius wide around every member. SIMP credits
+that grey material with `rho^p` of its stiffness, so the compliance the
+optimiser reports describes a structure that does not exist, and the part a
+threshold would produce is measurably stiffer or softer (section 10). The
+smoothed Heaviside projection of Wang, Lazarov and Sigmund (2011) pushes the
+filtered density towards 0 and 1 (`topopt/Projection.cpp`):
+
+```
+  rho_bar = ( tanh(beta eta) + tanh(beta (rho_tilde - eta)) )
+            / ( tanh(beta eta) + tanh(beta (1 - eta)) )
+
+  d rho_bar / d rho_tilde = beta (1 - tanh^2(beta (rho_tilde - eta)))
+                            / ( tanh(beta eta) + tanh(beta (1 - eta)) )
+```
+
+a smooth step at the threshold `eta` whose sharpness `beta` is raised during
+the run. `rho_bar(0) = 0` and `rho_bar(1) = 1` for every `beta`; the map is
+strictly increasing, tends to the identity as `beta -> 0` and to a step as
+`beta -> infinity`. The projected density is the physical one: SIMP, the
+volume constraint, the stress constraint, the grey level and the
+interpretation all act on `rho_bar`.
+
+**The chain rule stays exact.** The projection is element-wise, so for any
+function `f` of the physical density
+
+```
+  grad_x f = Hhat^T ( d rho_bar / d rho_tilde  .*  grad_rho_bar f )
+```
+
+for the compliance, the volume and the stress constraint alike. The
+sensitivity filter smooths a gradient rather than a density and has no chain
+rule to extend, so the projection requires the density filter (or none); the
+combination is a `ConfigError` at deck load.
+
+**Continuation.** A sharp projection from the first iteration makes the
+problem strongly non-convex, so `beta` starts small (`beta_start = 1`, nearly
+the plain filter) and is multiplied by `beta_factor` every `beta_interval`
+iterations, or earlier once the design change at the current `beta` falls
+below `change_tolerance`, up to `beta_max`. Convergence is only declared at
+`beta_max`, the objective-stall window restarts at every step (the objective
+itself changes with `beta`), and every iteration records its `beta` in
+`history.csv`. Under OC the bisection on the multiplier measures the volume
+of the *projected* density that the candidate update would produce, so the
+volume constraint holds on the material that is actually analysed.
+
+**Verification.** `sparlab_verify --study sensitivity-projection` checks the
+gradient through filter and projection against central differences on a Q4
+and a Tet4 mesh at `beta = 2, 8, 32` (section 4 and `docs/verification.md`).
+At large `beta` the derivative of the projection vanishes away from the
+threshold, so an entry is judged against
+`max(|analytical|, |finite difference|, 1e-3 ||gradient||_inf)` rather than
+as a relative error of a number near zero; the directional derivative along
+the full gradient is checked as well. `tests/test_projection.cpp` covers the
+map and its derivative, the compliance, volume and stress-constraint
+gradients through it on a distorted Q4, a Hex8 and a Tet4 mesh, the `beta`
+schedule, the configuration checks and an end-to-end run.
+
+**What it buys** is measured on the benchmarks - the same deck with and
+without the projection, the grey level, and the ratio between the compliance
+of the thresholded structure and the objective - in `docs/benchmarks.md`.
+
 ## 4. Sensitivity analysis
 
 Compliance is self-adjoint. Differentiating `K u = f` with `f` independent of the
@@ -178,14 +250,20 @@ Three consequences:
   is non-negative: adding material never increases compliance. The code warns if
   a positive entry ever appears;
 * with the density filter, `grad_x c = Hhat^T grad_rho c`, and
-  `grad_x g = Hhat^T v`.
+  `grad_x g = Hhat^T v`; with the projection on, each is multiplied
+  element-wise by `d rho_bar / d rho_tilde` before `Hhat^T` (section 3b).
 
 Implemented in `topopt/Sensitivity.cpp`; verified in `sparlab_verify --study
-sensitivity` (and `sensitivity-3d` on a Hex8 mesh) and regression-tested in
-`tests/test_topopt.cpp`. The same class keeps the factorisation of the last
-evaluation, so a non-self-adjoint quantity - the stress aggregate of section
-5c - gets its adjoint solve from `ComplianceObjective::solve_adjoint` at the
-cost of one back-substitution per load case.
+sensitivity` (and `sensitivity-3d` on a Hex8 mesh, `sensitivity-projection`
+through the projection on Q4 and Tet4) and regression-tested in
+`tests/test_topopt.cpp` and `tests/test_projection.cpp`. The same class keeps
+its linear solver between evaluations, so a non-self-adjoint quantity - the
+stress aggregate of section 5c - gets its adjoint solve from
+`ComplianceObjective::solve_adjoint` at the cost of one back-substitution per
+load case with the direct solver, or one CG solve with the multigrid solver
+(warm-started from the previous iteration's adjoint, like the state solves).
+The multigrid solver also keeps its aggregation between iterations, so only
+the numerical part of its setup is redone when the density changes.
 
 ## 5. Optimality criteria
 
@@ -270,9 +348,17 @@ Two details are SparLab's rather than the textbook's:
   the check never saw.
 
 Only free variables enter the subproblem; passive elements keep their pinned
-value. The solver throws `ConvergenceError` naming the residual if the
-subproblem does not converge within its Newton budget, rather than continuing
-with a bad step.
+value. The solver throws `ConvergenceError` naming the residual, and the
+block of the KKT system that holds its largest entry, if a barrier level does
+not converge within its Newton budget, rather than continuing with a bad
+step. Svanberg's `subsolv` allows 200 Newton iterations per level and carries
+on regardless; SparLab stops instead, so its budget is larger (500,
+`mma.max_newton_iterations`). The step to the final barrier level is where
+it matters: with a constraint active, the first Newton step there can throw
+the multipliers well off the central path - on the stress-constrained
+L-bracket from `(0.08, 0.04)` to `(3.1, 21)` - and recovering took about 220
+iterations of mostly backtracked steps. A subproblem that converges within
+the budget is unaffected by its size, so raising it changes no other step.
 
 **Verification.** `tests/test_mma.cpp` solves problems with known optima: a
 separable problem whose solution is `x_j = 1/n` with multiplier `2/n`, a
@@ -400,7 +486,16 @@ Two independent stopping indicators, either of which ends the loop:
 | criterion | default | comment |
 |-----------|---------|---------|
 | `max \|dx\|` between iterations | `1e-2` | the classical SIMP/OC criterion |
-| relative compliance change over `objective_window` iterations | `5e-5` over 20 | the backstop that terminates fine-mesh runs |
+| relative spread `(max - min) / \|c_k\|` of the last `objective_window + 1` compliances | `5e-5` over 20 | the backstop that terminates fine-mesh runs |
+
+The second criterion measures the spread over the whole window, not the
+difference between its two ends. For a compliance that settles
+monotonically the two are the same number, bit for bit. For one that
+oscillates they are not: a design cycling with a period that divides the
+window returns to the same compliance every period, and a two-point
+difference then reads a stall in the middle of the cycle. That happened on
+the stress-constrained L-bracket, whose design spends long stretches in a
+cycle of period 5 at the move limit, and a window of 20.
 
 The second criterion is not a convenience. On a fine mesh the design change
 stalls at a value well above `1e-2`, because thin members *migrate* one cell at
@@ -418,10 +513,10 @@ Under MMA a third condition applies: the iterate must also be feasible
 (`max_i g_i <= constraint_tolerance`). A stalled objective on a design that
 violates a constraint is not convergence and is not reported as such; the run
 continues to the cap and the summary then carries `feasible = false`. The
-stress-constrained L-bracket stops on the objective-stall criterion after 240
-iterations with a design change of 0.020 - the same fine-mesh migration
-described above, now with a constraint surface that moves as the p-norm scale
-is re-fitted - at a largest constraint value of `-3.8e-5`.
+stress-constrained L-bracket, whose constraint surface moves as the p-norm
+scale is re-fitted, cycles for long stretches before it settles and then
+converges on the design-change criterion after 494 iterations, at a largest
+constraint value of `-2.0e-4`.
 
 **Compliance is not guaranteed to fall monotonically**, and SparLab does not
 pretend otherwise:
@@ -447,8 +542,11 @@ The optimiser and its supporting pieces report, never hide:
 | volume bisection bracket collapses | warning with the achieved volume and the relative gap |
 | iteration cap reached | `converged = false`, `stop_reason = iteration_cap`, warning with both indicator values (and, for MMA, the largest constraint value) |
 | final volume above target by more than `1e-6` relative (OC) or `constraint_tolerance` (MMA) | warning with both volumes |
-| MMA subproblem fails to converge | `ConvergenceError` with the residual reached; the run stops rather than taking a bad step |
+| MMA subproblem fails to converge | `ConvergenceError` with the residual reached, the KKT block holding it and the Newton budget, naming the keys to change; the run stops rather than taking a bad step |
 | stress constraint requested with OC, the sensitivity filter or non-zero prescribed displacements | `ConfigError` at deck load, naming the incompatibility |
+| projection requested with the sensitivity filter, or with an invalid schedule | `ConfigError` at deck load, naming the key |
+| iteration cap reached before the projection's `beta_max` | warning with the `beta` reached; the run is not converged |
+| linear solver fails (a CG solve that stops improving above its tolerance, a singular coarse grid in the multigrid hierarchy) | `ConvergenceError` for the CG solve, naming the residual reached, the hierarchy and the keys to change; `SolverError` for a singular coarse grid, reported as an under-constrained model |
 | stress constraint violated at the returned design | `feasible = false`, warning with the largest constraint value and the relaxed stress ratio; a stalled objective on an infeasible design is never reported as convergence |
 | interpreted structure's re-solve exceeds the stress limit | `interpreted_solid_analysis.meets_stress_limit = false` in the summary, with the ratio |
 | non-finite objective | `SolverError` |
@@ -462,8 +560,9 @@ The optimiser and its supporting pieces report, never hide:
 | quantity | definition | how to read it |
 |----------|------------|----------------|
 | compliance | `sum_l w_l f_l^T u_l` [J] | lower is stiffer |
-| volume fraction | `rho_tilde^T v / V` | must equal the target |
-| grey level | `M_nd = (4/n) sum_e rho_e (1 - rho_e)` | 0 = pure 0/1, 1 = every element at 0.5 |
+| volume fraction | `rho_bar^T v / V` | must equal the target |
+| grey level | `M_nd = (4/n) sum_e rho_e (1 - rho_e)` over all elements, of the physical density | 0 = pure 0/1, 1 = every element at 0.5 |
+| `projection.filtered_grey_level` | the same measure of the density *before* projection | how much of the crispness the projection supplies rather than the optimisation |
 | stiffness gain | equal-mass uniform plate compliance / optimised compliance | above 1 means the optimisation paid off |
 | interpretation | threshold, retained elements, connected groups, discarded island volume | how the field was read as geometry |
 | interpreted compliance | weighted compliance of the *thresholded* structure, re-solved with real material | what the design would actually deliver |
@@ -479,7 +578,10 @@ intermediate boundary layer roughly `r_min` wide, and on a coarse mesh that laye
 is a large fraction of the domain: the MBB benchmark settles near 0.28 with the
 density filter and near 0.17 with the sensitivity filter, while the *unfiltered*
 run reaches 0.012 - and the unfiltered design is a checkerboard. Read the grey
-level together with the topology, never alone.
+level together with the topology, never alone. With the projection on, the
+grey level is that of the projected density, which is low by construction
+at a large `beta`; the summary therefore also gives the grey level of the
+filtered density underneath it.
 
 `compliance_vs_simp_ratio` needs the same care, and in the opposite direction
 to the obvious guess. Thresholding does two things at once: it promotes every

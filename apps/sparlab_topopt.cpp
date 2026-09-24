@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
         "filter-type",   "max-iterations", "nx",       "ny",           "nz",
         "youngs-modulus", "load-weights", "modes",     "no-vtk",
         "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
-        "help"};
+        "solver",        "projection",  "no-projection", "beta-max",   "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -113,6 +113,11 @@ int main(int argc, char** argv) {
            {"--stress-limit <Pa>", "enable the aggregated stress constraint at this "
                                    "allowable von Mises stress (switches to MMA)"},
            {"--no-stress", "disable the deck's stress constraint"},
+           {"--solver <type>", "override solver.linear.type (simplicial_ldlt, amg_cg, "
+                               "auto, ...)"},
+           {"--projection / --no-projection", "switch the Heaviside projection on (with "
+                                              "the deck's or default settings) or off"},
+           {"--beta-max <b>", "override topology.projection.beta_max (enables it)"},
            {"--tag <name>", "suffix appended to the case name in summary.json"},
            {"--no-vtk / --no-csv", "skip the corresponding output"},
            {"--strict-config", "treat unknown configuration keys as errors"},
@@ -146,11 +151,18 @@ int main(int argc, char** argv) {
     if (cli.has("max-iterations")) {
       config.topology.optimizer.max_iterations = cli.integer("max-iterations", 200);
     }
+    if ((cli.has("nx") || cli.has("ny") || cli.has("nz")) &&
+        !is_structured(config.mesh_kind)) {
+      throw ConfigError("--nx/--ny/--nz set the resolution of a generated box mesh, but "
+                        "this deck reads its mesh from '" + config.mesh_file.path +
+                        "'; refine that mesh in the mesher instead");
+    }
     if (cli.has("nx")) config.mesh_spec.nx = cli.integer("nx", config.mesh_spec.nx);
     if (cli.has("ny")) config.mesh_spec.ny = cli.integer("ny", config.mesh_spec.ny);
     if (cli.has("nz")) {
       if (config.dim() != 3) {
-        throw ConfigError("--nz applies to a structured_hex mesh only");
+        throw ConfigError("--nz applies to a solid (structured_hex or structured_tet) "
+                          "mesh only");
       }
       config.mesh_spec.nz = cli.integer("nz", config.mesh_spec.nz);
     }
@@ -183,6 +195,21 @@ int main(int argc, char** argv) {
       config.topology.optimizer.method = OptimizerMethod::MMA;
     }
     if (cli.has("no-stress")) config.topology.optimizer.stress.enabled = false;
+    if (cli.has("solver")) {
+      config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
+      config.topology.optimizer.analysis.linear.type = config.analysis.linear.type;
+      config.modal.options.linear.type = config.analysis.linear.type;
+    }
+    if (cli.has("projection") && cli.has("no-projection")) {
+      throw ConfigError("--projection and --no-projection contradict each other");
+    }
+    if (cli.has("projection")) config.topology.optimizer.projection.enabled = true;
+    if (cli.has("beta-max")) {
+      config.topology.optimizer.projection.enabled = true;
+      config.topology.optimizer.projection.beta_max = cli.number("beta-max", 32.0);
+    }
+    if (cli.has("no-projection")) config.topology.optimizer.projection.enabled = false;
+    config.topology.optimizer.projection.validate();
     if (cli.has("no-vtk")) config.output.write_vtk = false;
     if (cli.has("no-csv")) config.output.write_csv = false;
     if (cli.has("tag")) config.name += "_" + cli.value("tag");
@@ -524,7 +551,23 @@ int main(int argc, char** argv) {
               << app::format(result.volume_fraction) << " (target "
               << app::format(domain.volume_fraction()) << ", relative violation "
               << app::format(result.volume_constraint_violation) << ")\n";
-    std::cout << "  grey level:  " << app::format(result.gray_level) << "\n";
+    std::cout << "  grey level:  " << app::format(result.gray_level);
+    if (result.projected) {
+      std::cout << " (projected at beta " << app::format(result.final_beta)
+                << "; before projection " << app::format(gray_level(result.filtered_density))
+                << ")";
+    }
+    std::cout << "\n";
+    std::cout << "  solver:      " << result.linear_solver;
+    if (result.linear_iterations > 0) {
+      std::cout << ", " << result.linear_iterations << " CG iterations over "
+                << result.linear_solves << " solves";
+      if (result.has_amg_stats) {
+        std::cout << " (" << result.amg_stats.levels.size() << " levels, operator complexity "
+                  << app::format(result.amg_stats.operator_complexity, 4) << ")";
+      }
+    }
+    std::cout << "\n";
     std::cout << "  method:      " << to_string(result.method);
     if (result.method == OptimizerMethod::MMA) {
       std::cout << " (largest constraint value "

@@ -2,9 +2,13 @@
 /// \brief Geometric region selectors for boundary conditions, loads and passive
 ///        topology regions.
 ///
-/// Selectors are purely geometric so that the *same* configuration block can be
+/// Selectors are geometric so that the *same* configuration block can be
 /// applied to meshes of different resolution, and so that a topology extracted
 /// from a density field can be re-constrained without re-authoring indices.
+/// The one non-geometric primitive, `Group`, names a set carried by the mesh
+/// itself (a Gmsh physical group, an Abaqus *NSET / *ELSET): the way to reach
+/// a curved hole wall or a CAD face that no box describes. Sets are carried
+/// into extracted sub-meshes, so the re-constraint property holds for them too.
 /// Every primitive is written for three coordinates; on a 2-D mesh the z
 /// coordinate of every node is zero, so the default z bounds (+-infinity) and
 /// the default circle axis (z) make a 2-D deck read exactly as before.
@@ -32,7 +36,8 @@ enum class SelectorKind {
   Sphere,       ///< closed ball of radius `radius` about `center` (3-D distance)
   NodeIds,      ///< explicit node indices (node selection only)
   ElementIds,   ///< explicit element indices (element selection only)
-  NearestNode   ///< the single node closest to `point`
+  NearestNode,  ///< the single node closest to `point`
+  Group         ///< a named node / element set of the mesh (`group`)
 };
 
 /// One geometric primitive.
@@ -57,6 +62,7 @@ struct Selector {
 
   Vector3 point = Vector3::Zero();   ///< NearestNode target [m]
   std::vector<Index> ids;            ///< explicit indices
+  std::string group;                 ///< Group: name of a mesh node / element set
 
   /// Absolute geometric tolerance [m]. When <= 0 a tolerance of
   /// `1e-9 * mesh diagonal` is used.
@@ -71,11 +77,13 @@ struct SelectorGroup {
   std::vector<Selector> members;
   bool invert = false;  ///< select the complement of the union
 
-  /// Node indices matched by this group (ascending, unique).
+  /// Node indices matched by this group (ascending, unique). A `Group`
+  /// primitive selects the named node set, or else the nodes of the named
+  /// element set.
   std::vector<Index> select_nodes(const Mesh& mesh) const;
 
   /// Element indices matched by this group, tested at element centroids
-  /// (ascending, unique).
+  /// (ascending, unique). A `Group` primitive needs an element set.
   std::vector<Index> select_elements(const Mesh& mesh) const;
 
   bool empty() const { return members.empty(); }

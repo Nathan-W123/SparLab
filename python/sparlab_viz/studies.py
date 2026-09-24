@@ -298,8 +298,9 @@ def plot_runtime_scaling(directory: str, path: str, stem: str = "runtime_scaling
 
     if dim == 3:
         asymptote = ("a 3-D sparse Cholesky with a fill-reducing ordering is close "
-                     "to O(n^2) asymptotically (nested dissection), so the direct "
-                     "solver is what limits the solid problem size")
+                     "to O(n^2) asymptotically (nested dissection), which is what "
+                     "limits the direct solver on solid problems; the multigrid "
+                     "solver compared in solver_scaling.png removes that limit")
     else:
         asymptote = ("a 2-D sparse Cholesky with a fill-reducing ordering is close "
                      "to O(n^1.5) asymptotically")
@@ -309,6 +310,256 @@ def plot_runtime_scaling(directory: str, path: str, stem: str = "runtime_scaling
         f"largest three sizes. Assembly is O(n); {asymptote}, and at these sizes "
         "the measured slope also carries cache effects.",
     )
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Linear solvers: sparse Cholesky vs multigrid CG vs Jacobi CG
+# ---------------------------------------------------------------------------
+#: Colour slot per linear solver. The solver is the entity the colour names, so
+#: it keeps its slot in every panel of every solver figure.
+SOLVER_SLOTS = {"ldlt": 0, "amg": 1, "jacobi": 2}
+SOLVER_NAMES = {
+    "ldlt": "sparse Cholesky (LDL^T)",
+    "amg": "multigrid-preconditioned CG",
+    "jacobi": "Jacobi-preconditioned CG",
+}
+ELEMENT_MARKERS = {"Quad4": "o", "Tri3": "v", "Hex8": "s", "Tet4": "^"}
+ELEMENT_NAMES = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4"}
+ELEMENT_DOMAINS = {"Quad4": "Q4 plate", "Hex8": "Hex8 block", "Tet4": "Tet4 block"}
+
+#: sparlab_bench file stem per (element, solver), as scripts/run_scaling.sh
+#: writes them.
+SCALING_STEMS = {
+    ("Quad4", "ldlt"): "runtime_scaling",
+    ("Quad4", "amg"): "runtime_scaling_amg_cg",
+    ("Hex8", "ldlt"): "runtime_scaling_3d",
+    ("Hex8", "amg"): "runtime_scaling_3d_amg_cg",
+    ("Hex8", "jacobi"): "runtime_scaling_3d_conjugate_gradient",
+    ("Tet4", "ldlt"): "runtime_scaling_3d_tet",
+    ("Tet4", "amg"): "runtime_scaling_3d_tet_amg_cg",
+}
+
+
+def load_solver_scaling(directory: str) -> Dict[Tuple[str, str], Tuple[pd.DataFrame, Dict]]:
+    """Every solver-scaling table in `directory`, keyed by (element, solver)."""
+    tables: Dict[Tuple[str, str], Tuple[pd.DataFrame, Dict]] = {}
+    for key, stem in SCALING_STEMS.items():
+        csv_path = os.path.join(directory, f"{stem}.csv")
+        if not os.path.isfile(csv_path):
+            continue
+        table = load_csv(csv_path).sort_values("num_dofs").reset_index(drop=True)
+        json_path = os.path.join(directory, f"{stem}.json")
+        meta = load_json(json_path) if os.path.isfile(json_path) else {}
+        tables[key] = (table, meta)
+    return tables
+
+
+def loglog_slope(x, y, tail: int = 3) -> float:
+    """Least-squares slope of log(y) on log(x) over the last `tail` points."""
+    x = np.asarray(x, dtype=float)[-tail:]
+    y = np.asarray(y, dtype=float)[-tail:]
+    keep = (x > 0) & (y > 0)
+    if keep.sum() < 2:
+        return float("nan")
+    return float(np.polyfit(np.log(x[keep]), np.log(y[keep]), 1)[0])
+
+
+def _log_log_axes(ax) -> None:
+    """Log scales on both axes, labelling only the decades on an axis that
+    spans one or more: minor-tick labels crowd a small panel."""
+    from matplotlib.ticker import NullFormatter
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    for axis, (low, high) in ((ax.xaxis, ax.get_xlim()), (ax.yaxis, ax.get_ylim())):
+        if low > 0 and high / low >= 10.0:
+            axis.set_minor_formatter(NullFormatter())
+
+
+def _one_two_five(axis) -> None:
+    """Label a log axis at 1, 2 and 5 times each decade, as plain numbers: for
+    counts (iterations, entries per DOF) that span one or two decades."""
+    from matplotlib.ticker import LogLocator, NullFormatter, StrMethodFormatter
+
+    axis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 5.0)))
+    axis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    axis.set_minor_formatter(NullFormatter())
+
+
+def _grid_with_legend_row(width: float, height: float, nrows: int, ncols: int):
+    """A `nrows` x `ncols` panel grid plus a thin full-width row beneath it for a
+    legend shared by every panel (colour means the same thing in all of them).
+
+    A figure-level legend placed "outside" would compete with the footnote for
+    the bottom margin; a row of its own is laid out like any other panel."""
+    import matplotlib.pyplot as plt
+
+    st.apply_style()
+    fig = plt.figure(figsize=(width, height), layout="constrained")
+    spec = fig.add_gridspec(nrows + 1, ncols, height_ratios=[1.0] * nrows + [0.16])
+    grid = np.array([[fig.add_subplot(spec[r, c]) for c in range(ncols)]
+                     for r in range(nrows)])
+    legend_ax = fig.add_subplot(spec[nrows, :])
+    legend_ax.axis("off")
+    return fig, grid, legend_ax
+
+
+def _solve_time(table: pd.DataFrame) -> np.ndarray:
+    """Factorisation (or preconditioner setup) plus one solve, from scratch."""
+    return (table["factorize[s]"] + table["solve[s]"]).to_numpy()
+
+
+def _ratio_label(ratio: float) -> str:
+    return f"{ratio:.1f}x" if ratio < 10.0 else f"{ratio:.0f}x"
+
+
+def plot_solver_scaling(directory: str, path: str) -> str:
+    """Time to solve from scratch and solver storage, per solver and element."""
+    tables = load_solver_scaling(directory)
+    if not tables:
+        raise FileNotFoundError(
+            f"no runtime_scaling*.csv in {directory}; run scripts/run_scaling.sh")
+    elements = [e for e in ("Quad4", "Hex8", "Tet4") if any(k[0] == e for k in tables)]
+    meta = next(iter(tables.values()))[1]
+
+    fig, grid, legend_ax = _grid_with_legend_row(7.8, 6.4, 2, len(elements))
+    for column, element in enumerate(elements):
+        ax_time, ax_store = grid[0, column], grid[1, column]
+        marker = ELEMENT_MARKERS[element]
+        reference = None
+        for solver in ("ldlt", "amg", "jacobi"):
+            entry = tables.get((element, solver))
+            if entry is None:
+                continue
+            table = entry[0]
+            dofs = table["num_dofs"].to_numpy(dtype=float)
+            total = _solve_time(table)
+            color = st.series_color(SOLVER_SLOTS[solver])
+            ax_time.plot(dofs, total, marker + "-", color=color, markersize=4.2,
+                         linewidth=1.6, label=SOLVER_NAMES[solver])
+            # The fitted slope as a direct label at the line end.
+            ax_time.annotate(f"{loglog_slope(dofs, total):.2f}", (dofs[-1], total[-1]),
+                             textcoords="offset points", xytext=(4, 0), fontsize=7.2,
+                             color=st.INK_SECONDARY, va="center", ha="left")
+            if solver != "jacobi":
+                ax_store.plot(dofs, table["solver_nonzeros"].to_numpy(dtype=float) / dofs,
+                              marker + "-", color=color, markersize=4.2, linewidth=1.6,
+                              label=SOLVER_NAMES[solver])
+            if reference is None or len(table) > len(reference):
+                reference = table
+
+        # Speed-up at the largest size both the direct and the multigrid solver ran.
+        ldlt, amg = tables.get((element, "ldlt")), tables.get((element, "amg"))
+        if ldlt is not None and amg is not None:
+            both = pd.merge(ldlt[0], amg[0], on="num_dofs", suffixes=("_d", "_m"))
+            if not both.empty:
+                last = both.iloc[-1]
+                t_direct = float(last["factorize[s]_d"] + last["solve[s]_d"])
+                t_multigrid = float(last["factorize[s]_m"] + last["solve[s]_m"])
+                ax_time.plot([last["num_dofs"]] * 2, [t_multigrid, t_direct], "-",
+                             color=st.INK_MUTED, linewidth=0.9)
+                ax_time.annotate(_ratio_label(t_direct / t_multigrid),
+                                 (last["num_dofs"], np.sqrt(t_direct * t_multigrid)),
+                                 textcoords="offset points", xytext=(-4, 0), fontsize=7.6,
+                                 color=st.INK_PRIMARY, va="center", ha="right")
+        if reference is not None:
+            dofs = reference["num_dofs"].to_numpy(dtype=float)
+            ax_store.plot(dofs, reference["stiffness_nonzeros"].to_numpy(dtype=float) / dofs,
+                          "--", color=st.INK_MUTED, linewidth=1.1,
+                          label="the stiffness matrix itself")
+
+        for ax in (ax_time, ax_store):
+            _log_log_axes(ax)
+        _one_two_five(ax_store.yaxis)
+        ax_time.set_title(ELEMENT_DOMAINS[element], loc="left", fontsize=10)
+        ax_store.set_xlabel("degrees of freedom")
+        if column == 0:
+            ax_time.set_ylabel("factorise or set up, then solve [s]")
+            ax_store.set_ylabel("stored entries per DOF [-]")
+
+    # One legend per row for the whole figure: the colour is the solver in every
+    # panel, and the marker (the element) is named by the panel title.
+    from matplotlib.lines import Line2D
+
+    present = [s for s in ("ldlt", "amg", "jacobi") if any(k[1] == s for k in tables)]
+    handles = [Line2D([], [], color=st.series_color(SOLVER_SLOTS[s]), linewidth=1.8,
+                      label=SOLVER_NAMES[s]) for s in present]
+    handles.append(Line2D([], [], color=st.INK_MUTED, linewidth=1.1, linestyle="--",
+                          label="entries of K itself (lower row)"))
+    legend_ax.legend(handles=handles, loc="center", ncol=2, fontsize=7.8, frameon=False)
+
+    threads = meta.get("openmp_threads")
+    st.figure_title(
+        fig, "Linear solvers: cost of one solve from scratch, and storage",
+        f"{meta.get('compiler', 'unknown compiler')}, {meta.get('build_type', '')}"
+        + (f", {threads} OpenMP threads" if threads else "")
+        + "; CG to a relative residual of 1e-10; minimum over repeats. Numbers at "
+        "the line ends are least-squares slopes of log(time) on log(DOFs) over the "
+        "largest three sizes. The vertical bar is labelled with the Cholesky time "
+        "over the multigrid time at the largest size both solvers ran.",
+    )
+    st.annotate_note(
+        fig,
+        "Upper row: sparse Cholesky is AMD-ordered factorisation plus one "
+        "back-substitution; the CG solvers are preconditioner setup plus the "
+        "iterations for one load case from a zero initial guess. Lower row: "
+        "entries the solver stores beyond K itself - the factor L and D for "
+        "Cholesky; the coarse operators, prolongators, restrictions and dense "
+        "coarsest factor for multigrid. Jacobi stores only a diagonal. The "
+        "benchmark problem is a cantilever with a tip load (sparlab_bench).",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_solver_iterations(directory: str, path: str) -> str:
+    """CG iteration counts against problem size for both preconditioners."""
+    tables = load_solver_scaling(directory)
+    series = [(k, v) for k, v in tables.items() if k[1] in ("amg", "jacobi")]
+    if not series:
+        raise FileNotFoundError(
+            f"no iterative runtime_scaling*.csv in {directory}; run scripts/run_scaling.sh")
+    order = {("Quad4", "amg"): 0, ("Hex8", "amg"): 1, ("Tet4", "amg"): 2,
+             ("Hex8", "jacobi"): 3}
+    series.sort(key=lambda item: order.get(item[0], 9))
+
+    fig, ax = st.figure(7.2, 3.9)
+    single_level = False
+    for (element, solver), (table, _meta) in series:
+        color = st.series_color(SOLVER_SLOTS[solver])
+        marker = ELEMENT_MARKERS[element]
+        dofs = table["num_dofs"].to_numpy(dtype=float)
+        iterations = table["iterations"].to_numpy(dtype=float)
+        # A multigrid "hierarchy" of one level is the direct coarse solve: one
+        # iteration by construction, drawn hollow and left out of the fit.
+        multi = (table["levels"].to_numpy() >= 2) if solver == "amg" else np.ones(len(table), bool)
+        slope = loglog_slope(dofs[multi], iterations[multi], tail=len(dofs))
+        label = f"{SOLVER_NAMES[solver]}, {ELEMENT_NAMES[element]}"
+        if np.isfinite(slope):
+            label += f" (slope {slope:.2f})"
+        ax.plot(dofs[multi], iterations[multi], marker + "-", color=color, markersize=5,
+                linewidth=1.6, label=label)
+        if not multi.all():
+            single_level = True
+            ax.plot(dofs[~multi], iterations[~multi], marker, color=color, markersize=5,
+                    markerfacecolor="none", markeredgewidth=1.2)
+    _log_log_axes(ax)
+    _one_two_five(ax.yaxis)
+    ax.set_xlabel("degrees of freedom")
+    ax.set_ylabel("CG iterations to 1e-10 [-]")
+    st.title(
+        ax, "Conjugate-gradient iterations under refinement",
+        "slopes are least-squares fits of log(iterations) on log(DOFs) over every "
+        "multi-level size; a scalable preconditioner keeps the count flat",
+    )
+    st.legend(ax, loc="lower right", fontsize=7.8)
+    note = ("Colour is the preconditioner, marker the element. Jacobi CG needs "
+            "O(sqrt(condition number)) iterations, which grows as 1/h: n^(1/3) in 3-D "
+            "and n^(1/2) in 2-D.")
+    if single_level:
+        note += (" Hollow markers are sizes below the coarse-grid size, where the "
+                 "multigrid solver is a direct solve and converges in one iteration.")
+    st.annotate_note(fig, note)
     return st.save_figure(fig, path)
 
 
@@ -335,8 +586,7 @@ def plot_sensitivity_check_3d(directory: str, path: str) -> str:
     ax.axhline(tolerance, color=st.INK_MUTED, linewidth=1.0, linestyle="--")
     ax.text(steps["step[-]"].min(), tolerance, f" pass tolerance {tolerance:g}",
             fontsize=7.8, color=st.INK_SECONDARY, va="bottom")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
+    _log_log_axes(ax)
     ax.invert_xaxis()
     ax.set_xlabel("central-difference step h on the design variable [-]")
     ax.set_ylabel("relative error [-]")
@@ -398,8 +648,7 @@ def plot_mesh_convergence_3d(directory: str, path: str) -> str:
     h_ref = np.array([float(table["h[m]"].min()) * 2.0, float(table["h[m]"].max())])
     ax.plot(h_ref, 1e-3 * (h_ref / h_ref[0]) ** 2, "-", color=st.INK_MUTED,
             linewidth=1.0, label=r"reference slope $h^2$")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
+    _log_log_axes(ax)
     ax.invert_xaxis()
     ax.set_xlabel("element size h [m]")
     ax.set_ylabel("relative error vs the finest mesh [-]")
@@ -450,12 +699,219 @@ def plot_modal_convergence_3d(directory: str, path: str) -> str:
     ]):
         ax.plot(table["num_dofs"], table[column], marker + "-", color=st.series_color(slot),
                 label=label)
-    ax.set_xscale("log")
-    ax.set_yscale("log")
+    _log_log_axes(ax)
     ax.set_xlabel("number of degrees of freedom")
     ax.set_ylabel("relative difference [-]")
     st.title(ax, "difference from beam theory", block.get("note", ""))
     st.legend(ax, loc="upper right")
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Verification: linear simplices, multigrid, sensitivities through projection
+# ---------------------------------------------------------------------------
+def plot_mesh_convergence_simplex(directory: str, path: str) -> str:
+    """Tri3 / Tet4 cantilever error against the Q4 / Hex8 results on the same beams."""
+    simplex = load_csv(os.path.join(directory, "mesh_convergence_simplex.csv"))
+    summary = load_json(os.path.join(directory, "summary.json"))
+    block = summary.get("mesh_convergence_simplex", {})
+
+    panels = []
+    q4_path = os.path.join(directory, "mesh_convergence.csv")
+    q4 = load_csv(q4_path) if os.path.isfile(q4_path) else None
+    if q4 is not None:
+        q4 = q4[np.isclose(q4["poisson[-]"], 0.3)]
+    q4_order = (summary.get("mesh_convergence", {})
+                .get("observed_convergence_order_tip_deflection", {}).get("0.3"))
+    panels.append(("Tri3", q4, "Q4", q4_order,
+                   "plane-stress cantilever L = 1 m, h = 0.1 m, t = 10 mm, "
+                   "E = 70 GPa, nu = 0.3, 1 kN tip load"))
+    hex_path = os.path.join(directory, "mesh_convergence_3d.csv")
+    hexa = load_csv(hex_path) if os.path.isfile(hex_path) else None
+    hex_order = summary.get("mesh_convergence_3d", {}).get(
+        "observed_convergence_order_tip_deflection")
+    panels.append(("Tet4", hexa, "Hex8", hex_order,
+                   "solid cantilever 1 x 0.1 x 0.05 m, E = 70 GPa, nu = 0, "
+                   "1 kN tip load"))
+
+    fig, axes = st.figure(7.4, 6.4, nrows=2, ncols=1)
+    for ax, (element, reference, ref_name, ref_order, geometry) in zip(axes, panels):
+        sub = simplex[simplex["element"] == element].sort_values("num_dofs")
+        if sub.empty:
+            ax.axis("off")
+            continue
+        order = block.get(element, {}).get("observed_convergence_order_tip_deflection")
+        label = f"{element} (linear simplex)"
+        if order is not None:
+            label += f", observed order {order:.2f}"
+        ax.plot(sub["num_dofs"], sub["rel_error_timoshenko[-]"], "o-",
+                color=st.series_color(0), label=label)
+        if reference is not None and not reference.empty:
+            reference = reference.sort_values("num_dofs")
+            label = f"{ref_name} on the same beam"
+            if ref_order is not None:
+                label += f", observed order {ref_order:.2f}"
+            ax.plot(reference["num_dofs"], reference["rel_error_timoshenko[-]"], "s-",
+                    color=st.series_color(1), label=label)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("number of degrees of freedom")
+        ax.set_ylabel("relative error vs Timoshenko [-]")
+        finest = block.get(element, {}).get("finest_mesh_relative_error_vs_timoshenko")
+        st.title(
+            ax, f"{element}: tip deflection error vs mesh size",
+            geometry + (f"; finest {element} mesh within {100 * finest:.2f} % of "
+                        "Timoshenko" if finest is not None else ""),
+        )
+        st.legend(ax, loc="upper right")
+    st.annotate_note(
+        fig,
+        "The simplex meshes split each structured cell (2 triangles per quadrilateral, "
+        "6 tetrahedra per hexahedron), so both curves in a panel describe the same "
+        "beam. Observed orders are in element size h, from self-convergence over "
+        "the three finest meshes. Constant-strain simplices lock in bending and "
+        "approach the beam value from below, more slowly per DOF than the bilinear "
+        "and trilinear elements. The error is measured against beam theory, so it "
+        "also contains the modelling gap between a beam and plane or solid "
+        "elasticity, which is where the Q4 curve levels off.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_multigrid_study(directory: str, path: str) -> str:
+    """Multigrid CG against Cholesky and Jacobi CG as the mesh is refined."""
+    table = load_csv(os.path.join(directory, "multigrid_scaling.csv"))
+    block = load_json(os.path.join(directory, "summary.json")).get("multigrid", {})
+    elements = [e for e in ("Hex8", "Tet4") if (table["element"] == e).any()]
+    if not elements:
+        raise ValueError("multigrid_scaling.csv has no Hex8 or Tet4 rows")
+
+    fig, grid, legend_ax = _grid_with_legend_row(7.6, 6.1, 2, len(elements))
+    single_level = False
+    for column, element in enumerate(elements):
+        sub = table[table["element"] == element].sort_values("num_dofs")
+        dofs = sub["num_dofs"].to_numpy(dtype=float)
+        multi = sub["amg_levels"].to_numpy() >= 2
+        marker = ELEMENT_MARKERS[element]
+        amg, jacobi = (st.series_color(SOLVER_SLOTS[s]) for s in ("amg", "jacobi"))
+
+        ax = grid[0, column]
+        ax.plot(dofs, sub["jacobi_iterations"], marker + "-", color=jacobi, markersize=4.5,
+                label=SOLVER_NAMES["jacobi"])
+        ax.plot(dofs[multi], sub["amg_iterations"].to_numpy()[multi], marker + "-",
+                color=amg, markersize=4.5, label=SOLVER_NAMES["amg"])
+        if not multi.all():
+            single_level = True
+            ax.plot(dofs[~multi], sub["amg_iterations"].to_numpy()[~multi], marker,
+                    color=amg, markersize=4.5, markerfacecolor="none", markeredgewidth=1.2)
+        for x, y, levels in zip(dofs[multi], sub["amg_iterations"].to_numpy()[multi],
+                                sub["amg_levels"].to_numpy()[multi]):
+            ax.annotate(f"{int(levels)} levels", (x, y), textcoords="offset points",
+                        xytext=(0, -11), ha="center", fontsize=6.8, color=st.INK_SECONDARY)
+        _log_log_axes(ax)
+        _one_two_five(ax.yaxis)
+        ax.set_title(f"{element}: CG iterations to 1e-10", loc="left", fontsize=10)
+        if column == 0:
+            ax.set_ylabel("iterations [-]")
+
+        ax = grid[1, column]
+        for solver, key in (("ldlt", "ldlt_seconds[s]"), ("amg", "amg_seconds[s]"),
+                            ("jacobi", "jacobi_seconds[s]")):
+            ax.plot(dofs, sub[key], marker + "-", markersize=4.5,
+                    color=st.series_color(SOLVER_SLOTS[solver]), label=SOLVER_NAMES[solver])
+        _log_log_axes(ax)
+        ax.set_xlabel("degrees of freedom")
+        ax.set_title(f"{element}: wall-clock time of one solve", loc="left", fontsize=10)
+        if column == 0:
+            ax.set_ylabel("seconds [s]")
+    from matplotlib.lines import Line2D
+
+    legend_ax.legend(
+        handles=[Line2D([], [], color=st.series_color(SOLVER_SLOTS[s]), linewidth=1.8,
+                        label=SOLVER_NAMES[s]) for s in ("ldlt", "amg", "jacobi")],
+        loc="center", ncol=3, fontsize=7.8, frameon=False)
+
+    subtitle = ("cantilever block 2 x 1 x 0.5 m (nx x nx/2 x nx/4 cells), E = 70 GPa, "
+                "nu = 0.3, tip load")
+    difference = block.get("max_relative_difference_vs_ldlt")
+    if difference is None:
+        difference = float(table["relative_difference_vs_ldlt[-]"].max())
+    subtitle += ("; largest relative displacement difference from the Cholesky "
+                 f"solution {difference:.1e}")
+    growth = block.get("max_iteration_growth_coarsest_to_finest")
+    if growth is not None:
+        subtitle += ("; iteration growth from the coarsest to the finest multi-level "
+                     f"mesh {growth:.2f}x")
+    st.figure_title(
+        fig, "Multigrid CG: agreement with Cholesky and iterations under refinement",
+        subtitle,
+    )
+    note = ("Times include the preconditioner setup or the factorisation. "
+            "The number under each multigrid point is the depth of its hierarchy.")
+    if single_level:
+        note += (" Hollow markers are meshes below the coarse-grid size, where the "
+                 "multigrid solver is a direct solve and converges in one iteration.")
+    st.annotate_note(fig, note)
+    return st.save_figure(fig, path)
+
+
+def plot_sensitivity_projection(directory: str, path: str) -> str:
+    """Gradient error through the Heaviside projection vs the finite-difference step."""
+    table = load_csv(os.path.join(directory, "sensitivity_projection.csv"))
+    summary = load_json(os.path.join(directory, "summary.json"))
+    tolerance = next((o["tolerance"] for o in summary.get("outcomes", [])
+                      if "Heaviside" in o.get("study", "")), None)
+    elements = [e for e in ("Quad4", "Tet4") if (table["element"] == e).any()]
+    betas = sorted(table["beta[-]"].unique())
+    # beta is ordinal, so a sequential ramp; its light end stops short of yellow
+    # so the thin lines keep their contrast on the page.
+    colors = st.sequence_colors(len(betas), lo=0.08, hi=0.68)
+
+    fig, axes, legend_ax = _grid_with_legend_row(7.4, 6.9, len(elements), 1)
+    for row, element in enumerate(elements):
+        ax = axes[row, 0]
+        for color, beta in zip(colors, betas):
+            sub = table[(table["element"] == element)
+                        & np.isclose(table["beta[-]"], beta)].sort_values("step[-]")
+            ax.plot(sub["step[-]"], sub["max_scaled_error[-]"], "o-", color=color)
+            ax.plot(sub["step[-]"], sub["directional_relative_error[-]"], "s--",
+                    color=color, markersize=4, linewidth=1.3)
+        if tolerance:
+            ax.axhline(tolerance, color=st.INK_MUTED, linewidth=1.0, linestyle=":")
+            ax.text(float(table["step[-]"].min()), tolerance, f"pass tolerance {tolerance:g}",
+                    fontsize=7.6, color=st.INK_SECONDARY, va="bottom", ha="right")
+        _log_log_axes(ax)
+        ax.invert_xaxis()
+        ax.set_xlabel("central-difference step h on the design variable [-]")
+        ax.set_ylabel("relative error [-]")
+        tested = int(table[table["element"] == element]["num_tested"].iloc[0])
+        st.title(
+            ax, f"{ELEMENT_NAMES[element]}: compliance gradient through filter and projection",
+            f"{tested} design variables tested at eta = 0.5 on a smoothly varying "
+            "design; the chain rule runs through the Heaviside projection and the "
+            "density filter",
+        )
+    from matplotlib.lines import Line2D
+
+    handles = [Line2D([], [], color=color, linewidth=1.9, label=f"beta = {beta:g}")
+               for color, beta in zip(colors, betas)]
+    handles += [
+        Line2D([], [], color=st.INK_SECONDARY, marker="o", linewidth=1.9,
+               label="largest entry error"),
+        Line2D([], [], color=st.INK_SECONDARY, marker="s", markersize=4, linewidth=1.3,
+               linestyle="--", label="directional derivative"),
+    ]
+    legend_ax.legend(handles=handles, loc="center", ncol=len(handles), fontsize=7.6,
+                     frameon=False, handlelength=2.2, columnspacing=1.2)
+    st.annotate_note(
+        fig,
+        "Each entry is judged against max(|analytical|, |finite difference|, "
+        "1e-3 ||gradient||_inf): at large beta the projection's derivative "
+        "vanishes away from the threshold, and there the comparison is with the "
+        "round-off floor of a central difference rather than with a relative "
+        "error of a number near zero. The study passes on the best step of each "
+        "beta, taking the worse of the two measures.",
+    )
     return st.save_figure(fig, path)
 
 
@@ -475,32 +931,53 @@ def plot_cross_validation(directory: str, path: str) -> str:
     if not rows:
         raise ValueError("cross-validation summary lists no comparisons")
 
+    # The slot follows the code, not its position among the codes present, so
+    # scikit-fem keeps its colour on a runner where CalculiX is not installed.
     code_names = ["scikit-fem", "calculix"]
     st.require_scatter_series(len(code_names), "codes")
-    fig, ax = st.figure(7.4, 0.55 * len(rows) + 2.4)
+    present = [code for code in code_names if any(code in r[3] for r in rows)]
+    # The legend gets a row of its own beneath the panel: beside it, it took a
+    # third of the width from a log axis spanning ten decades.
+    fig, grid, legend_ax = _grid_with_legend_row(7.4, 0.36 * len(rows) + 3.0, 1, 1)
+    ax = grid[0, 0]
     y = np.arange(len(rows))[::-1]
     floors = set()
+    informational = 0
     for slot, code in enumerate(code_names):
-        xs, ys = [], []
+        if code not in present:
+            continue
+        xs, ys, info_x, info_y = [], [], [], []
         for position, (_c, _e, _l, results) in zip(y, rows):
             entry = results.get(code)
             if entry is None:
                 continue
-            xs.append(entry["max_rel_diff"])
-            ys.append(position)
+            # passed is None for a comparison between two different
+            # idealisations (a plane element CalculiX expands through the
+            # thickness, at nu != 0): recorded, not judged.
+            if entry.get("passed") is None:
+                info_x.append(entry["max_rel_diff"])
+                info_y.append(position)
+            else:
+                xs.append(entry["max_rel_diff"])
+                ys.append(position)
             floor = entry.get("frd_rounding_floor_rel")
             if floor:
                 floors.add(float(floor))
         version = codes.get(code, {}).get("version", "")
         ax.plot(xs, ys, "o", color=st.series_color(slot), markersize=7,
                 label=f"{code} {version}".strip())
+        if info_x:
+            informational += len(info_x)
+            ax.plot(info_x, info_y, "o", color=st.series_color(slot), markersize=7,
+                    markerfacecolor="none", markeredgewidth=1.5,
+                    label=f"{code}: different idealisation, not judged")
     tol_lines = [
-        ("skfem", "scikit-fem tolerance", 0, "--"),
-        ("calculix_solid", "CalculiX tolerance", 1, "--"),
+        ("skfem", "scikit-fem tolerance", 0, "--", "scikit-fem"),
+        ("calculix_solid", "CalculiX tolerance", 1, "--", "calculix"),
     ]
-    for key, label, slot, style in tol_lines:
+    for key, label, slot, style, code in tol_lines:
         value = tolerances.get(key)
-        if value:
+        if value and code in present:
             ax.axvline(value, color=st.series_color(slot), linewidth=1.0, linestyle=style,
                        label=f"{label} {value:g}")
     for floor in sorted(floors):
@@ -508,24 +985,137 @@ def plot_cross_validation(directory: str, path: str) -> str:
                    label=f".frd six-digit rounding floor {floor:g}")
     ax.set_xscale("log")
     ax.set_yticks(y)
-    ax.set_yticklabels([f"{c} ({e}), '{l}'" for c, e, l, _r in rows], fontsize=8.5)
+    ax.set_yticklabels([f"{c} ({e}), '{l}'" for c, e, l, _r in rows], fontsize=8.0)
     ax.set_xlabel("max |u_SparLab - u_reference| / max |u_reference| over all nodes [-]")
     ax.set_ylim(-0.7, len(rows) - 0.3)
-    passed = all(entry["passed"] for *_r, results in rows for entry in results.values())
-    st.title(
-        ax, "Cross-validation: nodal displacements vs independent codes",
-        f"{len(rows)} load cases, {len(code_names)} codes; "
-        + ("every comparison within its tolerance" if passed else "a comparison FAILED"),
+    judged = [entry["passed"] for *_r, results in rows for entry in results.values()
+              if entry.get("passed") is not None]
+    verdict = ("every judged comparison within its tolerance" if all(judged)
+               else "a comparison FAILED")
+    if informational:
+        verdict += f"; {informational} informational"
+    st.figure_title(
+        fig, "Cross-validation: nodal displacements vs independent codes",
+        f"{len(rows)} load cases, {len(present)} "
+        f"code{'s' if len(present) != 1 else ''}; {verdict}",
     )
-    st.legend(ax, loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    handles, labels = ax.get_legend_handles_labels()
+    legend_ax.legend(handles, labels, loc="center", ncol=2, fontsize=7.8, frameon=False,
+                     columnspacing=1.6)
     st.annotate_note(
         fig,
         "Same mesh, material, supports and nodal loads in every code. scikit-fem "
-        "uses the same bilinear/trilinear elements, so its differences are solver "
-        "round-off. CalculiX C3D8 is the same element as SparLab's Hex8; CPS4 is a "
-        "plane element CalculiX expands through the thickness. Its results are "
-        "read from the .frd file, which carries six significant digits, so "
-        "differences below the dotted floor are its output rounding.",
+        "uses the same elements (bilinear, trilinear and linear simplices), so its "
+        "differences are solver round-off. CalculiX C3D8 and C3D4 are the same "
+        "elements as SparLab's Hex8 and Tet4. Its plane elements (CPS4, CPS3) are "
+        "expanded into a layer of solid elements, which matches plane stress only "
+        "for nu = 0; plane comparisons at nu != 0 are drawn hollow and not judged. "
+        "CalculiX results are read from the .frd file, which carries six "
+        "significant digits, so differences below the dotted floor are its output "
+        "rounding.",
+    )
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Heaviside projection: grey level and the SIMP-vs-structure gap
+# ---------------------------------------------------------------------------
+#: (label, run without projection, run with projection). Either may be None.
+PROJECTION_RUNS = [
+    ("MBB beam (2-D, Q4)", "mbb_beam", "mbb_beam_projected"),
+    ("bracket (3-D, Hex8)", "bracket_3d", "bracket_3d_projected"),
+    ("lug bracket (2-D, Tri3, Gmsh)", None, "lug_bracket_2d"),
+    ("engine mount (3-D, Tet4, Gmsh)", None, "engine_mount_3d"),
+    ("large bracket (3-D, Hex8, 356k DOFs)", None, "bracket_3d_large"),
+]
+
+
+def collect_projection(results_dir: str) -> pd.DataFrame:
+    """One row per run in PROJECTION_RUNS that exists under `results_dir`."""
+    rows = []
+    for label, plain, projected in PROJECTION_RUNS:
+        for variant, name in (("without projection", plain), ("with projection", projected)):
+            if name is None:
+                continue
+            path = os.path.join(results_dir, name, "summary.json")
+            if not os.path.isfile(path):
+                continue
+            doc = load_json(path)
+            result = doc.get("optimization_result", {})
+            solid = doc.get("interpreted_solid_analysis") or {}
+            projection = result.get("projection") or {}
+            rows.append({
+                "problem": label,
+                "run": name,
+                "variant": variant,
+                "final_beta": projection.get("final_beta"),
+                "iterations": result.get("iterations"),
+                "stop_reason": result.get("stop_reason"),
+                "grey_level": result.get("grey_level"),
+                "filtered_grey_level": projection.get("filtered_grey_level"),
+                "compliance_J": result.get("compliance_J"),
+                "interpreted_compliance_J": solid.get("weighted_compliance_J"),
+                "compliance_vs_simp_ratio": solid.get("compliance_vs_simp_ratio"),
+                "seconds": result.get("total_seconds"),
+            })
+    if not rows:
+        raise FileNotFoundError(
+            f"none of the projection runs exist under {results_dir}; run "
+            "scripts/run_all_benchmarks.sh")
+    return pd.DataFrame(rows)
+
+
+def plot_projection_summary(results_dir: str, path: str) -> str:
+    """Grey level and thresholded-vs-SIMP compliance, with and without projection."""
+    table = collect_projection(results_dir)
+    problems = [label for label, *_ in PROJECTION_RUNS if (table["problem"] == label).any()]
+    fig, axes = st.figure(7.6, 0.42 * len(problems) + 3.0, nrows=1, ncols=2, sharey=True)
+    y = {label: position for position, label in enumerate(problems[::-1])}
+    styles = {"without projection": (0, "o"), "with projection": (1, "D")}
+    for ax, column, xlabel in (
+        (axes[0], "grey_level", "grey level [-]"),
+        (axes[1], "compliance_vs_simp_ratio", "thresholded / SIMP compliance [-]"),
+    ):
+        for label in problems:
+            sub = table[table["problem"] == label]
+            if len(sub) == 2 and sub[column].notna().all():
+                ax.plot(sub[column], [y[label]] * 2, "-", color=st.GRID, linewidth=3.0,
+                        zorder=1)
+        for variant, (slot, marker) in styles.items():
+            sub = table[table["variant"] == variant]
+            ax.plot(sub[column], [y[p] for p in sub["problem"]], marker,
+                    color=st.series_color(slot), markersize=7, zorder=3,
+                    label=variant)
+            for _, row in sub.iterrows():
+                if row[column] is None or row[column] != row[column]:
+                    continue
+                ax.annotate(f"{row[column]:.3f}", (row[column], y[row["problem"]]),
+                            textcoords="offset points", xytext=(0, 7), ha="center",
+                            fontsize=7.0, color=st.INK_SECONDARY)
+        ax.set_xlabel(xlabel, fontsize=8.6)
+        ax.set_ylim(-0.7, len(problems) - 0.2)
+    axes[1].axvline(1.0, color=st.INK_MUTED, linewidth=0.9, linestyle="--")
+    ratios = table["compliance_vs_simp_ratio"].dropna()
+    if not ratios.empty:
+        axes[1].set_xlim(min(0.9, float(ratios.min()) - 0.05),
+                         max(1.05, float(ratios.max()) + 0.03))
+    greys = table["grey_level"].dropna()
+    axes[0].set_xlim(0.0, max(0.05, float(greys.max()) * 1.15) if not greys.empty else 1.0)
+    axes[0].set_yticks(list(y.values()))
+    axes[0].set_yticklabels(list(y.keys()), fontsize=8.2)
+    st.legend(axes[0], loc="lower right", fontsize=7.8)
+    st.figure_title(
+        fig, "Heaviside projection: how binary the design is, and what that buys",
+        "grey level = 4 mean(rho (1 - rho)) over all elements; the ratio "
+        "re-solves the design thresholded at 0.5 as solid material, so 1.0 means "
+        "the optimiser's objective is the structure's real compliance",
+    )
+    st.annotate_note(
+        fig,
+        "The grey rails join the two runs of one problem; the runs differ only in "
+        "the projection block and the settings listed in each deck's header "
+        "comment. Problems with one point were run with projection only. Values "
+        "are read from each run's summary.json.",
     )
     return st.save_figure(fig, path)
 

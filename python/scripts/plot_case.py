@@ -18,6 +18,8 @@ Produces, as applicable to what the run wrote:
     <case>_convergence.png          compliance, volume, change and grey level
     <case>_density_evolution.png    density small multiples
     <case>_evolution.gif            density animation
+
+With --minimal only <case>_topology.png and <case>_convergence.png are drawn.
 """
 
 from __future__ import annotations
@@ -96,12 +98,29 @@ def main(argv=None) -> int:
                         help="skip the GIF, which is the slowest artefact")
     parser.add_argument("--load-cases", default=None,
                         help="comma-separated subset of load cases to plot")
+    parser.add_argument("--minimal", action="store_true",
+                        help="only the final topology and the convergence history "
+                             "(for a variant of a deck whose other figures already "
+                             "exist, such as the same deck with the projection on)")
     args = parser.parse_args(argv)
 
     case = load_case(args.case)
     prefix = args.name or os.path.basename(os.path.normpath(args.case))
     os.makedirs(args.figures, exist_ok=True)
     written = []
+
+    if args.minimal:
+        if not case.is_topology_run:
+            print(f"  --minimal draws topology figures; {args.case} is not a topology run",
+                  file=sys.stderr)
+            return 1
+        written.append(plots.plot_final_topology(
+            case, _figure_name(args.figures, prefix, "topology")))
+        written.append(plots.plot_convergence_history(
+            case, _figure_name(args.figures, prefix, "convergence")))
+        for path in written:
+            print(f"  wrote {path}")
+        return 0
 
     density = None
     if case.is_topology_run:

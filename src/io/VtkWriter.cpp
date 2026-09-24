@@ -14,6 +14,8 @@ int vtk_cell_type(ElementType type) {
   switch (type) {
     case ElementType::Quad4: return 9;   // VTK_QUAD
     case ElementType::Hex8: return 12;   // VTK_HEXAHEDRON
+    case ElementType::Tri3: return 5;    // VTK_TRIANGLE
+    case ElementType::Tet4: return 10;   // VTK_TETRA
   }
   throw IoError("no VTK cell type registered for this element type");
 }

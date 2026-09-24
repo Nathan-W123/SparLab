@@ -211,7 +211,10 @@ TEST_CASE("a minimal deck parses into a solvable model", "[io][config]") {
   // Defaults.
   REQUIRE(config.integration.stiffness_points == 2);
   REQUIRE(config.integration.mass_points == 3);
-  REQUIRE(config.analysis.linear.type == LinearSolverType::SimplicialLdlt);
+  // "auto": exact Cholesky below the size limits, multigrid CG above.
+  REQUIRE(config.analysis.linear.type == LinearSolverType::Auto);
+  REQUIRE(config.modal.options.linear.type == LinearSolverType::Auto);
+  REQUIRE_FALSE(config.topology.optimizer.projection.enabled);
   REQUIRE_FALSE(config.modal.enabled);
   REQUIRE_FALSE(config.topology.enabled);
 

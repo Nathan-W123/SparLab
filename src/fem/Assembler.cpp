@@ -3,6 +3,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 
@@ -80,10 +81,153 @@ const Matrix& Assembler::element_mass(Index e) const {
   return slot;
 }
 
+void Assembler::build_pattern() const {
+  const Mesh& mesh = model_.mesh();
+  const Index nn = mesh.num_nodes();
+  const Index ne = mesh.num_elements();
+  const int npe = mesh.nodes_per_elem();
+  const int dim = mesh.dim();
+
+  // Elements around each node.
+  std::vector<Index> inc_ptr(static_cast<std::size_t>(nn) + 1, 0);
+  for (Index e = 0; e < ne; ++e) {
+    const Index* nodes = mesh.element_nodes(e);
+    for (int a = 0; a < npe; ++a) ++inc_ptr[static_cast<std::size_t>(nodes[a]) + 1];
+  }
+  for (Index n = 0; n < nn; ++n) {
+    inc_ptr[static_cast<std::size_t>(n) + 1] += inc_ptr[static_cast<std::size_t>(n)];
+  }
+  std::vector<Index> inc(static_cast<std::size_t>(inc_ptr.back()));
+  {
+    std::vector<Index> fill(inc_ptr.begin(), inc_ptr.end() - 1);
+    for (Index e = 0; e < ne; ++e) {
+      const Index* nodes = mesh.element_nodes(e);
+      for (int a = 0; a < npe; ++a) inc[static_cast<std::size_t>(fill[static_cast<std::size_t>(nodes[a])]++)] = e;
+    }
+  }
+  // Sorted node neighbourhoods (the node itself included).
+  std::vector<Index> nbr_ptr(static_cast<std::size_t>(nn) + 1, 0);
+  std::vector<Index> nbr;
+  nbr.reserve(static_cast<std::size_t>(nn) * (dim == 3 ? 27 : 9));
+  {
+    std::vector<Index> marker(static_cast<std::size_t>(nn), -1);
+    std::vector<Index> list;
+    for (Index b = 0; b < nn; ++b) {
+      list.clear();
+      for (Index k = inc_ptr[static_cast<std::size_t>(b)]; k < inc_ptr[static_cast<std::size_t>(b) + 1]; ++k) {
+        const Index* nodes = mesh.element_nodes(inc[static_cast<std::size_t>(k)]);
+        for (int a = 0; a < npe; ++a) {
+          if (marker[static_cast<std::size_t>(nodes[a])] != b) {
+            marker[static_cast<std::size_t>(nodes[a])] = b;
+            list.push_back(nodes[a]);
+          }
+        }
+      }
+      std::sort(list.begin(), list.end());
+      nbr.insert(nbr.end(), list.begin(), list.end());
+      nbr_ptr[static_cast<std::size_t>(b) + 1] = static_cast<Index>(nbr.size());
+    }
+  }
+  // Column-major structure: every column of node b lists the rows of its
+  // neighbours' blocks in ascending order.
+  Pattern& p = pattern_;
+  const Index n = nn * dim;
+  p.size = n;
+  p.outer.assign(static_cast<std::size_t>(n) + 1, 0);
+  for (Index b = 0; b < nn; ++b) {
+    const Index deg = nbr_ptr[static_cast<std::size_t>(b) + 1] - nbr_ptr[static_cast<std::size_t>(b)];
+    for (int kb = 0; kb < dim; ++kb) {
+      const Index c = b * dim + kb;
+      p.outer[static_cast<std::size_t>(c) + 1] = p.outer[static_cast<std::size_t>(c)] + deg * dim;
+    }
+  }
+  p.inner.resize(static_cast<std::size_t>(p.outer.back()));
+  for (Index b = 0; b < nn; ++b) {
+    for (int kb = 0; kb < dim; ++kb) {
+      Index q = p.outer[static_cast<std::size_t>(b * dim + kb)];
+      for (Index k = nbr_ptr[static_cast<std::size_t>(b)]; k < nbr_ptr[static_cast<std::size_t>(b) + 1]; ++k) {
+        for (int ka = 0; ka < dim; ++ka) p.inner[static_cast<std::size_t>(q++)] = nbr[static_cast<std::size_t>(k)] * dim + ka;
+      }
+    }
+  }
+  p.block_offset.resize(static_cast<std::size_t>(ne) * npe * npe);
+  for (Index e = 0; e < ne; ++e) {
+    const Index* nodes = mesh.element_nodes(e);
+    for (int b = 0; b < npe; ++b) {
+      const Index* begin = nbr.data() + nbr_ptr[static_cast<std::size_t>(nodes[b])];
+      const Index* end = nbr.data() + nbr_ptr[static_cast<std::size_t>(nodes[b]) + 1];
+      for (int a = 0; a < npe; ++a) {
+        const Index* hit = std::lower_bound(begin, end, nodes[a]);
+        p.block_offset[(static_cast<std::size_t>(e) * npe + a) * npe + b] =
+            static_cast<Index>(hit - begin) * dim;
+      }
+    }
+  }
+  p.ready = true;
+  log::debug("assembler: cached the sparsity pattern (", n, " DOFs, ", p.inner.size(),
+             " stored entries)");
+}
+
+bool Assembler::matches_pattern(const SparseMatrix& full) const {
+  if (!pattern_.ready || !full.isCompressed()) return false;
+  if (full.rows() != pattern_.size || full.cols() != pattern_.size) return false;
+  if (static_cast<std::size_t>(full.nonZeros()) != pattern_.inner.size()) return false;
+  return std::equal(pattern_.outer.begin(), pattern_.outer.end(), full.outerIndexPtr()) &&
+         std::equal(pattern_.inner.begin(), pattern_.inner.end(), full.innerIndexPtr());
+}
+
+template <typename ElementMatrix>
+SparseMatrix Assembler::scatter(const ElementMatrix& element_matrix, const Vector* scale) const {
+  if (!pattern_.ready) build_pattern();
+  const Mesh& mesh = model_.mesh();
+  const Index ne = mesh.num_elements();
+  const int npe = mesh.nodes_per_elem();
+  const int dim = mesh.dim();
+  const Pattern& p = pattern_;
+  SparseMatrix k(p.size, p.size);
+  k.resizeNonZeros(static_cast<Eigen::Index>(p.inner.size()));
+  std::copy(p.outer.begin(), p.outer.end(), k.outerIndexPtr());
+  std::copy(p.inner.begin(), p.inner.end(), k.innerIndexPtr());
+  Scalar* values = k.valuePtr();
+  std::fill(values, values + p.inner.size(), 0.0);
+  const StorageIndex* outer = p.outer.data();
+  for (Index e = 0; e < ne; ++e) {
+    const Scalar s = scale ? (*scale)(e) : 1.0;
+    const Matrix& ke = element_matrix(e);
+    const Index* nodes = mesh.element_nodes(e);
+    const Index* offsets = p.block_offset.data() + static_cast<std::size_t>(e) * npe * npe;
+    for (int b = 0; b < npe; ++b) {
+      for (int kb = 0; kb < dim; ++kb) {
+        const Index column = dim * b + kb;
+        const Index base = outer[nodes[b] * dim + kb];
+        for (int a = 0; a < npe; ++a) {
+          Scalar* target = values + base + offsets[a * npe + b];
+          for (int ka = 0; ka < dim; ++ka) target[ka] += s * ke(dim * a + ka, column);
+        }
+      }
+    }
+  }
+  return k;
+}
+
+SparseMatrix Assembler::from_reduction(const Reduction& map, const SparseMatrix& full) {
+  SparseMatrix out(map.rows, map.cols);
+  out.resizeNonZeros(static_cast<Eigen::Index>(map.inner.size()));
+  std::copy(map.outer.begin(), map.outer.end(), out.outerIndexPtr());
+  std::copy(map.inner.begin(), map.inner.end(), out.innerIndexPtr());
+  const Scalar* source = full.valuePtr();
+  Scalar* values = out.valuePtr();
+  for (std::size_t k = 0; k < map.source.size(); ++k) values[k] = source[map.source[k]];
+  return out;
+}
+
 SparseMatrix Assembler::assemble_stiffness(const Vector* scale) const {
   const Mesh& mesh = model_.mesh();
   const Index ne = mesh.num_elements();
   check_scale(scale, ne, "stiffness");
+  if (use_pattern_ && (scale == nullptr || scale->minCoeff() > 0.0)) {
+    return scatter([this](Index e) -> const Matrix& { return element_stiffness(e); }, scale);
+  }
 
   const int npe = mesh.nodes_per_elem();
   const int edofs = npe * mesh.dim();
@@ -118,6 +262,11 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
     throw ModelError(
         "mass assembly requires a positive material density; set 'material.density' "
         "to run modal analysis");
+  }
+
+  if (use_pattern_ && type == MassType::Consistent &&
+      (scale == nullptr || scale->minCoeff() > 0.0)) {
+    return scatter([this](Index e) -> const Matrix& { return element_mass(e); }, scale);
   }
 
   const int npe = mesh.nodes_per_elem();
@@ -174,6 +323,31 @@ SparseMatrix Assembler::reduce_free_free(const SparseMatrix& full) const {
   const auto& free = dofs.free_dofs();
   const Index nf = static_cast<Index>(free.size());
 
+  if (use_pattern_ && matches_pattern(full)) {
+    Reduction& map = free_free_;
+    if (map.key != free || map.rows != nf) {
+      map.key = free;
+      map.rows = nf;
+      map.cols = nf;
+      map.outer.assign(static_cast<std::size_t>(nf) + 1, 0);
+      map.inner.clear();
+      map.source.clear();
+      const StorageIndex* outer = full.outerIndexPtr();
+      const StorageIndex* inner = full.innerIndexPtr();
+      for (Index rc = 0; rc < nf; ++rc) {
+        const Index col = free[static_cast<std::size_t>(rc)];
+        for (StorageIndex k = outer[col]; k < outer[col + 1]; ++k) {
+          const Index rr = dofs.reduced_index(inner[k]);
+          if (rr < 0) continue;
+          map.inner.push_back(rr);
+          map.source.push_back(k);
+        }
+        map.outer[static_cast<std::size_t>(rc) + 1] = static_cast<StorageIndex>(map.inner.size());
+      }
+    }
+    return from_reduction(map, full);
+  }
+
   TripletList triplets;
   triplets.reserve(static_cast<std::size_t>(full.nonZeros()));
   for (Eigen::Index col = 0; col < full.outerSize(); ++col) {
@@ -194,6 +368,32 @@ SparseMatrix Assembler::reduce_free_free(const SparseMatrix& full) const {
 SparseMatrix Assembler::reduce_free_prescribed(const SparseMatrix& full) const {
   const DofManager& dofs = model_.dofs();
   const auto& fixed = dofs.constrained_dofs();
+
+  if (use_pattern_ && matches_pattern(full)) {
+    Reduction& map = free_prescribed_;
+    if (map.key != fixed || map.cols != static_cast<Index>(fixed.size())) {
+      map.key = fixed;
+      map.rows = dofs.num_free();
+      map.cols = static_cast<Index>(fixed.size());
+      map.outer.assign(fixed.size() + 1, 0);
+      map.inner.clear();
+      map.source.clear();
+      const StorageIndex* outer = full.outerIndexPtr();
+      const StorageIndex* inner = full.innerIndexPtr();
+      for (std::size_t fc = 0; fc < fixed.size(); ++fc) {
+        const Index col = fixed[fc];
+        for (StorageIndex k = outer[col]; k < outer[col + 1]; ++k) {
+          const Index rr = dofs.reduced_index(inner[k]);
+          if (rr < 0) continue;
+          map.inner.push_back(rr);
+          map.source.push_back(k);
+        }
+        map.outer[fc + 1] = static_cast<StorageIndex>(map.inner.size());
+      }
+    }
+    return from_reduction(map, full);
+  }
+
   std::vector<Index> fixed_index(static_cast<std::size_t>(dofs.num_dofs()), -1);
   for (std::size_t k = 0; k < fixed.size(); ++k) {
     fixed_index[static_cast<std::size_t>(fixed[k])] = static_cast<Index>(k);

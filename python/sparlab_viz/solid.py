@@ -1,9 +1,9 @@
-"""Rendering solid (Hex8) meshes: boundary surfaces, feature edges and views.
+"""Rendering solid (Hex8 and Tet4) meshes: boundary surfaces, feature edges and views.
 
 A solid mesh is drawn through its boundary faces only - the interior is not
 visible - and a field is shown on that surface: a nodal field averaged over the
-four corners of each face, an element field taken from the element that owns
-the face. Faces are flat-shaded from one fixed light direction so the geometry
+corners of each face (quadrilaterals for Hex8, triangles for Tet4), an element
+field taken from the element that owns the face. Faces are flat-shaded from one fixed light direction so the geometry
 can be told apart at all; the colour itself is the data, and the shading factor
 is the same on every figure so two panels remain comparable.
 
@@ -34,9 +34,13 @@ AMBIENT = 0.58
 
 
 def face_normals(polys: np.ndarray) -> np.ndarray:
-    """Unit normals of (n, 4, 3) quads from their diagonals."""
+    """Unit normals of (n, 4, 3) quads (from their diagonals) or (n, 3, 3)
+    triangles (from two edges)."""
     polys = np.asarray(polys, dtype=float)
-    normals = np.cross(polys[:, 2] - polys[:, 0], polys[:, 3] - polys[:, 1])
+    if polys.shape[1] == 3:
+        normals = np.cross(polys[:, 1] - polys[:, 0], polys[:, 2] - polys[:, 0])
+    else:
+        normals = np.cross(polys[:, 2] - polys[:, 0], polys[:, 3] - polys[:, 1])
     length = np.linalg.norm(normals, axis=1)
     length[length == 0.0] = 1.0
     return normals / length[:, None]
@@ -57,7 +61,7 @@ def surface(ax, polys, values: Optional[Sequence[float]] = None,
             vmax: Optional[float] = None, norm=None, color: str = "#d9d7cf",
             alpha: float = 1.0, edge_color=(0.0, 0.0, 0.0, 0.12),
             linewidth: float = 0.15, shading: bool = True):
-    """Draw quads as a shaded surface.
+    """Draw quads or triangles as a shaded surface.
 
     Returns `(collection, mappable)`; the mappable carries the colour scale
     for a colour bar and is None for a flat-coloured surface.
@@ -65,6 +69,10 @@ def surface(ax, polys, values: Optional[Sequence[float]] = None,
     polys = np.asarray(polys, dtype=float)
     if polys.size == 0:
         return None, None
+    if polys.shape[1] == 3 and edge_color == (0.0, 0.0, 0.0, 0.12):
+        # Tetrahedral surfaces have several times as many (smaller) faces as a
+        # hexahedral one; the default edge weight would grey the field out.
+        edge_color = (0.0, 0.0, 0.0, 0.05)
     normals = face_normals(polys)
     mappable = None
     if values is not None:
@@ -92,7 +100,7 @@ def surface(ax, polys, values: Optional[Sequence[float]] = None,
 
 
 def feature_edges(faces, coords, angle_deg: float = 30.0) -> np.ndarray:
-    """(m, 2, 3) segments along the sharp edges of a quad surface.
+    """(m, 2, 3) segments along the sharp edges of a quad or triangle surface.
 
     An edge is kept when its two faces meet at more than `angle_deg`, or when
     it belongs to one face only (an open boundary). On a box this is its twelve

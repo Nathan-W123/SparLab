@@ -80,7 +80,7 @@ StressConstraint::StressConstraint(const FemModel& model, const Assembler& assem
 }
 
 Matrix StressConstraint::db_at_centre(Index e) const {
-  const NaturalPoint centre;  // (0, 0, 0)
+  const NaturalPoint centre = model_.element().reference_centroid();
   const StrainOperator op =
       model_.element().strain_operator(model_.mesh().element_coordinates(e), centre);
   return model_.constitutive() * op.b;  // nv x edofs
@@ -168,7 +168,7 @@ StressEvaluation StressConstraint::evaluate(ComplianceObjective& objective,
   }
 
   // Adjoint solve with the factorisation of the current SIMP stiffness.
-  const Vector lambda = objective.solve_adjoint(psi);
+  const Vector lambda = objective.solve_adjoint(psi, static_cast<int>(load_case));
   const Vector dfactor = simp_stiffness_derivatives(rho, objective.simp());
 
   Vector dgpn(ne);
@@ -185,7 +185,8 @@ StressEvaluation StressConstraint::evaluate(ComplianceObjective& objective,
     dgpn(e) = explicit_term(e) + implicit;
   }
   out.dg_dphysical = scale * dgpn;
-  out.dg_dx = filter_.pull_back(out.dg_dphysical);
+  // Through the projection (when on) and the filter.
+  out.dg_dx = objective.chain_to_design(eval, out.dg_dphysical);
   return out;
 }
 

@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
+#include <utility>
 
 namespace sparlab {
 
@@ -31,7 +33,9 @@ void MmaOptions::validate() const {
   if (!(constraint_scale_cap >= 1.0)) {
     throw ConfigError("mma.constraint_scale_cap must be at least 1");
   }
-  if (max_inner_iterations < 10) throw ConfigError("mma.max_inner_iterations must be >= 10");
+  if (max_inner_iterations < 10) {
+    throw ConfigError("mma.max_newton_iterations must be at least 10");
+  }
 }
 
 MmaOptimizer::MmaOptimizer(Index num_variables, Index num_constraints, const Vector& lower,
@@ -173,10 +177,12 @@ MmaStep MmaOptimizer::solve_subproblem(const Vector& alfa, const Vector& beta,
   Scalar zet = 1.0;
   Vector s = Vector::Ones(m);
 
-  // Residual of the relaxed KKT system for the current iterate.
+  // Residual of the relaxed KKT system for the current iterate, with the
+  // block that holds its largest entry (for the diagnostic on failure).
   struct Residual {
     Scalar norm = 0.0;
     Scalar max = 0.0;
+    const char* block = "";
   };
   const auto residual = [&](const Vector& xv, const Vector& yv, Scalar zv, const Vector& lamv,
                             const Vector& xsiv, const Vector& etav, const Vector& muv,
@@ -205,10 +211,30 @@ MmaStep MmaOptimizer::solve_subproblem(const Vector& alfa, const Vector& beta,
                 rexsi.squaredNorm() + reeta.squaredNorm() + remu.squaredNorm() +
                 rezet * rezet + res.squaredNorm();
     r.norm = std::sqrt(sq);
-    r.max = std::max({rex.cwiseAbs().maxCoeff(), rey.cwiseAbs().maxCoeff(), std::abs(rez),
-                      relam.cwiseAbs().maxCoeff(), rexsi.cwiseAbs().maxCoeff(),
-                      reeta.cwiseAbs().maxCoeff(), remu.cwiseAbs().maxCoeff(),
-                      std::abs(rezet), res.cwiseAbs().maxCoeff()});
+    const std::pair<Scalar, const char*> blocks[] = {
+        {rex.cwiseAbs().maxCoeff(), "stationarity in x"},
+        {rey.cwiseAbs().maxCoeff(), "stationarity in y"},
+        {std::abs(rez), "stationarity in z"},
+        {relam.cwiseAbs().maxCoeff(), "constraint feasibility"},
+        {rexsi.cwiseAbs().maxCoeff(), "complementarity at the lower move bound"},
+        {reeta.cwiseAbs().maxCoeff(), "complementarity at the upper move bound"},
+        {remu.cwiseAbs().maxCoeff(), "complementarity of y"},
+        {std::abs(rezet), "complementarity of z"},
+        {res.cwiseAbs().maxCoeff(), "complementarity of the constraint slacks"}};
+    for (const auto& [value, name] : blocks) {
+      if (value > r.max) {
+        r.max = value;
+        r.block = name;
+      }
+    }
+    // A non-finite entry must never read as small: it makes the line search
+    // back off and the level count as unconverged, which ends in the error
+    // below rather than in a NaN design.
+    if (!std::isfinite(sq)) {
+      r.norm = std::numeric_limits<Scalar>::infinity();
+      r.max = std::numeric_limits<Scalar>::infinity();
+      r.block = "non-finite";
+    }
     return r;
   };
 
@@ -354,7 +380,7 @@ MmaStep MmaOptimizer::solve_subproblem(const Vector& alfa, const Vector& beta,
       converged = false;
       log::warn("MMA subproblem: ", ittt, " Newton iterations at barrier ", epsi,
                 " without reaching the residual target (", current.max, " > ",
-                0.9 * epsi, ")");
+                0.9 * epsi, ", largest in the ", current.block, " block)");
     }
     epsi *= 0.1;
   }
@@ -370,9 +396,11 @@ MmaStep MmaOptimizer::solve_subproblem(const Vector& alfa, const Vector& beta,
   if (!converged) {
     std::ostringstream os;
     os << "the MMA subproblem solver did not converge (final residual " << current.max
-       << " at barrier " << options_.epsimin
-       << "); the approximation is badly scaled - check the objective and constraint "
-          "scaling or loosen mma.epsimin";
+       << " at barrier " << options_.epsimin << ", largest in the " << current.block
+       << " block, after " << options_.max_inner_iterations
+       << " Newton iterations at a barrier level); raise "
+          "topology.optimizer.mma.max_newton_iterations, loosen "
+          "mma.subproblem_tolerance, or check the objective and constraint scaling";
     throw ConvergenceError(os.str());
   }
   return step;

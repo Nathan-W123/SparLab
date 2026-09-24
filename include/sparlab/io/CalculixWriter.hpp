@@ -2,8 +2,9 @@
 /// \brief Export of a finalised model as CalculiX (Abaqus-style) input decks.
 ///
 /// One `.inp` per load case is written, each a complete linear static job:
-/// nodes (1-based), elements (`CPS4` for plane stress, `CPE4` for plane
-/// strain, `C3D8` for solids, in the same local node order SparLab uses),
+/// nodes (1-based), elements (`CPS4` / `CPS3` for plane stress, `CPE4` /
+/// `CPE3` for plane strain, `C3D8` / `C3D4` for solids, in the same local node
+/// order SparLab uses),
 /// an isotropic `*ELASTIC` material, a `*SOLID SECTION` (with the thickness
 /// on its data line for plane elements), the prescribed DOFs as `*BOUNDARY`
 /// cards, the assembled nodal forces as `*CLOAD` cards, and `*NODE FILE, U`

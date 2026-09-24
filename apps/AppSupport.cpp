@@ -15,9 +15,10 @@ CommandLine::CommandLine(int argc, char** argv, const std::vector<std::string>& 
     : known_(known) {
   program_ = argc > 0 ? argv[0] : "sparlab";
   // Options that never take a value.
-  const std::vector<std::string> switches = {"help", "strict-config", "no-vtk",
-                                             "no-csv", "no-stress", "export-calculix",
-                                             "list"};
+  const std::vector<std::string> switches = {"help",         "strict-config", "no-vtk",
+                                             "no-csv",       "no-stress",     "export-calculix",
+                                             "list",         "no-objective",  "no-projection",
+                                             "projection"};
 
   for (int i = 1; i < argc; ++i) {
     std::string token = argv[i];

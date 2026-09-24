@@ -4,7 +4,9 @@
 #
 # The four compliance benchmarks take seconds to a minute each; the
 # stress-constrained L-bracket a few tens of seconds; the 3-D bracket
-# (15k DOFs, 150 iterations) around ten minutes.
+# (15k DOFs, 150 iterations) around ten minutes with the direct solver; the
+# Gmsh parts a few minutes; the 356k-DOF bracket_3d_large (multigrid CG)
+# roughly half an hour.
 #
 # usage: scripts/run_all_benchmarks.sh [results-dir]
 set -euo pipefail
@@ -15,7 +17,9 @@ require_binaries sparlab_solve sparlab_topopt
 
 "$SPARLAB_ROOT/scripts/run_benchmark.sh" cantilever_analysis "$RESULTS"
 "$SPARLAB_ROOT/scripts/run_benchmark.sh" block_3d_analysis "$RESULTS"
-for case in cantilever_beam mbb_beam aerospace_bracket wing_rib l_bracket_stress bracket_3d; do
+for case in cantilever_beam mbb_beam mbb_beam_projected aerospace_bracket wing_rib \
+            l_bracket_stress bracket_3d bracket_3d_projected lug_bracket_2d engine_mount_3d \
+            bracket_3d_large; do
   "$SPARLAB_ROOT/scripts/run_benchmark.sh" "$case" "$RESULTS"
 done
 

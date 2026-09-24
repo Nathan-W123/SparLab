@@ -520,7 +520,13 @@ def plot_final_topology(case: CaseResults, path: str) -> str:
     )
     result = case.summary.get("optimization_result", {})
 
-    fig, axes = st.figure(7.4, 5.6, nrows=2, ncols=1)
+    # Two stacked panels at the domain's aspect ratio: the figure height
+    # follows from the width available to each panel, so a squat domain does
+    # not leave a band of white beside it.
+    xmin, xmax, ymin, ymax = case.mesh.extent
+    aspect = (xmax - xmin) / max(ymax - ymin, 1.0e-12)
+    height = min(9.5, max(5.0, 2.0 * (5.6 / aspect + 0.95) + 0.9))
+    fig, axes = st.figure(7.4, height, nrows=2, ncols=1)
     collection = fld.element_collection(axes[0], case.mesh, density,
                                         cmap=st.DENSITY_CMAP_SURFACE,
                                         vmin=0.0, vmax=1.0)
@@ -531,7 +537,7 @@ def plot_final_topology(case: CaseResults, path: str) -> str:
     fld.geometry_axes(axes[0], case.mesh)
     st.figure_title(
         fig, f"{case.name}: optimised density",
-        "SIMP design variable field. Compliance "
+        f"{density_field_label(case)}. Compliance "
         f"{st.format_si(result.get('compliance_J', float('nan')))} J, volume "
         f"fraction {result.get('volume_fraction', float('nan')):.4f}, grey level "
         f"{result.get('grey_level', float('nan')):.3f}, "
@@ -560,12 +566,46 @@ def plot_final_topology(case: CaseResults, path: str) -> str:
     )
     st.annotate_note(
         fig,
-        "The upper panel is the SIMP design variable field: a relative material "
-        "distribution, not a solid body. The lower panel is one explicit "
+        "The upper panel is the physical density the optimiser analysed: a relative "
+        "material distribution, not a solid body. The lower panel is one explicit "
         "interpretation of it, and the threshold and connectivity rule are "
         "stated because the answer depends on both.",
     )
     return st.save_figure(fig, path)
+
+
+#: What the plotted density is; defined beside the 3-D figures, which use it
+#: too (this module imports that one, not the other way round).
+density_field_label = p3.density_field_label
+
+
+def _off_target_reason(history: pd.DataFrame, iterations: np.ndarray,
+                       off_target: np.ndarray) -> str:
+    """Say which OC iterates sit off the volume target, and why when the
+    history shows it.
+
+    With the Heaviside projection two kinds of iterate are analysed before an
+    update has put them on the target: the uniform start seen through the
+    projection (unless it sits at the threshold, a fixed point), and the design
+    right after each sharpening step, whose physical volume moves with `beta`.
+    The explanation is given only when the recorded iterates are exactly those.
+    """
+    count = int(off_target.sum())
+    flagged = set(int(i) for i in iterations[off_target])
+    if "beta[-]" in history.columns:
+        beta = history["beta[-]"].to_numpy(dtype=float)
+        steps = set(int(i) for i in iterations[1:][np.diff(beta) != 0.0])
+        first = int(iterations[0])
+        if flagged <= steps | {first}:
+            parts = []
+            if first in flagged:
+                parts.append("the starting design")
+            if flagged & steps:
+                parts.append(f"the first design after each of {len(flagged & steps)} "
+                             "projection steps")
+            return (" and ".join(parts) + " sit above it, analysed before the next "
+                    "update restores the volume")
+    return f"{count} iterates sit above it"
 
 
 def plot_convergence_history(case: CaseResults, path: str) -> str:
@@ -583,9 +623,11 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
     iterations = history["iteration"].to_numpy()
     method = str(setup.get("method", "oc")).lower()
     stress_constrained = "max_stress_ratio[-]" in history and bool(result.get("stress"))
+    iterative = ("linear_iterations[-]" in history
+                 and float(history["linear_iterations[-]"].max()) > 0.0)
+    panels = 4 + (1 if stress_constrained else 0) + (1 if iterative else 0)
 
-    fig, axes = st.stacked_panels(5 if stress_constrained else 4, width=7.0,
-                                  panel_height=1.75)
+    fig, axes = st.stacked_panels(panels, width=7.0, panel_height=1.75)
 
     ax = axes[0]
     # A linear scale reads better here: the objective falls by a factor of a few
@@ -630,17 +672,33 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
         )
         st.legend(ax, loc="upper right")
     elif target:
+        # A magnitude on a log axis: OC's bisection puts every update on the
+        # target to its tolerance, and the sign of a 1e-11 residual carries no
+        # information. (A symmetric-log axis spanning 1e-12 to 1e-1 had too
+        # many decades for the panel and its tick labels collided.)
         relative = (history["volume_fraction[-]"].to_numpy() - target) / target
-        ax.plot(iterations, relative, color=st.series_color(2))
-        ax.axhline(0.0, color=st.INK_MUTED, linewidth=0.9, linestyle="--")
-        ax.set_yscale("symlog", linthresh=1.0e-12)
-        ax.set_ylabel("relative violation [-]")
-        st.limit_ticks(ax, x=8, y=5)
-        st.title(
-            ax, f"volume constraint, target fraction {target:g}",
-            f"met to {abs(violation):.1e} relative at the final iterate, which is "
-            "the multiplier bisection tolerance, not a drift",
-        )
+        magnitude = np.maximum(np.abs(relative), 1.0e-16)
+        ax.plot(iterations, magnitude, color=st.series_color(2),
+                label="|volume - target| / target")
+        tolerance = case.summary.get("tolerances", {}).get("optimizer_volume_tolerance")
+        if tolerance:
+            ax.axhline(tolerance, color=st.INK_MUTED, linewidth=0.9, linestyle="--",
+                       label=f"bisection tolerance {tolerance:g}")
+        ax.set_yscale("log")
+        # Headroom above the highest point - a third of the plotted decades, at
+        # least one - so the one-row legend sits above the data rather than
+        # across the spikes of a projected run.
+        highest = np.log10(max(float(magnitude.max()), float(tolerance or 0.0)))
+        lowest = np.log10(float(magnitude.min()))
+        ax.set_ylim(top=10.0 ** (highest + max(1.0, 0.45 * (highest - lowest))))
+        ax.set_ylabel("relative distance [-]")
+        subtitle = (f"met to {abs(violation):.1e} relative at the final iterate, "
+                    "which is the multiplier bisection tolerance, not a drift")
+        off_target = magnitude > 10.0 * (tolerance or 1.0e-10)
+        if off_target.any():
+            subtitle += "; " + _off_target_reason(history, iterations, off_target)
+        st.title(ax, f"volume constraint, target fraction {target:g}", subtitle)
+        st.legend(ax, loc="upper right", ncol=2)
     else:
         ax.plot(iterations, history["volume_fraction[-]"], color=st.series_color(2))
         ax.set_ylabel("volume fraction [-]")
@@ -698,13 +756,42 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
                 f" SIMP penalty raised (p: {penalty.min():g} -> {penalty.max():g})",
                 fontsize=7.4, color=st.INK_MUTED, va="top",
             )
+    projected = "beta[-]" in history
+    if projected:
+        beta = history["beta[-]"].to_numpy()
+        if beta.max() > beta.min():
+            changes = np.flatnonzero(np.diff(beta) > 0) + 1
+            for change in changes:
+                ax.axvline(iterations[change], color=st.series_color(5), linewidth=0.8,
+                           linestyle="--", alpha=0.8)
+            ax.text(iterations[changes[0]], 0.72,
+                    f" projection sharpness raised at the dashed lines "
+                    f"(beta {beta.min():g} -> {beta.max():g})",
+                    fontsize=7.4, color=st.INK_MUTED, va="top")
     ax.set_ylabel("grey level [-]")
-    ax.set_xlabel("iteration")
     ax.set_ylim(0.0, 1.0)
     st.title(
         ax, "how binary the design is",
-        "grey level 4/n sum rho (1 - rho): 0 = pure 0/1, 1 = every element at 0.5",
+        "grey level 4/n sum rho (1 - rho) of the physical density: 0 = pure 0/1, "
+        "1 = every element at 0.5",
     )
+    if iterative:
+        ax.set_xlabel("")
+        ax = axes[grey_panel + 1]
+        counts = history["linear_iterations[-]"].to_numpy()
+        ax.plot(iterations, counts, color=st.series_color(4))
+        ax.set_ylabel("CG iterations [-]")
+        ax.set_ylim(bottom=0.0)
+        st.limit_ticks(ax, x=8, y=5)
+        solver = result.get("linear_solver", {})
+        st.title(
+            ax, "linear solver work per design iteration",
+            f"{solver.get('solver', 'iterative solver')}: "
+            f"{solver.get('iterative_iterations_total', int(counts.sum()))} iterations "
+            f"over {result.get('linear_solves', 0)} solves, all load cases (and "
+            "adjoints) summed; each solve starts from the previous design's answer",
+        )
+    ax.set_xlabel("iteration")
 
     if method == "mma":
         why = ("MMA minimises a convex approximation with moving asymptotes and a "
@@ -714,6 +801,9 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
         why = ("optimality criteria is a fixed-point update with a move limit, and "
                "each continuation step raises the SIMP penalty, which raises "
                "compliance at fixed density")
+    if projected:
+        why += ("; raising the projection sharpness changes the physical density of "
+                "every grey element at once")
     st.annotate_note(
         fig,
         f"Compliance is not guaranteed to fall monotonically: {why}. Every value is "
@@ -864,6 +954,111 @@ def animate_density_evolution(case: CaseResults, path: str, fps: int = 8,
     plt.close(fig)
     st.shrink_gif_palette(path, fps)
     return path
+
+
+# ---------------------------------------------------------------------------
+# The same deck without and with the Heaviside projection
+# ---------------------------------------------------------------------------
+def grey_band_share(density, low: float = 0.05, high: float = 0.95) -> float:
+    """Percentage of elements whose density lies strictly between `low` and `high`."""
+    density = np.asarray(density, dtype=float)
+    return 100.0 * float(np.mean((density > low) & (density < high)))
+
+
+def plot_projection_comparison(plain: CaseResults, projected: CaseResults, path: str) -> str:
+    """Final density of a run without and with the projection, plus the
+    distribution of element densities in each."""
+    if plain.dim != 2 or projected.dim != 2:
+        raise ValueError("the projection comparison figure is drawn for plane cases")
+    cases = [("without projection", plain), ("with Heaviside projection", projected)]
+    densities = []
+    for _, case in cases:
+        table = case.density()
+        if table is None:
+            raise FileNotFoundError(f"{case.directory} has no density_final.csv")
+        densities.append(table["physical_density[-]"].to_numpy())
+
+    xmin, xmax, ymin, ymax = plain.mesh.extent
+    aspect = (ymax - ymin) / max(xmax - xmin, 1.0e-12)
+    field = 5.9 * aspect + 0.9
+    fig, axes = st.figure(7.4, 2.0 * field + 2.9, nrows=3, ncols=1,
+                          height_ratios=[field, field, 2.3])
+    collection = None
+    for ax, (label, case), density in zip(axes[:2], cases, densities):
+        collection = fld.element_collection(ax, case.mesh, density,
+                                            cmap=st.DENSITY_CMAP_SURFACE, vmin=0.0, vmax=1.0)
+        fld.mesh_outline(ax, case.mesh, color=st.INK_MUTED, linewidth=0.8)
+        fld.geometry_axes(ax, case.mesh)
+        result = case.summary.get("optimization_result", {})
+        solid = case.summary.get("interpreted_solid_analysis") or {}
+        projection = result.get("projection")
+        detail = f"final beta {projection.get('final_beta', 0):g}; " if projection else ""
+        ratio = solid.get("compliance_vs_simp_ratio")
+        st.title(
+            ax, label,
+            f"{detail}grey level {result.get('grey_level', float('nan')):.3f}; SIMP "
+            f"compliance {st.format_si(result.get('compliance_J', float('nan')))} J, "
+            "thresholded structure "
+            f"{st.format_si(solid.get('weighted_compliance_J', float('nan')))} J"
+            + (f" (ratio {ratio:.3f})" if ratio else "")
+            + f"; {result.get('iterations', 0)} iterations, stop: "
+            f"{result.get('stop_reason', 'n/a')}",
+            wrap=80,
+        )
+    fld.add_colorbar(fig, collection, list(axes[:2]), "physical density [-]")
+
+    ax = axes[2]
+    bins = np.linspace(0.0, 1.0, 41)
+    shares = []
+    for slot, ((label, _case), density) in enumerate(zip(cases, densities)):
+        weights = np.full(density.size, 100.0 / max(density.size, 1))
+        ax.hist(density, bins=bins, weights=weights, histtype="step", linewidth=1.8,
+                color=st.series_color(slot), label=label)
+        shares.append(grey_band_share(density))
+    ax.set_yscale("log")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("physical density [-]")
+    ax.set_ylabel("share of elements [%]")
+    st.title(
+        ax, "distribution of element densities",
+        f"elements with 0.05 < density < 0.95: {shares[0]:.1f} % without, "
+        f"{shares[1]:.1f} % with projection",
+    )
+    st.legend(ax, loc="upper center")
+    plain_setup = plain.summary.get("optimization_setup", {})
+    proj_setup = projected.summary.get("optimization_setup", {})
+    setup = proj_setup.get("projection") or {}
+    schedule = ""
+    if setup:
+        schedule = (f" (beta {setup.get('beta_start', 0):g} to {setup.get('beta_max', 0):g}, "
+                    f"x{setup.get('beta_factor', 0):g} at most every "
+                    f"{setup.get('beta_interval', 0)} iterations, eta "
+                    f"{setup.get('eta', 0.5):g})")
+    # Every other setting the two runs differ in, read from their summaries,
+    # so the figure cannot claim a cleaner comparison than was made.
+    changed = []
+    for key, label in (("move_limit", "move limit"), ("objective_tolerance", "stall tolerance"),
+                       ("objective_window", "stall window"), ("max_iterations", "iteration cap"),
+                       ("filter_radius_m", "filter radius"), ("volume_fraction_target", "volume fraction")):
+        a, b = plain_setup.get(key), proj_setup.get(key)
+        if a is not None and b is not None and a != b:
+            changed.append(f"{label} {a:g} -> {b:g}")
+    others = ("; otherwise also " + ", ".join(changed)) if changed else \
+        "; nothing else differs"
+    st.figure_title(
+        fig, f"{plain.name}: effect of the Heaviside projection",
+        f"same mesh, loads, material and filter; the second run projects the filtered "
+        f"density{schedule}{others}",
+    )
+    st.annotate_note(
+        fig,
+        "The fields are the physical density the optimiser analysed: a relative "
+        "material distribution, not a solid body. The thresholded-structure "
+        "compliance comes from re-solving the design cut at density 0.5 as solid "
+        "material, so a ratio near 1 means the optimised objective is what the "
+        "structure delivers.",
+    )
+    return st.save_figure(fig, path)
 
 
 # ---------------------------------------------------------------------------

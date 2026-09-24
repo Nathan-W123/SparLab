@@ -11,6 +11,49 @@
 #include <sstream>
 
 namespace sparlab {
+namespace {
+
+/// Beta continuation of the Heaviside projection: stage k uses
+/// beta_start * factor^k (capped), and a stage ends after `beta_interval`
+/// iterations or, optionally, as soon as its design change has settled.
+class BetaSchedule {
+ public:
+  explicit BetaSchedule(const ProjectionOptions& options)
+      : options_(options), stages_(options.enabled ? options.num_stages() : 1) {}
+
+  bool enabled() const { return options_.enabled; }
+  Scalar beta() const { return options_.enabled ? options_.beta_of_stage(stage_) : 0.0; }
+  bool at_final() const { return !options_.enabled || stage_ + 1 >= stages_; }
+
+  /// Called after iteration `iteration`; true when beta was raised.
+  bool advance(int iteration, Scalar design_change, Scalar tolerance) {
+    if (at_final()) return false;
+    const int spent = iteration - start_ + 1;
+    if (spent >= options_.beta_interval ||
+        (options_.advance_on_convergence && design_change <= tolerance)) {
+      ++stage_;
+      start_ = iteration + 1;
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  ProjectionOptions options_;
+  int stages_ = 1;
+  int stage_ = 0;
+  int start_ = 1;
+};
+
+/// ", beta = ..., CG iterations = ..." for the iteration log, when present.
+std::string iteration_extras(const TopologyIteration& record) {
+  std::ostringstream os;
+  if (record.beta > 0.0) os << ", beta = " << record.beta;
+  if (record.linear_iterations > 0) os << ", CG iterations = " << record.linear_iterations;
+  return os.str();
+}
+
+}  // namespace
 
 std::string to_string(OptimizerMethod method) {
   switch (method) {
@@ -33,6 +76,23 @@ Scalar gray_level(const Vector& density) {
     sum += density(e) * (1.0 - density(e));
   }
   return 4.0 * sum / static_cast<Scalar>(density.size());
+}
+
+/// The objective-stall measure: the relative spread (max - min) / |latest| of
+/// the last `window` + 1 compliance values, or infinity while the history is
+/// shorter than that.
+///
+/// For a monotone history this is exactly |c_k - c_{k-w}| / |c_k|. Unlike that
+/// two-point difference it cannot be fooled by an oscillation whose period
+/// divides the window: a design cycling at the move limit (as the adaptive
+/// stress-constraint scaling can make it) returns to the same compliance
+/// every period, and a two-point test then declares a stall mid-cycle.
+Scalar objective_spread(const std::vector<Scalar>& history, int window) {
+  const std::size_t w = static_cast<std::size_t>(std::max(window, 1));
+  if (history.size() <= w) return std::numeric_limits<Scalar>::infinity();
+  const auto first = history.end() - static_cast<std::ptrdiff_t>(w + 1);
+  const auto [lowest, highest] = std::minmax_element(first, history.end());
+  return (*highest - *lowest) / std::max(std::abs(history.back()), 1.0e-30);
 }
 
 TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& assembler,
@@ -83,6 +143,13 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
     }
   }
   options_.stress.validate(options_.simp);
+  options_.projection.validate();
+  if (options_.projection.enabled && filter_.type() == FilterType::Sensitivity) {
+    throw ConfigError(
+        "topology.projection needs the density filter (or none): the sensitivity filter "
+        "changes the gradient heuristically, so the projection's chain rule cannot be "
+        "applied to it");
+  }
 }
 
 Scalar TopologyOptimizer::penalty_for_iteration(int iteration) const {
@@ -153,6 +220,28 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
   }
   result.feasible = result.constraint_violation <= options_.constraint_tolerance;
   result.linear_solves = objective.num_solves();
+  result.projected = objective.projection();
+  result.final_beta = objective.projection() ? objective.projection_beta() : 0.0;
+  result.projection_eta = objective.projection() ? objective.projection_eta() : 0.0;
+  result.filtered_density = eval.filtered_density;
+  result.linear_iterations = objective.total_linear_iterations();
+  if (objective.solver() != nullptr) {
+    result.linear_solver = objective.solver()->name();
+    if (const AmgStats* stats = objective.solver()->amg_stats()) {
+      result.has_amg_stats = true;
+      result.amg_stats = *stats;
+    }
+  }
+  if (options_.projection.enabled &&
+      result.final_beta < options_.projection.beta_max) {
+    std::ostringstream os;
+    os << "the projection continuation reached beta = " << result.final_beta
+       << " of beta_max = " << options_.projection.beta_max
+       << " before the iteration cap; the design is less crisp than configured. Raise "
+          "optimizer.max_iterations or lower projection.beta_interval";
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
 
   if (options_.history_stride > 0 &&
       (result.snapshot_iterations.empty() ||
@@ -166,10 +255,20 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
     os << "the optimiser reached the iteration cap (" << options_.max_iterations
        << ") without meeting either convergence criterion: the last design change was "
        << result.final_design_change << " against a tolerance of "
-       << options_.change_tolerance << ", and the relative compliance change over "
-       << options_.objective_window << " iterations was "
-       << result.final_objective_change << " against a tolerance of "
-       << options_.objective_tolerance;
+       << options_.change_tolerance << ", and ";
+    if (std::isfinite(result.final_objective_change)) {
+      os << "the relative compliance spread over the last "
+         << options_.objective_window + 1 << " iterations was "
+         << result.final_objective_change << " against a tolerance of "
+         << options_.objective_tolerance;
+    } else {
+      // Fewer compliances than the window holds, counted from the start or
+      // from the last projection step (the window restarts there).
+      os << "the relative compliance spread could not be measured: it needs "
+         << options_.objective_window + 1
+         << " iterations since the start or the last projection step, and the run "
+            "ended before it had them";
+    }
     if (result.method == OptimizerMethod::MMA) {
       os << " (largest constraint value " << result.constraint_violation
          << " against the feasibility tolerance " << options_.constraint_tolerance << ")";
@@ -211,11 +310,15 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
 
   ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
                                 options_.analysis);
+  BetaSchedule beta_schedule(options_.projection);
+  if (beta_schedule.enabled()) {
+    objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+  }
 
-  const auto volume_of_design = [this](const Vector& xi) {
-    Vector rho = filter_.to_physical(xi);
-    rho = rho.cwiseMax(0.0).cwiseMin(1.0);
-    return domain_.volume_of(rho);
+  // The bisection's volume is that of the physical (filtered and, when on,
+  // projected) density the update would produce.
+  const auto volume_of_design = [this, &objective](const Vector& xi) {
+    return domain_.volume_of(objective.physical_density(xi));
   };
 
   Vector x = domain_.initial_design();
@@ -230,6 +333,12 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
     log::info("  continuation: penalty ", options_.penalty_start, " -> ",
               options_.simp.penalty, " in ", options_.continuation_steps, " stages of ",
               options_.continuation_iterations, " iterations");
+  }
+  if (beta_schedule.enabled()) {
+    log::info("  Heaviside projection: eta ", options_.projection.eta, ", beta ",
+              options_.projection.beta_start, " -> ", options_.projection.beta_max,
+              " (x", options_.projection.beta_factor, " every ",
+              options_.projection.beta_interval, " iterations or on convergence)");
   }
 
   std::vector<Scalar> compliance_history;
@@ -266,6 +375,8 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
     record.gray_level = gray_level(eval.physical_density);
     record.bisections = step.bisections;
     record.volume_converged = step.volume_converged;
+    record.beta = beta_schedule.beta();
+    record.linear_iterations = eval.linear_iterations;
     record.seconds = iter_timer.elapsed_seconds();
     result.history.push_back(record);
     compliance_history.push_back(eval.compliance);
@@ -278,7 +389,7 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
 
     log::info("iter ", iteration, ": c = ", eval.compliance, " J, vf = ",
               eval.volume_fraction, ", dx = ", step.max_change, ", p = ", penalty,
-              ", grey = ", record.gray_level);
+              ", grey = ", record.gray_level, iteration_extras(record));
 
     x = step.x;
     domain_.clamp(x);
@@ -291,23 +402,14 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
         iteration >= options_.continuation_iterations *
                          (options_.continuation_steps - 1);
     const bool change_ok = step.max_change <= options_.change_tolerance;
-    bool objective_ok = false;
-    Scalar objective_change = std::numeric_limits<Scalar>::infinity();
-    {
-      const int w = std::max(options_.objective_window, 1);
-      if (static_cast<int>(compliance_history.size()) > w) {
-        const Scalar recent = compliance_history.back();
-        const Scalar older = compliance_history[compliance_history.size() - 1 - w];
-        objective_change =
-            std::abs(recent - older) / std::max(std::abs(recent), 1.0e-30);
-        objective_ok = options_.objective_tolerance > 0.0 &&
-                       objective_change <= options_.objective_tolerance;
-      }
-    }
+    const Scalar objective_change =
+        objective_spread(compliance_history, options_.objective_window);
+    const bool objective_ok = options_.objective_tolerance > 0.0 &&
+                              objective_change <= options_.objective_tolerance;
     result.final_design_change = step.max_change;
     result.final_objective_change = objective_change;
 
-    if (at_final_penalty && (change_ok || objective_ok)) {
+    if (at_final_penalty && beta_schedule.at_final() && (change_ok || objective_ok)) {
       result.converged = true;
       result.stop_reason = change_ok ? "design_change" : "objective_stall";
       if (change_ok) {
@@ -315,13 +417,19 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
                   step.max_change, " <= ", options_.change_tolerance);
       } else {
         log::info("converged after ", iteration, " iterations: relative compliance "
-                  "change over ", options_.objective_window, " iterations = ",
-                  objective_change, " <= ", options_.objective_tolerance,
-                  " (design change ", step.max_change, " is still above ",
-                  options_.change_tolerance,
+                  "spread over the last ", options_.objective_window + 1,
+                  " iterations = ", objective_change, " <= ",
+                  options_.objective_tolerance, " (design change ", step.max_change,
+                  " is still above ", options_.change_tolerance,
                   ", so a few variables are still oscillating between bounds)");
       }
       break;
+    }
+    if (beta_schedule.advance(iteration, step.max_change, options_.change_tolerance)) {
+      objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+      compliance_history.clear();  // the objective changes with beta
+      log::info("continuation: projection beta raised to ", beta_schedule.beta(),
+                " after iteration ", iteration);
     }
   }
 
@@ -348,6 +456,10 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
 
   ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
                                 options_.analysis);
+  BetaSchedule beta_schedule(options_.projection);
+  if (beta_schedule.enabled()) {
+    objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+  }
   std::unique_ptr<StressConstraint> stress;
   if (options_.stress.enabled) {
     stress = std::make_unique<StressConstraint>(model_, assembler_, filter_,
@@ -395,6 +507,12 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     log::info("  continuation: penalty ", options_.penalty_start, " -> ",
               options_.simp.penalty, " in ", options_.continuation_steps, " stages of ",
               options_.continuation_iterations, " iterations");
+  }
+  if (beta_schedule.enabled()) {
+    log::info("  Heaviside projection: eta ", options_.projection.eta, ", beta ",
+              options_.projection.beta_start, " -> ", options_.projection.beta_max,
+              " (x", options_.projection.beta_factor, " every ",
+              options_.projection.beta_interval, " iterations or on convergence)");
   }
 
   std::vector<Scalar> compliance_history;
@@ -465,6 +583,8 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     record.max_stress_ratio = max_stress_ratio;
     record.stress_constraint = stress ? max_stress_constraint : 0.0;
     record.constraint_violation = fval.maxCoeff();
+    record.beta = beta_schedule.beta();
+    record.linear_iterations = eval.linear_iterations + objective.adjoint_iterations();
     record.seconds = iter_timer.elapsed_seconds();
     result.history.push_back(record);
     compliance_history.push_back(eval.compliance);
@@ -479,7 +599,7 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
               eval.volume_fraction, ", dx = ", step.max_change, ", p = ", penalty,
               ", grey = ", record.gray_level, ", g_max = ", record.constraint_violation,
               (stress ? ", stress ratio = " : ""), (stress ? max_stress_ratio : 0.0),
-              ", mma iters = ", step.subproblem_iterations);
+              ", mma iters = ", step.subproblem_iterations, iteration_extras(record));
 
     const bool at_final_penalty =
         options_.continuation_steps <= 1 ||
@@ -487,19 +607,10 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
                          (options_.continuation_steps - 1);
     const bool feasible = fval.maxCoeff() <= options_.constraint_tolerance;
     const bool change_ok = step.max_change <= options_.change_tolerance;
-    bool objective_ok = false;
-    Scalar objective_change = std::numeric_limits<Scalar>::infinity();
-    {
-      const int w = std::max(options_.objective_window, 1);
-      if (static_cast<int>(compliance_history.size()) > w) {
-        const Scalar recent = compliance_history.back();
-        const Scalar older = compliance_history[compliance_history.size() - 1 - w];
-        objective_change =
-            std::abs(recent - older) / std::max(std::abs(recent), 1.0e-30);
-        objective_ok = options_.objective_tolerance > 0.0 &&
-                       objective_change <= options_.objective_tolerance;
-      }
-    }
+    const Scalar objective_change =
+        objective_spread(compliance_history, options_.objective_window);
+    const bool objective_ok = options_.objective_tolerance > 0.0 &&
+                              objective_change <= options_.objective_tolerance;
     result.final_design_change = step.max_change;
     result.final_objective_change = objective_change;
 
@@ -507,11 +618,12 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     // iterate is the design returned: the feasibility and stationarity it
     // reports would not be guaranteed for the (unevaluated) update, which under
     // the objective-stall criterion can still differ by up to the move limit.
-    if (at_final_penalty && feasible && (change_ok || objective_ok)) {
+    if (at_final_penalty && beta_schedule.at_final() && feasible &&
+        (change_ok || objective_ok)) {
       result.converged = true;
       result.stop_reason = change_ok ? "design_change" : "objective_stall";
       log::info("converged after ", iteration, " iterations (", result.stop_reason,
-                "): max |dx| = ", step.max_change, ", relative compliance change = ",
+                "): max |dx| = ", step.max_change, ", relative compliance spread = ",
                 objective_change, ", largest constraint value = ", fval.maxCoeff(),
                 "; the returned design is this evaluated iterate");
       break;
@@ -522,6 +634,12 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
       scales[l] = stress->next_scale(scales[l], stress_evals[l]);
     }
     x = x_new;
+    if (beta_schedule.advance(iteration, step.max_change, options_.change_tolerance)) {
+      objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+      compliance_history.clear();  // the objective changes with beta
+      log::info("continuation: projection beta raised to ", beta_schedule.beta(),
+                " after iteration ", iteration);
+    }
   }
 
   // Converged runs return the last evaluated iterate; a run that hit the

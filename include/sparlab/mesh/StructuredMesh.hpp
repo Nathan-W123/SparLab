@@ -1,5 +1,6 @@
 /// \file StructuredMesh.hpp
-/// \brief Generators for structured Q4 grids and structured Hex8 grids.
+/// \brief Generators for structured Q4 and Hex8 grids, and the triangle and
+///        tetrahedron meshes obtained by splitting their cells.
 ///
 /// 2-D node numbering (nx = elements along x, ny = elements along y):
 /// \code
@@ -23,6 +24,16 @@
 /// and each hexahedron lists its bottom face (z = z_k) counter-clockwise seen
 /// from +z followed by the top face in the same order, which is the VTK
 /// hexahedron convention.
+///
+/// The simplex generators split every cell of the corresponding grid: a
+/// quadrilateral into two triangles along alternating diagonals (so the mesh
+/// has no preferred direction), a hexahedron into the six Kuhn tetrahedra
+/// that share its main diagonal from corner 0 to corner 6. Both splits are
+/// conforming across cells, and the elements of cell `c` are numbered
+/// `2 c, 2 c + 1` and `6 c ... 6 c + 5` respectively. They exist for
+/// verification (the same box as the Q4 / Hex8 studies, deterministic) and
+/// for decks that want simplices on a box; real geometry comes from a mesh
+/// file (MeshReader.hpp).
 #pragma once
 
 #include "sparlab/mesh/Mesh.hpp"
@@ -71,6 +82,24 @@ Mesh make_perturbed_quad_mesh(const StructuredMeshSpec& spec, Scalar perturbatio
 /// \param perturbation fraction of the cell size, in [0, 0.35).
 Mesh make_perturbed_hex_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed = 12345u);
+
+/// Structured Tri3 mesh: every Q4 cell of `make_structured_quad_mesh(spec)`
+/// split into two counter-clockwise triangles, along the diagonal 0-2 in cells
+/// with i + j even and 1-3 otherwise.
+Mesh make_structured_tri_mesh(const StructuredMeshSpec& spec);
+
+/// Structured Tet4 mesh: every Hex8 cell of `make_structured_hex_mesh(spec)`
+/// split into six positively oriented Kuhn tetrahedra.
+Mesh make_structured_tet_mesh(const StructuredMeshSpec& spec);
+
+/// The perturbed quad / hex meshes above, split the same way (identical node
+/// positions for the same seed), for patch tests on distorted simplices.
+/// \{
+Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                             unsigned int seed = 12345u);
+Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                             unsigned int seed = 12345u);
+/// \}
 
 /// Convenience accessors for structured grids (used by tests and selectors).
 /// The two-index forms address a 2-D grid; the three-index forms a 3-D grid.

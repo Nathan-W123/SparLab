@@ -171,16 +171,19 @@ def stacked_panels(n: int, width: float = 7.0, panel_height: float = 2.2):
     return fig, list(axes)
 
 
-def title(ax, text: str, subtitle: Optional[str] = None) -> None:
+def title(ax, text: str, subtitle: Optional[str] = None,
+          wrap: int = SUBTITLE_WRAP) -> None:
     """Left-aligned panel title with an optional smaller subtitle beneath it.
 
     The subtitle is placed in offset *points* above the axes and the title is
     padded to clear it, so the two never overlap however tall the panel is.
+    `wrap` is the line length in characters; pass a smaller value for a panel
+    narrower than the figure (one sharing its row with a colour bar).
     """
     if not subtitle:
         ax.set_title(text, loc="left")
         return
-    wrapped = textwrap.fill(subtitle, SUBTITLE_WRAP)
+    wrapped = textwrap.fill(subtitle, wrap)
     lines = wrapped.count("\n") + 1
     ax.annotate(
         wrapped, xy=(0.0, 1.0), xycoords="axes fraction", xytext=(0.0, 4.0),

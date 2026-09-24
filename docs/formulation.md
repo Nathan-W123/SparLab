@@ -228,6 +228,49 @@ The fully integrated Hex8 shares the Q4's stiffness in bending: it needs
 several elements through a bending depth, which the 3-D mesh-convergence
 study quantifies (`docs/verification.md`).
 
+### The linear simplices
+
+Meshes read from a mesh generator are mostly triangles and tetrahedra, so
+SparLab also has the three-node triangle (`elements/Tri3.cpp`, plane) and
+the four-node tetrahedron (`elements/Tet4.cpp`, solid). Their shape functions
+are the barycentric coordinates, linear in `x`:
+
+```
+  Tri3:  N_a = (alpha_a + beta_a x + gamma_a y) / (2 A)
+  Tet4:  N_a = (a_a + b_a x + c_a y + d_a z) / (6 V)
+```
+
+so `grad N_a` - and with it `B`, the strain and the stress - is constant over
+the cell, and the element matrices have closed forms:
+
+```
+  K_e = t A B^T D B            (Tri3, B 3 x 6)
+  K_e = V B^T D B              (Tet4, B 6 x 12)
+
+  M_e = rho t A / 12 (1 + delta_ab) I_2      (Tri3, node blocks)
+  M_e = rho V / 20 (1 + delta_ab) I_3        (Tet4, node blocks)
+```
+
+which is the exact consistent mass. A traction on a straight edge (a flat
+triangular face) splits its resultant equally over the two (three) nodes. A
+cell with non-positive area or volume raises `MeshError` naming the element
+and its measure; the file readers re-order mirrored cells before that point,
+so the error means a folded cell, not a node-order convention. Stresses are
+reported at the centroid, which is exact for a constant-strain element.
+
+The structured generators split each Q4 into two triangles, with the
+diagonal alternating from cell to cell so there is no preferred direction,
+and each Hex8 into the six Kuhn tetrahedra around its `0-6` diagonal, which
+cuts every face of the grid along the same diagonal from both sides and so
+stays conforming. The same box then exists as Q4, Tri3, Hex8 and Tet4 meshes
+with identical nodes, which is what the simplex verification studies use.
+
+Constant-strain elements lock in bending: a linear field cannot represent
+the linearly varying strain through a beam's depth. They reproduce every
+constant-strain state exactly (the patch test) but converge on a bending
+problem more slowly per unknown than the bilinear and trilinear elements,
+which the simplex mesh-convergence study measures (`docs/verification.md`).
+
 ## 3. Assembly
 
 `fem/Assembler.cpp` builds a triplet list and compresses it to CSC:
@@ -244,6 +287,17 @@ On a **uniform structured mesh** all cells are geometrically identical, so
 `K_e^0` and `M_e^0` are integrated once and reused; this is the dominant saving
 in an optimisation loop. The generic per-element path is always available, and
 the test suite asserts the two produce bit-comparable matrices.
+
+Every assembly after the first reuses the **sparsity pattern**. The first
+call records, per element, where each of its node blocks lands in the CSC
+arrays of `K` (and of the reduced `K_ff`); later calls scatter the scaled
+element matrices straight into those slots, in element order, which is the
+order the triplet path sums duplicates in - so the result is bitwise
+identical to `setFromTriplets`, which a test asserts, while skipping the sort
+and the triplet storage. On the 830 115-DOF Hex8 block of the scaling
+benchmark this took the assembly from 12.4 s to about 1 s and the peak memory
+of the run from 4.8 GB to 3.9 GB. A zero scale factor on some element falls
+back to the triplet path, whose pattern would differ.
 
 ## 4. Boundary conditions and the reduced system
 
@@ -281,13 +335,15 @@ the assembly and the solve rather than an identity of the post-processing.
 
 ## 5. Linear solvers
 
-| Name | Eigen type | Use |
-|------|------------|-----|
-| `simplicial_ldlt` (default) | `SimplicialLDLT` with AMD ordering | SPD systems; reports non-positive or tiny pivots as a singular system |
-| `simplicial_llt` | `SimplicialLLT` with AMD | strictly SPD |
-| `sparse_lu` | `SparseLU` with COLAMD | indefinite systems |
-| `conjugate_gradient` | `ConjugateGradient`, Jacobi preconditioner | large systems, iterative |
-| `dense_lu` | `PartialPivLU` | verification of small models; refuses above 4000 DOFs |
+| Name | Implementation | Use |
+|------|----------------|-----|
+| `auto` (default) | `simplicial_ldlt` up to 50 000 free unknowns in 2-D and 10 000 in 3-D, `amg_cg` above | every deck that does not name a solver |
+| `simplicial_ldlt` | Eigen `SimplicialLDLT` with AMD ordering | the reference; SPD systems; reports non-positive or tiny pivots as a singular system |
+| `amg_cg` | CG preconditioned by SparLab's smoothed-aggregation multigrid (`fem/Multigrid.cpp`) | large systems, 3-D above all |
+| `conjugate_gradient` | Eigen `ConjugateGradient`, Jacobi preconditioner | the baseline that shows what multigrid buys |
+| `simplicial_llt` | Eigen `SimplicialLLT` with AMD | strictly SPD |
+| `sparse_lu` | Eigen `SparseLU` with COLAMD | indefinite systems |
+| `dense_lu` | Eigen `PartialPivLU` | verification of small models; refuses above 4000 DOFs |
 
 After every solve the scaled residual `||A x - b|| / max(||b||, tiny)` is
 compared with `solver.linear.residual_tolerance`. Exceeding it raises
@@ -295,6 +351,81 @@ compared with `solver.linear.residual_tolerance`. Exceeding it raises
 LDL^T path additionally inspects its pivots: a non-positive pivot, or a
 `min/max` pivot ratio below `pivot_tolerance`, is reported as a singular system
 together with the three modelling causes that usually produce it.
+
+### Why an iterative solver
+
+A sparse Cholesky factorisation of a 3-D stiffness matrix fills in. With a
+nested-dissection-quality ordering its cost grows like `n^2` and its memory
+like `n^(4/3)`, and the AMD ordering used here does somewhat worse: on the
+Hex8 block of the scaling benchmark the factor holds about 560 entries per
+unknown at 28 413 unknowns, against about 70 in `K` itself. Conjugate
+gradients needs only products with `K`; the question is how many.
+Preconditioned only by its diagonal, CG needs `O(sqrt(kappa))` iterations
+and `kappa` grows like `h^-2`, so the count doubles with every halving of
+the element size. A multigrid preconditioner keeps it nearly constant.
+
+### Smoothed-aggregation multigrid
+
+`fem/Multigrid.cpp` builds the hierarchy of Vanek, Mandel and Brezina (1996)
+on `A_0 = K_ff`. On each level:
+
+1. **strength of connection** between two nodes `I`, `J` compares the
+   Frobenius norms of the matrix blocks,
+   `||A_IJ||_F >= theta sqrt(||A_II||_F ||A_JJ||_F)` with `theta = 0.02`, so
+   a weak link - solid next to SIMP void - does not glue two aggregates
+   together;
+2. **aggregation** groups each node with its strongly connected neighbours,
+   greedily in node order in three passes;
+3. **tentative prolongator.** The near-null space `B` is the rigid-body
+   modes (two translations and a rotation in 2-D; three and three in 3-D),
+   built from the node coordinates of the free unknowns. Restricted to each
+   aggregate and orthonormalised by a rank-revealing QR, `B_a = Q_a R_a`,
+   `Q_a` becomes the aggregate's block of `P_hat` and `R_a` its rows of the
+   coarse near-null space, so `P_hat B_c = B` exactly - the coarse space
+   represents every rigid motion of every aggregate;
+4. **prolongator smoothing** `P = (I - omega D^-1 A) P_hat` with
+   `omega = (4/3) / lambda_max(D^-1 A)`, the eigenvalue estimated by twelve
+   Lanczos steps;
+5. **Galerkin coarse operator** `A_{l+1} = P^T A_l P`, symmetrised, which
+   keeps every level symmetric positive definite.
+
+The recursion stops at 1500 unknowns, where a dense LDL^T factorisation
+solves exactly. A coarsest pivot below `1e-13` of the largest means a rigid
+body mode reached the coarse level - the model is under-constrained - and is
+reported as such; the SIMP stiffness floor of `1e-9` stays orders of
+magnitude above that.
+
+One V-cycle, with a degree-3 Chebyshev smoother in `D^-1 A` on the interval
+`[lambda_max / 30, 1.1 lambda_max]` before and after the coarse correction
+(or a forward and a backward Gauss-Seidel sweep), is a symmetric
+positive-definite operator, so the outer method is plain preconditioned CG,
+stopped at `||b - A x|| <= tol ||b||` (`iterative_tolerance`, `1e-12` by
+default). CG restarts from the true residual up to twice. When the
+recursively updated residual meets the tolerance but the true residual
+`b - A x` does not, and a restart no longer halves it, that is the accuracy
+with which `b - A x` can be evaluated in floating point, and the solve is
+accepted - the residual check above (`residual_tolerance`, `1e-8`) still
+applies to it. A solve that exhausts its iteration budget raises
+`ConvergenceError` naming the residual reached, the hierarchy and the keys
+to change.
+
+**In an optimisation loop** the matrix changes every iteration but its
+pattern does not. The aggregates, the tentative prolongators and the
+sparsity of every product are kept (`reuse_aggregates`), and only the
+numerical part - smoothing, the Galerkin products, the smoother bounds and
+the coarse factorisation - is redone; a test checks the reused hierarchy
+equals a fresh one bit for bit. Each state and adjoint solve starts from the
+previous iteration's solution of the same load case (`warm_start`).
+
+**Determinism.** Every parallel kernel either writes rows independently
+(matrix-vector and matrix-matrix products, the Chebyshev smoother) or runs
+sequentially (aggregation, Gauss-Seidel), and every inner product sums
+fixed-size chunks in a fixed order, so results are bitwise identical for any
+number of OpenMP threads, which a test asserts.
+
+The measured behaviour - iteration counts under refinement, time and memory
+against the direct solver, agreement with it - is in `docs/verification.md`
+and `docs/benchmarks.md`.
 
 ## 6. Stress recovery
 
@@ -405,8 +536,12 @@ aggregated stress constraint with its adjoint.
 
 The discrete problem a deck defines is exported verbatim - the same nodes,
 connectivity, supports and consistent nodal loads - to CalculiX (`*.inp`,
-elements CPS4/CPE4/C3D8) and rebuilt in scikit-fem (`ElementQuad1` /
-`ElementHex1` with the same Lame constants, `lambda* = 2 lambda G / (lambda +
-2G)` for plane stress), and the three nodal displacement fields are compared
-node by node. `docs/verification.md` has the measured differences and what
-they mean.
+elements CPS4/CPE4, CPS3/CPE3, C3D8, C3D4) and rebuilt in scikit-fem
+(`ElementQuad1`, `ElementTriP1`, `ElementHex1`, `ElementTetP1` with the same
+Lame constants, `lambda* = 2 lambda G / (lambda + 2G)` for plane stress), and
+the three nodal displacement fields are compared node by node. CalculiX's
+plane elements are not plane elements internally: it expands them into a
+layer of solid elements, which reproduces plane stress only for `nu = 0`, so
+a plane comparison at `nu != 0` compares two idealisations and is recorded
+without being judged. `docs/verification.md` has the measured differences
+and what they mean.

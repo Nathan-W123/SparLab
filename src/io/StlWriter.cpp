@@ -77,8 +77,13 @@ TriangleSurface boundary_surface(const Mesh& mesh, Scalar thickness) {
     for (Index n = 0; n < mesh.num_nodes(); ++n) surface.points.push_back(mesh.node(n));
     surface.faces.reserve(2 * faces.size());
     for (const Mesh::BoundaryFace& f : faces) {
-      if (f.nodes.size() != 4) throw IoError("expected quadrilateral boundary faces");
-      emit_quad(surface, f.nodes[0], f.nodes[1], f.nodes[2], f.nodes[3]);
+      if (f.nodes.size() == 4) {
+        emit_quad(surface, f.nodes[0], f.nodes[1], f.nodes[2], f.nodes[3]);
+      } else if (f.nodes.size() == 3) {
+        surface.faces.push_back({f.nodes[0], f.nodes[1], f.nodes[2]});
+      } else {
+        throw IoError("expected triangular or quadrilateral boundary faces");
+      }
     }
     return surface;
   }

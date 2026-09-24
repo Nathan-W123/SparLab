@@ -230,7 +230,7 @@ TEST_CASE("selectors pick the expected nodes and elements", "[selector]") {
     REQUIRE(group.select_nodes(mesh).size() == 10);
 
     group.invert = true;
-    REQUIRE(group.select_nodes(mesh).size() == mesh.num_nodes() - 10);
+    REQUIRE(static_cast<Index>(group.select_nodes(mesh).size()) == mesh.num_nodes() - 10);
   }
 
   SECTION("nearest node picks exactly one") {

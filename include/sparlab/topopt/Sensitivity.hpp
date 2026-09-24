@@ -37,6 +37,7 @@
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
+#include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/SimpInterpolation.hpp"
 
 #include <memory>
@@ -46,7 +47,12 @@ namespace sparlab {
 
 /// Objective, constraint and gradients at one design point.
 struct ObjectiveEvaluation {
-  Vector physical_density;        ///< \f$\tilde\rho\f$ [-]
+  /// Physical density [-]: the filtered density, projected when the Heaviside
+  /// projection is on (\f$\bar\rho\f$), otherwise \f$\tilde\rho\f$ itself.
+  Vector physical_density;
+  Vector filtered_density;        ///< \f$\tilde\rho\f$ [-]
+  /// \f$d\bar\rho/d\tilde\rho\f$; empty when the projection is off.
+  Vector projection_derivative;
   Vector stiffness_factors;       ///< \f$E(\tilde\rho)/E_0\f$ [-]
   Scalar compliance = 0.0;        ///< weighted compliance [J]
   std::vector<Scalar> load_case_compliance;  ///< per load case [J]
@@ -60,6 +66,9 @@ struct ObjectiveEvaluation {
   Scalar max_scaled_residual = 0.0;
   Scalar solve_seconds = 0.0;
   Scalar assemble_seconds = 0.0;
+  /// Iterations of the iterative linear solver summed over the load cases
+  /// (0 for a direct solver).
+  int linear_iterations = 0;
 };
 
 /// Evaluates the weighted compliance objective and its gradients.
@@ -80,6 +89,23 @@ class ComplianceObjective {
   SimpOptions& simp() { return simp_; }
   const SimpOptions& simp() const { return simp_; }
 
+  /// Switch the Heaviside projection on with sharpness `beta` and threshold
+  /// `eta` (the optimiser raises beta during continuation), or off.
+  /// \throws ConfigError with the sensitivity filter, which has no chain rule.
+  void set_projection(Scalar beta, Scalar eta);
+  void disable_projection() { projection_ = false; }
+  bool projection() const { return projection_; }
+  Scalar projection_beta() const { return beta_; }
+  Scalar projection_eta() const { return eta_; }
+
+  /// Physical density of a design: filtered, clamped to [0, 1], projected.
+  Vector physical_density(const Vector& x) const;
+
+  /// Chain a derivative with respect to the physical density back to the
+  /// design variables through the projection and the filter, using the
+  /// state of evaluation `eval`.
+  Vector chain_to_design(const ObjectiveEvaluation& eval, const Vector& d_dphysical) const;
+
   Index num_solves() const { return num_solves_; }
 
   /// Solve \f$K(\tilde\rho)\,\lambda = r\f$ with the factorisation of the last
@@ -87,7 +113,20 @@ class ComplianceObjective {
   /// adjoint solve behind every non-self-adjoint sensitivity, e.g. the stress
   /// constraint; it costs one back-substitution.
   /// \throws ModelError before the first evaluation.
-  Vector solve_adjoint(const Vector& rhs);
+  /// `slot` >= 0 names a recurring adjoint problem (one per load case, say):
+  /// its previous solution seeds an iterative solver.
+  Vector solve_adjoint(const Vector& rhs, int slot = -1);
+
+  /// Iterations of the iterative solver in the adjoint solves since the last
+  /// `evaluate` call.
+  int adjoint_iterations() const { return adjoint_iterations_; }
+
+  /// Iterative-solver iterations of every solve so far (0 for a direct solver).
+  Index total_linear_iterations() const { return total_linear_iterations_; }
+
+  /// The linear solver kept across design iterations (its multigrid
+  /// hierarchy and statistics), or nullptr before the first evaluation.
+  const LinearSolver* solver() const { return solver_.get(); }
 
   const FemModel& model() const { return model_; }
   const Assembler& assembler() const { return assembler_; }
@@ -101,9 +140,20 @@ class ComplianceObjective {
   SimpOptions simp_;
   StaticAnalysisOptions analysis_options_;
   std::vector<Scalar> weights_;
+  bool projection_ = false;
+  Scalar beta_ = 1.0;
+  Scalar eta_ = 0.5;
   Index num_solves_ = 0;
+  /// One solver for the whole optimisation (a multigrid hierarchy is reused;
+  /// a direct factorisation is simply recomputed).
+  std::unique_ptr<LinearSolver> solver_;
   /// Factorisation of the last evaluated design, kept for adjoint solves.
   std::unique_ptr<StaticAnalysis> analysis_;
+  /// Last solutions, the initial guesses of the next iterative solves.
+  std::vector<Vector> previous_displacements_;
+  std::vector<Vector> previous_adjoints_;
+  int adjoint_iterations_ = 0;
+  Index total_linear_iterations_ = 0;
 };
 
 /// Outcome of comparing an analytical gradient entry with central differences.
@@ -123,6 +173,12 @@ struct SensitivityCheckResult {
   Index num_excluded = 0;
   Scalar max_absolute_error = 0.0;
   Scalar max_relative_error = 0.0;
+  /// Largest error with each entry judged against max(|analytical|, |FD|,
+  /// 1e-3 ||gradient||_inf): entries far below the gradient's own scale -
+  /// numerous under a sharp projection, whose derivative is ~0 away from the
+  /// threshold - are compared with the absolute round-off floor of a central
+  /// difference rather than with themselves.
+  Scalar max_scaled_error = 0.0;
   Scalar rms_relative_error = 0.0;
   Scalar gradient_infinity_norm = 0.0;
   /// Relative error of the directional derivative along the full gradient,

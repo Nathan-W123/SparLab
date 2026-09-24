@@ -13,7 +13,8 @@ own `mesh.json` and CalculiX decks - is solved by
 
   * CalculiX (`ccx`), from the exported `calculix_<load case>.inp`, and
   * scikit-fem, assembled in this script from `mesh.json` with the linear
-    isotropic elasticity form on ElementQuad1 / ElementHex1,
+    isotropic elasticity form on ElementQuad1 / ElementHex1 / ElementTriP1 /
+    ElementTetP1,
 
 and the nodal displacements are compared with SparLab's `displacement_<load
 case>.csv` node by node. Reported per code and load case:
@@ -29,12 +30,17 @@ agree (1e-10 and better); the tolerance is 1e-7. CalculiX writes its nodal
 results to the .frd file with six significant digits, so even for C3D8 - the
 same element as SparLab's Hex8 - the comparison is bounded below by that
 rounding: half a unit in the sixth digit of the largest displacement, 5e-6
-relative. The CalculiX tolerance is therefore 1e-5 for both element families,
-and the summary records the rounding floor next to the measured difference.
-CalculiX's CPS4 plane-stress element is *expanded* into a solid through the
-thickness with the plane-stress condition imposed on the expanded element,
-which is a different discretisation of the plane problem; how close it lands
-is measured, not assumed.
+relative. The same holds for C3D4, the linear tetrahedron. The CalculiX
+tolerance is therefore 1e-5 for every element family, and the summary records
+the rounding floor next to the measured difference. CalculiX's plane elements
+(CPS4, CPS3) are *expanded* into solids through the thickness with the
+plane-stress condition imposed on the expanded element, which is a different
+discretisation of the plane problem. It coincides with plane stress only
+for a Poisson ratio of zero: measured on the Gmsh lug bracket, CPS3 agrees to
+the .frd rounding floor at nu = 0 (2.8e-6) and differs by about 1e-3 at
+nu = 0.33. A plane comparison with nu != 0 is therefore reported as an
+informational comparison between two idealisations, and scikit-fem - the same
+plane element - is the verification for those cases.
 
 Nothing here recomputes SparLab's numbers: they are read from the run.
 """
@@ -122,14 +128,22 @@ def solve_with_skfem(mesh: Mesh, youngs: float, poisson: float, thickness: float
                      ) -> np.ndarray:
     """Solve the same problem with scikit-fem; returns (num_nodes, dim)."""
     import skfem
-    from skfem import Basis, ElementHex1, ElementQuad1, ElementVector, MeshHex, MeshQuad
+    from skfem import (Basis, ElementHex1, ElementQuad1, ElementTetP1, ElementTriP1,
+                       ElementVector, MeshHex, MeshQuad, MeshTet, MeshTri)
     from skfem import asm, condense, solve
     from skfem.models.elasticity import lame_parameters, linear_elasticity
 
     dim = mesh.dim
     # scikit-fem wants (dim, nodes) and (corners, elements) arrays, C-ordered.
     p = np.ascontiguousarray(mesh.nodes.T.astype(float))
-    if dim == 2:
+    if mesh.element_type == "Tri3":
+        # Linear simplices: any vertex order describes the same element.
+        m = MeshTri(p, np.ascontiguousarray(mesh.elements.T))
+        element = ElementVector(ElementTriP1())
+    elif mesh.element_type == "Tet4":
+        m = MeshTet(p, np.ascontiguousarray(mesh.elements.T))
+        element = ElementVector(ElementTetP1())
+    elif dim == 2:
         # scikit-fem's quad corners are ordered (0,0), (0,1), (1,1), (1,0) on
         # its reference square; SparLab stores them counter-clockwise, so the
         # second and fourth corners swap.
@@ -217,8 +231,10 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
         "stress_state": stress_state,
         "load_cases": [],
     }
-    ccx_type = {"Quad4": "CPE4" if stress_state == "plane_strain" else "CPS4",
-                "Hex8": "C3D8"}[element_type]
+    plane_strain = stress_state == "plane_strain"
+    ccx_type = {"Quad4": "CPE4" if plane_strain else "CPS4",
+                "Tri3": "CPE3" if plane_strain else "CPS3",
+                "Hex8": "C3D8", "Tet4": "C3D4"}[element_type]
 
     for name in mesh.load_case_names:
         ours = sparlab_displacement(case, name)
@@ -232,7 +248,8 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
         stats = compare(sk, ours)
         stats["tolerance"] = tolerances["skfem"]
         stats["passed"] = stats["max_rel_diff"] <= tolerances["skfem"]
-        stats["element"] = {"Quad4": "ElementQuad1", "Hex8": "ElementHex1"}[element_type]
+        stats["element"] = {"Quad4": "ElementQuad1", "Hex8": "ElementHex1",
+                            "Tri3": "ElementTriP1", "Tet4": "ElementTetP1"}[element_type]
         entry["codes"]["scikit-fem"] = stats
 
         # --- CalculiX ---
@@ -246,11 +263,22 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
                 ref = parse_frd_displacements(frd, mesh.num_nodes)[:, : mesh.dim]
             if np.isnan(ref).any():
                 raise ResultError(f"CalculiX returned no displacement for some nodes of {name}")
-            key = "calculix_solid" if ccx_type == "C3D8" else "calculix_plane"
+            key = "calculix_solid" if ccx_type in ("C3D8", "C3D4") else "calculix_plane"
             stats = compare(ref, ours)
             stats["tolerance"] = tolerances[key]
-            stats["passed"] = stats["max_rel_diff"] <= tolerances[key]
             stats["element"] = ccx_type
+            poisson = float(material["poisson_ratio"])
+            if key == "calculix_plane" and poisson != 0.0:
+                # Not the same discrete problem (see the module docstring):
+                # recorded, not judged.
+                stats["passed"] = None
+                stats["comparison"] = (
+                    f"different idealisation: CalculiX expands {ccx_type} into a 3-D "
+                    f"layer, which matches plane stress only for nu = 0 (here nu = "
+                    f"{poisson:g}); informational")
+            else:
+                stats["passed"] = stats["max_rel_diff"] <= tolerances[key]
+                stats["comparison"] = "same discrete problem"
             # Six significant digits in the .frd file: half a unit in the last
             # digit of the largest value, relative to that value.
             stats["frd_rounding_floor_rel"] = 5.0e-6
@@ -289,17 +317,17 @@ def main(argv=None) -> int:
                   "independent solutions of the same discrete problem"),
         "codes": {
             "scikit-fem": {"version": skfem.__version__,
-                           "note": "same element formulation (bilinear/trilinear "
-                                   "isoparametric, full integration); differences are "
-                                   "linear-solver round-off"},
+                           "note": "same element formulations (bilinear/trilinear "
+                                   "isoparametric with full integration, linear "
+                                   "simplices); differences are linear-solver round-off"},
             "calculix": {"version": None if args.skip_calculix else calculix_version(),
-                         "note": "C3D8 is the same element as SparLab's Hex8; CPS4/CPE4 "
-                                 "are plane elements CalculiX expands through the "
-                                 "thickness, a different discretisation of the plane "
-                                 "problem. Nodal results are read from the .frd file, "
-                                 "which carries six significant digits, so differences "
-                                 "below 5e-6 relative are its rounding, not a "
-                                 "disagreement"},
+                         "note": "C3D8 and C3D4 are the same elements as SparLab's Hex8 "
+                                 "and Tet4; CPS4/CPS3 (CPE4/CPE3) are plane elements "
+                                 "CalculiX expands through the thickness, a different "
+                                 "discretisation of the plane problem. Nodal results are "
+                                 "read from the .frd file, which carries six significant "
+                                 "digits, so differences below 5e-6 relative are its "
+                                 "rounding, not a disagreement"},
         },
         "tolerances": tolerances,
         "cases": [],
@@ -314,10 +342,14 @@ def main(argv=None) -> int:
         summary["cases"].append(report)
         for lc in report["load_cases"]:
             for code, stats in lc["codes"].items():
-                all_passed = all_passed and stats["passed"]
-                print(f"  {report['case']:<24} {lc['load_case']:<14} {code:<11} "
+                if stats["passed"] is None:
+                    verdict = "INFO (different idealisation)"
+                else:
+                    all_passed = all_passed and stats["passed"]
+                    verdict = "PASS" if stats["passed"] else "FAIL"
+                print(f"  {report['case']:<28} {lc['load_case']:<14} {code:<11} "
                       f"{stats['element']:<12} max rel diff {stats['max_rel_diff']:.3e} "
-                      f"(tol {stats['tolerance']:.0e}) {'PASS' if stats['passed'] else 'FAIL'}")
+                      f"(tol {stats['tolerance']:.0e}) {verdict}")
     summary["all_passed"] = all_passed
     os.makedirs(args.output, exist_ok=True)
     path = os.path.join(args.output, "summary.json")

@@ -8,6 +8,8 @@
 ///   "name": "cantilever_beam",
 ///   "mesh":     { "type": "structured_quad", "nx":.., "ny":.., "lx":.., "ly":.. },
 ///               // or { "type": "structured_hex", "nx","ny","nz", "lx","ly","lz" }
+///               // or "structured_tri" / "structured_tet" with the same keys
+///               // or { "type": "file", "path": "part.msh", "scale": 0.001 }
 ///   "material": { "youngs_modulus":.., "poisson_ratio":.., "density":.. },
 ///   "model":    { "thickness":.., "stress_state": "plane_stress" },
 ///   "boundary_conditions": [ { "fix": ["x","y"], "region": {..} } ],
@@ -19,11 +21,16 @@
 /// }
 /// \endcode
 ///
-/// The mesh type fixes the spatial dimension of the whole deck: a
-/// `structured_hex` mesh takes three-entry vectors, may fix `z`, and uses the
-/// three-dimensional constitutive law; a `structured_quad` mesh takes
-/// two-entry vectors and a plane stress state. Mixing the two is an error
-/// rather than a silently truncated component.
+/// The mesh fixes the spatial dimension of the whole deck: a solid mesh
+/// (`structured_hex`, `structured_tet`, or a file of tetrahedra / hexahedra)
+/// takes three-entry vectors, may fix `z`, and uses the three-dimensional
+/// constitutive law; a plane mesh (`structured_quad`, `structured_tri`, or a
+/// file of triangles / quadrilaterals) takes two-entry vectors and a plane
+/// stress state. Mixing the two is an error rather than a silently truncated
+/// component. A mesh file is therefore read while the deck is parsed; its
+/// `path` is relative to the deck's own directory, and its physical groups
+/// (Gmsh) or *NSET / *ELSET cards (Abaqus) become regions through
+/// `{"group": "<name>"}`.
 ///
 /// Every numeric field is in SI units. Unknown keys are reported (not ignored),
 /// because a misspelled key that silently takes its default is a direct route
@@ -36,24 +43,40 @@
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/io/Json.hpp"
+#include "sparlab/io/MeshReader.hpp"
 #include "sparlab/mesh/StructuredMesh.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace sparlab {
 
-/// Mesh generators a deck can name.
+/// Mesh sources a deck can name.
 enum class MeshKind {
   StructuredQuad,  ///< "structured_quad": 2-D Q4 grid
-  StructuredHex    ///< "structured_hex": 3-D Hex8 grid
+  StructuredHex,   ///< "structured_hex": 3-D Hex8 grid
+  StructuredTri,   ///< "structured_tri": the Q4 grid, each cell split into 2 Tri3
+  StructuredTet,   ///< "structured_tet": the Hex8 grid, each cell split into 6 Tet4
+  File             ///< "file": an unstructured Gmsh (.msh) or Abaqus (.inp) mesh
 };
 
 std::string to_string(MeshKind kind);
+
+/// True for the generated box meshes, whose resolution a deck (or `--nx`)
+/// sets; false for a mesh read from a file, whose resolution the mesher set.
+bool is_structured(MeshKind kind);
+
+/// A mesh read from a file.
+struct MeshFileConfig {
+  std::string path;           ///< as written in the deck
+  std::string resolved_path;  ///< resolved against the deck's directory
+  MeshReadOptions read;
+};
 
 struct ModalConfig {
   bool enabled = false;
@@ -94,7 +117,13 @@ class Configuration {
   std::string source_path;
 
   MeshKind mesh_kind = MeshKind::StructuredQuad;
-  StructuredMeshSpec mesh_spec;
+  StructuredMeshSpec mesh_spec;   ///< structured kinds
+  MeshFileConfig mesh_file;       ///< MeshKind::File
+  /// The mesh read from `mesh_file` while parsing (shared by copies of the
+  /// configuration, which the thinned-plate comparison makes), and what the
+  /// reader found.
+  std::shared_ptr<const Mesh> file_mesh;
+  MeshReadReport mesh_report;
   Scalar thickness = 1.0;
   StressState stress_state = StressState::PlaneStress;
   IntegrationOptions integration;
@@ -111,8 +140,12 @@ class Configuration {
   /// was requested.
   json::Value document;
 
-  /// Spatial dimension implied by the mesh type (2 or 3).
-  int dim() const { return mesh_kind == MeshKind::StructuredHex ? 3 : 2; }
+  /// Spatial dimension implied by the mesh (2 or 3).
+  int dim() const;
+
+  /// One-line description of the mesh source for messages and summaries,
+  /// e.g. "structured_tet 40 x 20 x 10" or "file 'bracket.msh' (Tri3)".
+  std::string describe_mesh() const;
 
   const IsotropicMaterial& material() const;
   void set_material(IsotropicMaterial material);
@@ -127,10 +160,14 @@ class Configuration {
 /// Parse a configuration from an already-parsed document.
 /// \param source name used in error messages.
 /// \param strict when true, unknown keys raise ConfigError instead of a warning.
+/// \param base_directory directory a relative mesh-file path is resolved
+///        against; empty means the current working directory.
 Configuration parse_configuration(const json::Value& document, const std::string& source,
-                                  bool strict = false);
+                                  bool strict = false,
+                                  const std::string& base_directory = "");
 
-/// Read and parse a configuration file.
+/// Read and parse a configuration file; a relative mesh-file path is resolved
+/// against the file's own directory.
 Configuration load_configuration(const std::string& path, bool strict = false);
 
 /// Build the mesh described by a configuration (without the model).

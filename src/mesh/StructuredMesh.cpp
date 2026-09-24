@@ -3,8 +3,11 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 
+#include <Eigen/Geometry>
+
 #include <random>
 #include <sstream>
+#include <utility>
 
 namespace sparlab {
 namespace {
@@ -38,6 +41,56 @@ void check_counts_3d(const StructuredMeshSpec& spec) {
        << " m)";
     throw ConfigError(os.str());
   }
+}
+
+/// Split every Q4 of a structured grid into two triangles. Alternating the
+/// diagonal between neighbouring cells removes the directional bias a single
+/// diagonal direction would give the stiffness.
+Mesh split_into_triangles(const Mesh& quads, const StructuredMeshSpec& spec) {
+  std::vector<Index> connectivity;
+  connectivity.reserve(static_cast<std::size_t>(quads.num_elements()) * 6);
+  for (Index j = 0; j < spec.ny; ++j) {
+    for (Index i = 0; i < spec.nx; ++i) {
+      const Index* n = quads.element_nodes(j * spec.nx + i);
+      if ((i + j) % 2 == 0) {
+        connectivity.insert(connectivity.end(), {n[0], n[1], n[2], n[0], n[2], n[3]});
+      } else {
+        connectivity.insert(connectivity.end(), {n[0], n[1], n[3], n[1], n[2], n[3]});
+      }
+    }
+  }
+  Mesh mesh(quads.coordinates(), std::move(connectivity), ElementType::Tri3);
+  mesh.validate();
+  return mesh;
+}
+
+/// Split every Hex8 into the six Kuhn tetrahedra around the diagonal from
+/// local corner 0 to corner 6. Each tetrahedron follows one monotone path
+/// 0 -> 6 along the cell edges; every face of the cube is then cut along the
+/// diagonal joining its lowest and highest corners, which is the same
+/// diagonal the neighbouring cell uses, so the split is conforming. Paths
+/// that are odd permutations of (x, y, z) come out negatively oriented and
+/// get two nodes swapped.
+Mesh split_into_tetrahedra(const Mesh& hexes) {
+  static const int paths[6][4] = {{0, 1, 2, 6}, {0, 1, 5, 6}, {0, 3, 2, 6},
+                                  {0, 3, 7, 6}, {0, 4, 5, 6}, {0, 4, 7, 6}};
+  const Matrix& x = hexes.coordinates();
+  std::vector<Index> connectivity;
+  connectivity.reserve(static_cast<std::size_t>(hexes.num_elements()) * 24);
+  for (Index e = 0; e < hexes.num_elements(); ++e) {
+    const Index* n = hexes.element_nodes(e);
+    for (const auto& path : paths) {
+      Index t[4] = {n[path[0]], n[path[1]], n[path[2]], n[path[3]]};
+      const Vector3 a = x.col(t[1]) - x.col(t[0]);
+      const Vector3 b = x.col(t[2]) - x.col(t[0]);
+      const Vector3 c = x.col(t[3]) - x.col(t[0]);
+      if (a.dot(b.cross(c)) < 0.0) std::swap(t[1], t[2]);
+      connectivity.insert(connectivity.end(), {t[0], t[1], t[2], t[3]});
+    }
+  }
+  Mesh mesh(hexes.coordinates(), std::move(connectivity), ElementType::Tet4);
+  mesh.validate();
+  return mesh;
 }
 
 StructuredGridInfo grid_info(const StructuredMeshSpec& spec, bool three_d, bool uniform) {
@@ -266,6 +319,24 @@ Mesh make_perturbed_hex_mesh(const StructuredMeshSpec& spec, Scalar perturbation
              " with interior nodes displaced by up to ", perturbation,
              " of the cell size");
   return perturbed;
+}
+
+Mesh make_structured_tri_mesh(const StructuredMeshSpec& spec) {
+  return split_into_triangles(make_structured_quad_mesh(spec), spec);
+}
+
+Mesh make_structured_tet_mesh(const StructuredMeshSpec& spec) {
+  return split_into_tetrahedra(make_structured_hex_mesh(spec));
+}
+
+Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                             unsigned int seed) {
+  return split_into_triangles(make_perturbed_quad_mesh(spec, perturbation, seed), spec);
+}
+
+Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                             unsigned int seed) {
+  return split_into_tetrahedra(make_perturbed_hex_mesh(spec, perturbation, seed));
 }
 
 }  // namespace sparlab

@@ -14,6 +14,8 @@
 #   make study       run the aerospace parametric design study
 #   make scaling     run the runtime scaling benchmarks (2-D and 3-D)
 #   make figures     regenerate every figure and the animation
+#   make meshes      regenerate the Gmsh meshes of the real-geometry decks
+#                    (needs the gmsh Python package; the meshes are committed)
 #   make results     refresh the result tables committed under docs/results
 #   make all         build, test, verify, benchmarks, study, scaling, figures
 #   make clean       remove the build directory
@@ -30,7 +32,7 @@ PYTHON      ?= python3
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 
 .PHONY: all configure build test verify cross-validation benchmark benchmarks \
-        study scaling figures results clean distclean help
+        study scaling figures meshes results clean distclean help
 
 help:
 	@sed -n '3,30p' Makefile
@@ -64,6 +66,9 @@ scaling: build
 
 figures:
 	./scripts/make_figures.sh $(RESULTS_DIR) docs/figures
+
+meshes:
+	$(PYTHON) python/scripts/make_meshes.py --output configs/meshes
 
 results:
 	$(PYTHON) python/scripts/write_result_tables.py --results $(RESULTS_DIR) \

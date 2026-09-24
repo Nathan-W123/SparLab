@@ -22,12 +22,20 @@
 ///                        Poisson ratios;
 ///   * `modal`            cantilever bending frequencies vs mesh size against
 ///                        Euler-Bernoulli theory;
-///   * `solver-agreement` all five linear solvers on one small model;
+///   * `solver-agreement` every linear solver (four direct, Jacobi CG,
+///                        multigrid CG and the automatic choice) on one
+///                        small model;
 ///   * `patch-test`       constant-strain patch test on a distorted mesh;
 ///   * `patch-test-3d`    the same on a distorted Hex8 mesh;
 ///   * `mesh-convergence-3d` solid (Hex8) cantilever vs Timoshenko theory;
 ///   * `sensitivity-3d`   the finite-difference gradient check on a hex mesh;
-///   * `modal-3d`         solid cantilever frequencies about both axes.
+///   * `modal-3d`         solid cantilever frequencies about both axes;
+///   * `patch-test-simplex` the patch test on distorted Tri3 and Tet4 meshes;
+///   * `mesh-convergence-simplex` Tri3 and Tet4 cantilevers vs Timoshenko;
+///   * `multigrid`        multigrid CG against Cholesky and Jacobi CG under
+///                        refinement (Hex8 and Tet4);
+///   * `sensitivity-projection` the gradient check through the Heaviside
+///                        projection at three sharpnesses.
 
 #include "AppSupport.hpp"
 
@@ -42,6 +50,7 @@
 #include "sparlab/io/CsvWriter.hpp"
 #include "sparlab/io/Json.hpp"
 #include "sparlab/mesh/StructuredMesh.hpp"
+#include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/Sensitivity.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
@@ -642,7 +651,8 @@ StudyOutcome study_solver_agreement(const std::string& out_dir, json::Value& sum
 
   const std::vector<LinearSolverType> types = {
       LinearSolverType::SimplicialLdlt, LinearSolverType::SimplicialLlt,
-      LinearSolverType::SparseLu, LinearSolverType::ConjugateGradient,
+      LinearSolverType::SparseLu,       LinearSolverType::ConjugateGradient,
+      LinearSolverType::AmgCg,          LinearSolverType::Auto,
       LinearSolverType::DenseLu};
 
   CsvWriter csv(path_join(out_dir, "solver_agreement.csv"),
@@ -666,6 +676,9 @@ StudyOutcome study_solver_agreement(const std::string& out_dir, json::Value& sum
     options.linear.type = type;
     options.linear.residual_tolerance = 1.0e-7;
     options.linear.iterative_tolerance = 1.0e-14;
+    // A small coarse size gives the 130-unknown model a real three-level
+    // hierarchy instead of a single direct solve.
+    options.linear.amg.coarse_size = 16;
     Timer timer;
     StaticAnalysis analysis(model, assembler, options);
     const std::vector<StaticSolution> solutions = analysis.solve_all();
@@ -1366,6 +1379,538 @@ StudyOutcome study_modal_3d(const std::string& out_dir, json::Value& summary) {
   return outcome;
 }
 
+// ---------------------------------------------------------------------------
+// Linear simplices, multigrid and projection
+// ---------------------------------------------------------------------------
+
+/// Largest relative errors of displacement, strain and stress when a linear
+/// field is prescribed on the boundary of `mesh` (any element type).
+struct PatchErrors {
+  Scalar displacement = 0.0;
+  Scalar strain = 0.0;
+  Scalar stress = 0.0;
+};
+
+PatchErrors run_patch(Mesh mesh) {
+  const int dim = mesh.dim();
+  const IsotropicMaterial material(200.0e9, 0.3, 7850.0, "patch_steel");
+  FemModel model(std::move(mesh), material, dim == 2 ? 0.02 : 1.0,
+                 dim == 2 ? StressState::PlaneStress : StressState::ThreeDimensional,
+                 IntegrationOptions());
+  Matrix3 g;
+  g << 3.0e-4, 1.0e-4, -0.5e-4,
+       1.0e-4, -2.0e-4, 0.7e-4,
+       -0.5e-4, 0.7e-4, 1.5e-4;
+  const Vector3 offset(1.0e-4, -2.0e-4, 0.5e-4);
+  if (dim == 2) {
+    g.row(2).setZero();
+    g.col(2).setZero();
+  }
+  std::vector<char> on_boundary(static_cast<std::size_t>(model.mesh().num_nodes()), 0);
+  for (const Mesh::BoundaryFace& f : model.mesh().boundary_faces()) {
+    for (Index n : f.nodes) on_boundary[static_cast<std::size_t>(n)] = 1;
+  }
+  std::vector<Index> boundary;
+  for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+    if (on_boundary[static_cast<std::size_t>(n)]) boundary.push_back(n);
+  }
+  DisplacementConstraint bc;
+  Selector sel;
+  sel.kind = SelectorKind::NodeIds;
+  sel.ids = boundary;
+  bc.region.members.push_back(sel);
+  bc.fix_x = bc.fix_y = true;
+  bc.fix_z = dim == 3;
+  model.constraints().push_back(bc);
+  LoadCaseSpec load;
+  load.name = "patch";
+  load.prescribed_displacement_only = true;
+  model.load_case_specs().push_back(load);
+  model.finalize();
+  for (Index n : boundary) {
+    const Vector3 u = offset + g * model.mesh().node(n);
+    for (int k = 0; k < dim; ++k) model.dofs().prescribe(n, k, u(k));
+  }
+  Assembler assembler(model);
+  StaticAnalysisOptions options;
+  options.linear.type = LinearSolverType::SimplicialLdlt;
+  options.linear.residual_tolerance = 1.0e-9;
+  StaticAnalysis analysis(model, assembler, options);
+  const Vector u = analysis.solve_all().front().displacement;
+
+  PatchErrors out;
+  Scalar u_scale = 0.0;
+  for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+    const Vector3 expected = offset + g * model.mesh().node(n);
+    for (int k = 0; k < dim; ++k) {
+      out.displacement = std::max(out.displacement, std::abs(u(n * dim + k) - expected(k)));
+      u_scale = std::max(u_scale, std::abs(expected(k)));
+    }
+  }
+  out.displacement /= u_scale;
+  Vector strain;
+  Vector stress;
+  if (dim == 2) {
+    const Vector3 e(g(0, 0), g(1, 1), g(0, 1) + g(1, 0));
+    strain = e;
+    stress = material.plane_stress_matrix() * e;
+  } else {
+    Vector6 e;
+    e << g(0, 0), g(1, 1), g(2, 2), g(0, 1) + g(1, 0), g(1, 2) + g(2, 1), g(2, 0) + g(0, 2);
+    strain = e;
+    stress = material.three_dimensional_matrix() * e;
+  }
+  const StressField field = recover_stresses(model, assembler, u);
+  for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+    out.strain = std::max(out.strain, (Vector(field.element_strain.col(e)) - strain)
+                                          .cwiseAbs()
+                                          .maxCoeff());
+    out.stress = std::max(out.stress, (Vector(field.element_stress.col(e)) - stress)
+                                          .cwiseAbs()
+                                          .maxCoeff());
+  }
+  out.strain /= strain.cwiseAbs().maxCoeff();
+  out.stress /= stress.cwiseAbs().maxCoeff();
+  return out;
+}
+
+/// Constant-strain patch test on distorted Tri3 and Tet4 meshes.
+StudyOutcome study_patch_test_simplex(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "patch_test_simplex.csv"),
+                {"element", "perturbation[-]", "num_elements",
+                 "relative_displacement_error[-]", "relative_strain_error[-]",
+                 "relative_stress_error[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst = 0.0;
+  for (const ElementType type : {ElementType::Tri3, ElementType::Tet4}) {
+    const std::vector<Scalar> perturbations =
+        type == ElementType::Tri3 ? std::vector<Scalar>{0.0, 0.2, 0.4}
+                                  : std::vector<Scalar>{0.0, 0.15, 0.3};
+    for (Scalar perturbation : perturbations) {
+      StructuredMeshSpec spec;
+      spec.nx = type == ElementType::Tri3 ? 5 : 3;
+      spec.ny = type == ElementType::Tri3 ? 4 : 3;
+      spec.nz = 3;
+      spec.lx = 1.5;
+      spec.ly = 1.0;
+      spec.lz = 1.2;
+      Mesh mesh = type == ElementType::Tri3
+                      ? make_perturbed_tri_mesh(spec, perturbation, 20240917u)
+                      : make_perturbed_tet_mesh(spec, perturbation, 20240917u);
+      const Index ne = mesh.num_elements();
+      const PatchErrors e = run_patch(std::move(mesh));
+      worst = std::max({worst, e.displacement, e.strain, e.stress});
+      csv.raw_row({to_string(type), app::format(perturbation, 3),
+                   app::format(static_cast<Scalar>(ne), 9), app::format(e.displacement, 4),
+                   app::format(e.strain, 4), app::format(e.stress, 4)});
+      json::Value rec = json::Value::make_object();
+      rec.set("element", json::Value::make_string(to_string(type)));
+      rec.set("perturbation", json::Value::make_number(perturbation));
+      rec.set("num_elements", json::Value::make_number(ne));
+      rec.set("relative_displacement_error", json::Value::make_number(e.displacement));
+      rec.set("relative_strain_error", json::Value::make_number(e.strain));
+      rec.set("relative_stress_error", json::Value::make_number(e.stress));
+      records.push_back(rec);
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("max_relative_error", json::Value::make_number(worst));
+  summary.set("patch_test_simplex", block);
+
+  StudyOutcome outcome;
+  outcome.name = "patch test (constant strain, distorted Tri3 and Tet4 meshes)";
+  outcome.kind = "verification";
+  outcome.metric = "max relative displacement / strain / stress error";
+  outcome.value = worst;
+  outcome.tolerance = 1.0e-10;
+  outcome.passed = worst <= outcome.tolerance;
+  return outcome;
+}
+
+/// Mean deflection over the nodes of the tip section x = L.
+Scalar tip_mean_deflection(const FemModel& model, const Vector& u, Scalar length) {
+  const int dim = model.dim();
+  Scalar sum = 0.0;
+  Index count = 0;
+  for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+    if (model.mesh().node(n).x() >= length - 1.0e-12) {
+      sum += u(n * dim + 1);
+      ++count;
+    }
+  }
+  return sum / static_cast<Scalar>(count);
+}
+
+/// Linear-triangle and linear-tetrahedron cantilevers against beam theory.
+StudyOutcome study_mesh_convergence_simplex(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "mesh_convergence_simplex.csv"),
+                {"element", "nx", "ny", "nz", "num_elements", "num_dofs", "h[m]",
+                 "tip_mean[m]", "timoshenko[m]", "rel_error_timoshenko[-]",
+                 "compliance[J]", "reaction_rel_error[-]", "solver", "solve_seconds[s]"});
+  json::Value blocks = json::Value::make_object();
+  Scalar worst_finest = 0.0;
+  std::ostringstream note;
+  for (const ElementType type : {ElementType::Tri3, ElementType::Tet4}) {
+    const bool solid = type == ElementType::Tet4;
+    CantileverSpec plane;
+    SolidCantileverSpec spec3;
+    const Scalar reference = solid ? timoshenko_tip_3d(spec3) : timoshenko_tip(plane);
+    const std::vector<std::array<Index, 3>> grids =
+        solid ? std::vector<std::array<Index, 3>>{{16, 2, 1}, {32, 4, 2}, {64, 8, 4},
+                                                  {96, 12, 6}, {128, 16, 8}}
+              : std::vector<std::array<Index, 3>>{{20, 2, 0}, {40, 4, 0}, {80, 8, 0},
+                                                  {160, 16, 0}, {320, 32, 0}};
+    std::vector<Scalar> tips;
+    std::vector<Scalar> sizes;
+    json::Value records = json::Value::make_array();
+    for (const auto& grid : grids) {
+      StructuredMeshSpec ms;
+      ms.nx = grid[0];
+      ms.ny = grid[1];
+      ms.nz = std::max<Index>(grid[2], 1);
+      ms.lx = solid ? spec3.length : plane.length;
+      ms.ly = solid ? spec3.height : plane.height;
+      ms.lz = spec3.width;
+      const IsotropicMaterial material =
+          solid ? IsotropicMaterial(spec3.youngs, spec3.poisson, spec3.density, "tet")
+                : IsotropicMaterial(plane.youngs, plane.poisson, plane.density, "tri");
+      FemModel model(solid ? make_structured_tet_mesh(ms) : make_structured_tri_mesh(ms),
+                     material, solid ? 1.0 : plane.thickness,
+                     solid ? StressState::ThreeDimensional : StressState::PlaneStress,
+                     IntegrationOptions());
+      DisplacementConstraint root;
+      Selector box;
+      box.kind = SelectorKind::Box;
+      box.xmax = 0.0;
+      root.region.members.push_back(box);
+      root.fix_x = root.fix_y = true;
+      root.fix_z = solid;
+      model.constraints().push_back(root);
+      LoadCaseSpec load;
+      load.name = "tip_load";
+      PointLoadSpec tip;
+      Selector tip_box;
+      tip_box.kind = SelectorKind::Box;
+      tip_box.xmin = ms.lx;
+      tip.region.members.push_back(tip_box);
+      tip.force = Vector3(0.0, solid ? spec3.tip_load : plane.tip_load, 0.0);
+      tip.distribute_total = true;
+      load.point_loads.push_back(tip);
+      model.load_case_specs().push_back(load);
+      model.finalize();
+      Assembler assembler(model);
+      Timer timer;
+      StaticAnalysis analysis(model, assembler, StaticAnalysisOptions());
+      const StaticSolution sol = analysis.solve_all().front();
+      const Scalar seconds = timer.elapsed_seconds();
+      const Scalar tip_mean = tip_mean_deflection(model, sol.displacement, ms.lx);
+      const Scalar h = ms.lx / static_cast<Scalar>(ms.nx);
+      tips.push_back(tip_mean);
+      sizes.push_back(h);
+      const Scalar error = std::abs(tip_mean - reference) / std::abs(reference);
+      csv.raw_row({to_string(type), app::format(static_cast<Scalar>(grid[0]), 6),
+                   app::format(static_cast<Scalar>(grid[1]), 6),
+                   app::format(static_cast<Scalar>(grid[2]), 6),
+                   app::format(static_cast<Scalar>(model.mesh().num_elements()), 9),
+                   app::format(static_cast<Scalar>(model.dofs().num_dofs()), 9),
+                   app::format(h, 6), app::format(tip_mean, 12), app::format(reference, 12),
+                   app::format(error, 6), app::format(sol.compliance, 12),
+                   app::format(sol.equilibrium.relative_force_error, 4), sol.solver_name,
+                   app::format(seconds, 4)});
+      json::Value rec = json::Value::make_object();
+      rec.set("nx", json::Value::make_number(grid[0]));
+      rec.set("num_dofs", json::Value::make_number(model.dofs().num_dofs()));
+      rec.set("h_m", json::Value::make_number(h));
+      rec.set("tip_mean_m", json::Value::make_number(tip_mean));
+      rec.set("relative_error_vs_timoshenko", json::Value::make_number(error));
+      rec.set("solver", json::Value::make_string(sol.solver_name));
+      rec.set("solver_iterations", json::Value::make_number(sol.solver_iterations));
+      records.push_back(rec);
+    }
+    std::vector<Scalar> errors;
+    for (std::size_t i = 0; i + 1 < tips.size(); ++i) {
+      errors.push_back(std::abs(tips[i] - tips.back()) / std::abs(tips.back()));
+    }
+    const std::size_t k = errors.size();
+    const Scalar order = k >= 2 ? observed_order(sizes[k - 2], errors[k - 2], sizes[k - 1],
+                                                 errors[k - 1])
+                                : 0.0;
+    const Scalar finest = std::abs(tips.back() - reference) / std::abs(reference);
+    worst_finest = std::max(worst_finest, finest);
+    json::Value block = json::Value::make_object();
+    block.set("records", records);
+    block.set("observed_convergence_order_tip_deflection", json::Value::make_number(order));
+    block.set("finest_mesh_relative_error_vs_timoshenko", json::Value::make_number(finest));
+    blocks.set(to_string(type), block);
+    note << to_string(type) << ": finest error " << app::format(100.0 * finest, 3)
+         << " %, observed order " << app::format(order, 3) << "; ";
+  }
+  csv.close();
+  blocks.set("kind", json::Value::make_string("verification (self-convergence) + "
+                                              "validation (Timoshenko beam theory)"));
+  blocks.set("note", json::Value::make_string(
+                         "The same cantilevers as the Q4 and Hex8 studies on meshes made by "
+                         "splitting their cells (2 triangles per quadrilateral, 6 Kuhn "
+                         "tetrahedra per hexahedron). Constant-strain simplices lock in "
+                         "bending, so the deflection approaches the beam value from below "
+                         "and more slowly than with the bilinear / trilinear elements."));
+  summary.set("mesh_convergence_simplex", blocks);
+
+  StudyOutcome outcome;
+  outcome.name = "mesh convergence (Tri3 and Tet4 cantilever tip deflection)";
+  outcome.kind = "verification + validation";
+  outcome.metric = "larger finest-mesh relative error vs Timoshenko";
+  outcome.value = worst_finest;
+  outcome.tolerance = 0.03;
+  outcome.passed = worst_finest <= outcome.tolerance;
+  outcome.note = note.str();
+  return outcome;
+}
+
+/// Multigrid-preconditioned CG against the Cholesky factorisation and against
+/// Jacobi-preconditioned CG, as the mesh is refined.
+StudyOutcome study_multigrid(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "multigrid_scaling.csv"),
+                {"element", "nx", "num_dofs", "amg_iterations", "amg_levels",
+                 "operator_complexity", "amg_seconds[s]", "jacobi_iterations",
+                 "jacobi_seconds[s]", "ldlt_seconds[s]", "relative_difference_vs_ldlt[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst_difference = 0.0;
+  Scalar worst_growth = 0.0;
+  std::ostringstream note;
+  for (const ElementType type : {ElementType::Hex8, ElementType::Tet4}) {
+    const std::vector<Index> sizes = type == ElementType::Hex8
+                                         ? std::vector<Index>{8, 16, 32, 48}
+                                         : std::vector<Index>{6, 12, 24, 36};
+    std::vector<int> amg_counts;
+    for (Index nx : sizes) {
+      StructuredMeshSpec ms;
+      ms.nx = nx;
+      ms.ny = nx / 2;
+      ms.nz = std::max<Index>(1, nx / 4);
+      ms.lx = 2.0;
+      ms.ly = 1.0;
+      ms.lz = 0.5;
+      FemModel model(type == ElementType::Hex8 ? make_structured_hex_mesh(ms)
+                                               : make_structured_tet_mesh(ms),
+                     IsotropicMaterial(70.0e9, 0.3, 2700.0, "mg"), 1.0,
+                     StressState::ThreeDimensional, IntegrationOptions());
+      DisplacementConstraint root;
+      Selector box;
+      box.kind = SelectorKind::Box;
+      box.xmax = 0.0;
+      root.region.members.push_back(box);
+      root.fix_x = root.fix_y = root.fix_z = true;
+      model.constraints().push_back(root);
+      LoadCaseSpec load;
+      load.name = "tip";
+      PointLoadSpec p;
+      Selector corner;
+      corner.kind = SelectorKind::NearestNode;
+      corner.point = Vector3(2.0, 0.0, 0.0);
+      p.region.members.push_back(corner);
+      p.force = Vector3(0.0, -1000.0, 0.0);
+      load.point_loads.push_back(p);
+      model.load_case_specs().push_back(load);
+      model.finalize();
+      Assembler assembler(model);
+      const auto solve = [&](LinearSolverType t, Scalar* seconds, int* iterations,
+                             int* levels, Scalar* complexity) {
+        StaticAnalysisOptions o;
+        o.linear.type = t;
+        o.linear.iterative_tolerance = 1.0e-10;
+        o.linear.max_iterations = 20000;
+        Timer timer;
+        StaticAnalysis analysis(model, assembler, o);
+        const StaticSolution sol = analysis.solve_all().front();
+        *seconds = timer.elapsed_seconds();
+        *iterations = sol.solver_iterations;
+        if (levels != nullptr) {
+          const AmgStats* st = analysis.solver().amg_stats();
+          *levels = st ? static_cast<int>(st->levels.size()) : 0;
+          *complexity = st ? st->operator_complexity : 0.0;
+        }
+        return sol.displacement;
+      };
+      Scalar amg_seconds = 0.0;
+      Scalar jacobi_seconds = 0.0;
+      Scalar ldlt_seconds = 0.0;
+      int amg_iterations = 0;
+      int jacobi_iterations = 0;
+      int ldlt_iterations = 0;
+      int levels = 0;
+      Scalar complexity = 0.0;
+      const Vector u_amg =
+          solve(LinearSolverType::AmgCg, &amg_seconds, &amg_iterations, &levels, &complexity);
+      solve(LinearSolverType::ConjugateGradient, &jacobi_seconds, &jacobi_iterations, nullptr,
+            nullptr);
+      const Vector u_ldlt = solve(LinearSolverType::SimplicialLdlt, &ldlt_seconds,
+                                  &ldlt_iterations, nullptr, nullptr);
+      const Scalar difference = (u_amg - u_ldlt).norm() / u_ldlt.norm();
+      worst_difference = std::max(worst_difference, difference);
+      if (levels >= 2) amg_counts.push_back(amg_iterations);
+      csv.raw_row({to_string(type), app::format(static_cast<Scalar>(nx), 6),
+                   app::format(static_cast<Scalar>(model.dofs().num_dofs()), 9),
+                   app::format(static_cast<Scalar>(amg_iterations), 6),
+                   app::format(static_cast<Scalar>(levels), 3), app::format(complexity, 4),
+                   app::format(amg_seconds, 4),
+                   app::format(static_cast<Scalar>(jacobi_iterations), 6),
+                   app::format(jacobi_seconds, 4), app::format(ldlt_seconds, 4),
+                   app::format(difference, 4)});
+      json::Value rec = json::Value::make_object();
+      rec.set("element", json::Value::make_string(to_string(type)));
+      rec.set("nx", json::Value::make_number(nx));
+      rec.set("num_dofs", json::Value::make_number(model.dofs().num_dofs()));
+      rec.set("amg_iterations", json::Value::make_number(amg_iterations));
+      rec.set("amg_levels", json::Value::make_number(levels));
+      rec.set("operator_complexity", json::Value::make_number(complexity));
+      rec.set("jacobi_iterations", json::Value::make_number(jacobi_iterations));
+      rec.set("amg_seconds", json::Value::make_number(amg_seconds));
+      rec.set("jacobi_seconds", json::Value::make_number(jacobi_seconds));
+      rec.set("ldlt_seconds", json::Value::make_number(ldlt_seconds));
+      rec.set("relative_difference_vs_ldlt", json::Value::make_number(difference));
+      records.push_back(rec);
+    }
+    // Over the sizes that form a hierarchy; smaller ones are below
+    // coarse_size and solved directly in one iteration.
+    const Scalar growth = amg_counts.empty()
+                              ? 0.0
+                              : static_cast<Scalar>(amg_counts.back()) /
+                                    static_cast<Scalar>(std::max(amg_counts.front(), 1));
+    worst_growth = std::max(worst_growth, growth);
+    if (!amg_counts.empty()) {
+      note << to_string(type) << ": AMG iterations " << amg_counts.front() << " -> "
+           << amg_counts.back() << " over the multi-level sizes; ";
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("tolerance", json::Value::make_number(1.0e-10));
+  block.set("records", records);
+  block.set("max_relative_difference_vs_ldlt", json::Value::make_number(worst_difference));
+  block.set("max_iteration_growth_coarsest_to_finest", json::Value::make_number(worst_growth));
+  summary.set("multigrid", block);
+
+  StudyOutcome outcome;
+  outcome.name = "multigrid CG (agreement with Cholesky, iterations under refinement)";
+  outcome.kind = "verification";
+  outcome.metric = "max relative displacement difference vs LDL^T";
+  outcome.value = worst_difference;
+  outcome.tolerance = 1.0e-8;
+  outcome.passed = worst_difference <= outcome.tolerance && worst_growth <= 1.6;
+  note << "iteration growth coarsest -> finest " << app::format(worst_growth, 3)
+       << " (limit 1.6)";
+  outcome.note = note.str();
+  return outcome;
+}
+
+/// Central-difference check of the compliance gradient through the Heaviside
+/// projection, on a quadrilateral and a tetrahedral mesh.
+StudyOutcome study_sensitivity_projection(const std::string& out_dir, json::Value& summary,
+                                          Scalar tolerance) {
+  CsvWriter csv(path_join(out_dir, "sensitivity_projection.csv"),
+                {"element", "beta[-]", "eta[-]", "step[-]", "num_tested",
+                 "max_relative_error[-]", "max_scaled_error[-]",
+                 "directional_relative_error[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst = 0.0;
+  for (const ElementType type : {ElementType::Quad4, ElementType::Tet4}) {
+    StructuredMeshSpec ms;
+    const bool solid = type == ElementType::Tet4;
+    ms.nx = solid ? 5 : 12;
+    ms.ny = solid ? 2 : 6;
+    ms.nz = 2;
+    ms.lx = solid ? 0.5 : 0.6;
+    ms.ly = solid ? 0.2 : 0.3;
+    ms.lz = 0.2;
+    FemModel model(solid ? make_structured_tet_mesh(ms) : make_structured_quad_mesh(ms),
+                   IsotropicMaterial(70.0e9, 0.3, 2700.0, "proj"), solid ? 1.0 : 0.01,
+                   solid ? StressState::ThreeDimensional : StressState::PlaneStress,
+                   IntegrationOptions());
+    DisplacementConstraint root;
+    Selector box;
+    box.kind = SelectorKind::Box;
+    box.xmax = 0.0;
+    root.region.members.push_back(box);
+    root.fix_x = root.fix_y = true;
+    root.fix_z = solid;
+    model.constraints().push_back(root);
+    LoadCaseSpec load;
+    load.name = "tip";
+    PointLoadSpec p;
+    Selector corner;
+    corner.kind = SelectorKind::NearestNode;
+    corner.point = Vector3(ms.lx, 0.0, 0.0);
+    p.region.members.push_back(corner);
+    p.force = Vector3(0.0, -500.0, solid ? 100.0 : 0.0);
+    load.point_loads.push_back(p);
+    model.load_case_specs().push_back(load);
+    model.finalize();
+    Assembler assembler(model);
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.5, 0.5, {});
+    StaticAnalysisOptions options;
+    options.linear.type = LinearSolverType::SimplicialLdlt;
+    options.linear.residual_tolerance = 1.0e-9;
+    ComplianceObjective objective(model, assembler, filter, domain, SimpOptions(), options);
+    Vector x = domain.initial_design();
+    for (Index e = 0; e < domain.num_elements(); ++e) {
+      const Vector3 c = model.mesh().element_centroid(e);
+      x(e) = 0.5 + 0.3 * std::sin(9.0 * c.x()) * std::cos(7.0 * c.y() + 3.0 * c.z());
+    }
+    domain.clamp(x);
+    for (Scalar beta : {2.0, 8.0, 32.0}) {
+      objective.set_projection(beta, 0.5);
+      Scalar best = std::numeric_limits<Scalar>::max();
+      for (Scalar step : {1.0e-4, 1.0e-5, 1.0e-6}) {
+        const SensitivityCheckResult check =
+            verify_sensitivities(objective, domain, x, {}, step, tolerance);
+        best = std::min(best, std::max(check.max_scaled_error,
+                                       check.directional_relative_error));
+        csv.raw_row({to_string(type), app::format(beta, 4), "0.5", app::format(step, 3),
+                     app::format(static_cast<Scalar>(check.num_tested), 6),
+                     app::format(check.max_relative_error, 4),
+                     app::format(check.max_scaled_error, 4),
+                     app::format(check.directional_relative_error, 4)});
+      }
+      worst = std::max(worst, best);
+      json::Value rec = json::Value::make_object();
+      rec.set("element", json::Value::make_string(to_string(type)));
+      rec.set("beta", json::Value::make_number(beta));
+      rec.set("best_max_scaled_or_directional_error", json::Value::make_number(best));
+      records.push_back(rec);
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("worst_best_error", json::Value::make_number(worst));
+  block.set("note", json::Value::make_string(
+                        "Each entry is judged against max(|analytical|, |FD|, 1e-3 "
+                        "||gradient||_inf): at large beta the projection's derivative "
+                        "vanishes away from the threshold, and those entries are compared "
+                        "with the round-off floor of a central difference. The "
+                        "directional derivative along the full gradient is checked as "
+                        "well."));
+  summary.set("sensitivity_projection", block);
+
+  StudyOutcome outcome;
+  outcome.name = "sensitivity through the Heaviside projection (Q4 and Tet4)";
+  outcome.kind = "verification";
+  outcome.metric =
+      "worst over beta of the best max(scaled entry error, directional error)";
+  outcome.value = worst;
+  outcome.tolerance = tolerance;
+  outcome.passed = worst <= tolerance;
+  return outcome;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1379,7 +1924,8 @@ int main(int argc, char** argv) {
           {{"--study <name>",
             "all (default) | sensitivity | mesh-convergence | modal | "
             "solver-agreement | patch-test | patch-test-3d | mesh-convergence-3d | "
-            "sensitivity-3d | modal-3d"},
+            "sensitivity-3d | modal-3d | patch-test-simplex | mesh-convergence-simplex | "
+            "multigrid | sensitivity-projection"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -1436,6 +1982,18 @@ int main(int argc, char** argv) {
     }
     if (all || study == "modal-3d") {
       outcomes.push_back(study_modal_3d(out_dir, summary));
+    }
+    if (all || study == "patch-test-simplex") {
+      outcomes.push_back(study_patch_test_simplex(out_dir, summary));
+    }
+    if (all || study == "mesh-convergence-simplex") {
+      outcomes.push_back(study_mesh_convergence_simplex(out_dir, summary));
+    }
+    if (all || study == "multigrid") {
+      outcomes.push_back(study_multigrid(out_dir, summary));
+    }
+    if (all || study == "sensitivity-projection") {
+      outcomes.push_back(study_sensitivity_projection(out_dir, summary, sensitivity_tolerance));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

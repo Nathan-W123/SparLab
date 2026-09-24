@@ -1,19 +1,25 @@
 /// \file Mesh.hpp
 /// \brief Storage-only mesh container plus validation.
 ///
-/// The mesh owns nodal coordinates and element connectivity and nothing else:
-/// materials, loads and degrees of freedom live in separate components. A mesh
-/// is either two-dimensional (Q4 cells, coordinates are 2 x n) or
-/// three-dimensional (Hex8 cells, coordinates are 3 x n); the dimension is a
-/// runtime property read from the coordinate array, and every consumer keys on
-/// `dim()` rather than on a compile-time constant. A mesh carries a single
-/// element type, but the connectivity is stored as a flat array with an
-/// explicit stride, so mixed-topology meshes only require replacing the stride
-/// with a per-element offset table.
+/// The mesh owns nodal coordinates, element connectivity and optional named
+/// node and element sets, and nothing else: materials, loads and degrees of
+/// freedom live in separate components. A mesh is either two-dimensional
+/// (Q4 or Tri3 cells, coordinates are 2 x n) or three-dimensional (Hex8 or Tet4
+/// cells, coordinates are 3 x n); the dimension is a runtime property read from
+/// the coordinate array, and every consumer keys on `dim()` rather than on a
+/// compile-time constant. A mesh carries a single element type, but the
+/// connectivity is stored as a flat array with an explicit stride, so
+/// mixed-topology meshes only require replacing the stride with a per-element
+/// offset table.
+///
+/// Named sets come from mesh files (Gmsh physical groups, Abaqus/CalculiX
+/// *NSET / *ELSET) and let a deck address a curved hole or a CAD face by name
+/// where a geometric box would not fit.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,7 +29,9 @@ namespace sparlab {
 /// Supported element topologies.
 enum class ElementType {
   Quad4,  ///< Four-node bilinear isoparametric quadrilateral (2-D).
-  Hex8    ///< Eight-node trilinear isoparametric hexahedron (3-D).
+  Hex8,   ///< Eight-node trilinear isoparametric hexahedron (3-D).
+  Tri3,   ///< Three-node linear triangle, constant strain (2-D).
+  Tet4    ///< Four-node linear tetrahedron, constant strain (3-D).
 };
 
 /// Number of nodes carried by an element topology.
@@ -32,14 +40,33 @@ int nodes_per_element(ElementType type);
 /// Spatial dimension of an element topology (2 or 3).
 int element_dimension(ElementType type);
 
+/// True for the linear simplices (Tri3, Tet4), whose strain is constant.
+bool is_simplex(ElementType type);
+
 /// Human-readable name, also used in VTK output.
 std::string to_string(ElementType type);
 
-/// Local node lists of the boundary entities of a topology: the four edges of
-/// a Q4 (two nodes each, counter-clockwise) or the six faces of a Hex8 (four
-/// nodes each, in the VTK hexahedron face convention). "Face" is used for both
-/// throughout the code base; in 2-D a face is an edge.
+/// Local node lists of the boundary entities of a topology, each wound so its
+/// right-hand normal points out of the element: the edges of a Q4 or Tri3
+/// (two nodes each, counter-clockwise), the six quadrilateral faces of a Hex8
+/// (VTK hexahedron face convention) or the four triangular faces of a Tet4.
+/// "Face" is used for all of them throughout the code base; in 2-D a face is
+/// an edge.
 const std::vector<std::vector<int>>& element_local_faces(ElementType type);
+
+/// Summary of element shape quality. The metric is 1 for an ideal cell and
+/// falls towards 0 as the cell degenerates: the minimum scaled Jacobian over
+/// the corners for Q4 and Hex8 (angle distortion), and the normalised
+/// measure-to-edge ratio for Tri3 (4 sqrt(3) A / sum l^2) and Tet4
+/// (6 sqrt(2) V / l_rms^3), which also capture slivers and needles.
+struct MeshQuality {
+  std::string metric;
+  Scalar min = 0.0;
+  Scalar mean = 0.0;
+  Index worst_element = -1;
+  Index poor_elements = 0;   ///< elements below `poor_threshold`
+  Scalar poor_threshold = 0.1;
+};
 
 /// Metadata retained when a mesh came from the structured generator. Presence
 /// of this record allows the assembler to reuse a single element stiffness
@@ -70,7 +97,8 @@ class Mesh {
   ///        equal to 2 or 3 and matching the element type.
   /// \param connectivity flat, row-major connectivity with
   ///        `nodes_per_element(type)` entries per element: counter-clockwise
-  ///        for Q4, VTK hexahedron ordering for Hex8.
+  ///        for Q4 and Tri3, VTK hexahedron ordering for Hex8, and positive
+  ///        orientation ((x1-x0) x (x2-x0) . (x3-x0) > 0) for Tet4.
   Mesh(Matrix coords, std::vector<Index> connectivity, ElementType type);
 
   Index num_nodes() const { return static_cast<Index>(coords_.cols()); }
@@ -107,9 +135,19 @@ class Mesh {
   Vector3 element_centroid(Index e) const;
 
   /// Measure of element `e`: signed area [m^2] via the shoelace formula in
-  /// 2-D (positive for counter-clockwise node ordering), volume [m^3] from the
-  /// trilinear Jacobian in 3-D (positive for a correctly ordered hexahedron).
+  /// 2-D (positive for counter-clockwise node ordering), signed volume [m^3]
+  /// in 3-D (from the trilinear Jacobian for a Hex8, the triple product for a
+  /// Tet4; positive for correctly ordered cells).
   Scalar element_measure(Index e) const;
+
+  /// Characteristic cell size [m] used to express lengths "in elements" (the
+  /// filter radius): the side of the square / cube with the mean cell measure
+  /// for Q4 and Hex8, and the mean edge length for Tri3 and Tet4, which is
+  /// what a mesh generator's size parameter means for simplices.
+  Scalar mean_element_size() const;
+
+  /// Shape-quality statistics of every element (see MeshQuality).
+  MeshQuality quality() const;
 
   /// Axis-aligned bounding box of the mesh [m].
   BoundingBox bounding_box() const;
@@ -120,6 +158,17 @@ class Mesh {
   /// Validate connectivity ranges, element measures and node degeneracy.
   /// \throws MeshError with an actionable message on the first problem found.
   void validate() const;
+
+  /// Named node sets (ascending, unique indices), e.g. from a mesh file.
+  const std::map<std::string, std::vector<Index>>& node_sets() const { return node_sets_; }
+  /// Named element sets (ascending, unique indices).
+  const std::map<std::string, std::vector<Index>>& element_sets() const {
+    return element_sets_;
+  }
+  /// Register a named set; indices are sorted and de-duplicated.
+  /// \throws MeshError for an out-of-range index or an empty name.
+  void set_node_set(const std::string& name, std::vector<Index> nodes);
+  void set_element_set(const std::string& name, std::vector<Index> elements);
 
   /// Boundary entity of the mesh: an edge (2-D) or a face (3-D) referenced by
   /// exactly one element, with its nodes in the element's local order.
@@ -134,7 +183,8 @@ class Mesh {
   std::vector<BoundaryFace> boundary_faces() const;
 
   /// Length [m] of a boundary edge (2-D) or area [m^2] of a boundary face
-  /// (3-D, bilinear quadrilateral integrated with a 2 x 2 rule).
+  /// (3-D: a bilinear quadrilateral integrated with a 2 x 2 rule, or a flat
+  /// triangle).
   Scalar face_measure(const BoundaryFace& face) const;
 
  private:
@@ -144,6 +194,12 @@ class Mesh {
   int nodes_per_element_ = 4;
   int dim_ = 2;
   std::optional<StructuredGridInfo> structured_;
+  std::map<std::string, std::vector<Index>> node_sets_;
+  std::map<std::string, std::vector<Index>> element_sets_;
 };
+
+/// Signed volume of a tetrahedron from its 3 x 4 nodal coordinates [m^3]:
+/// \f$ V = \tfrac{1}{6} (x_1 - x_0) \cdot [(x_2 - x_0) \times (x_3 - x_0)] \f$.
+Scalar tet4_volume(const Matrix& coords);
 
 }  // namespace sparlab

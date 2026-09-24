@@ -27,6 +27,10 @@ std::string calculix_element_type(const FemModel& model) {
       return model.stress_state() == StressState::PlaneStrain ? "CPE4" : "CPS4";
     case ElementType::Hex8:
       return "C3D8";
+    case ElementType::Tri3:
+      return model.stress_state() == StressState::PlaneStrain ? "CPE3" : "CPS3";
+    case ElementType::Tet4:
+      return "C3D4";
   }
   throw IoError("no CalculiX element type for this mesh");
 }

@@ -14,6 +14,15 @@
 /// polluted by scheduling noise. Observed scaling exponents are fitted by
 /// least squares on log(time) vs log(DOFs) over the largest three sizes, where
 /// the asymptotic behaviour dominates.
+///
+/// `--solver` selects the linear solver (sparse Cholesky by default, or
+/// multigrid-preconditioned CG, Jacobi CG, or the automatic choice) and
+/// `--element` the cell type, so the same table compares solvers and
+/// elements. For an iterative solver "factorize" is the multigrid setup and
+/// "solve" the CG iterations for one load case from a zero initial guess;
+/// the objective is timed with warm starts off (each repeat would otherwise
+/// start from the previous answer) but with the hierarchy's aggregates
+/// reused, which is the steady state of an optimisation loop.
 
 #include "AppSupport.hpp"
 
@@ -35,6 +44,10 @@
 #include <iostream>
 #include <vector>
 
+#if defined(SPARLAB_HAVE_OPENMP)
+#include <omp.h>
+#endif
+
 using namespace sparlab;
 
 namespace {
@@ -51,9 +64,23 @@ struct BenchRow {
   Scalar solve = 0.0;
   Scalar objective = 0.0;
   Scalar compliance = 0.0;
+  int iterations = 0;
+  int levels = 0;
+  Scalar operator_complexity = 0.0;
+  Index solver_nonzeros = 0;
 };
 
-FemModel build_bench_model(Index nx, Index ny, Index nz) {
+Mesh build_bench_mesh(ElementType element, const StructuredMeshSpec& spec) {
+  switch (element) {
+    case ElementType::Quad4: return make_structured_quad_mesh(spec);
+    case ElementType::Tri3: return make_structured_tri_mesh(spec);
+    case ElementType::Hex8: return make_structured_hex_mesh(spec);
+    case ElementType::Tet4: return make_structured_tet_mesh(spec);
+  }
+  throw ConfigError("unhandled element type");
+}
+
+FemModel build_bench_model(ElementType element, Index nx, Index ny, Index nz) {
   StructuredMeshSpec spec;
   spec.nx = nx;
   spec.ny = ny;
@@ -62,10 +89,9 @@ FemModel build_bench_model(Index nx, Index ny, Index nz) {
   spec.ly = 1.0;
   spec.lz = 0.5;
 
-  const bool solid = nz > 0;
+  const bool solid = element_dimension(element) == 3;
   IsotropicMaterial material(70.0e9, 0.3, 2700.0, "bench");
-  FemModel model(solid ? make_structured_hex_mesh(spec) : make_structured_quad_mesh(spec),
-                 material, solid ? 1.0 : 0.01,
+  FemModel model(build_bench_mesh(element, spec), material, solid ? 1.0 : 0.01,
                  solid ? StressState::ThreeDimensional : StressState::PlaneStress,
                  IntegrationOptions());
 
@@ -125,7 +151,9 @@ Scalar log_log_slope(const std::vector<Scalar>& x, const std::vector<Scalar>& y)
 int main(int argc, char** argv) {
   return app::run_guarded([&]() -> int {
     const std::vector<std::string> known = {"output", "sizes", "repeats", "aspect",
-                                            "dim", "verbosity", "help"};
+                                            "dim", "solver", "element", "tolerance",
+                                            "smoother", "no-objective", "verbosity",
+                                            "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help")) {
       return app::print_usage(
@@ -133,8 +161,13 @@ int main(int argc, char** argv) {
           {{"--sizes <list>", "comma-separated nx values (ny = nx / aspect)"},
            {"--repeats <n>", "repetitions per size; the minimum is reported"},
            {"--aspect <a>", "nx / ny ratio of the benchmark plate (default 2)"},
-           {"--dim <2|3>", "2 for the Q4 plate (default), 3 for a Hex8 block with "
-                           "nz = ny / 2"},
+           {"--dim <2|3>", "2 for a plate (default), 3 for a block with nz = ny / 2"},
+           {"--element <type>", "quad|tri (2-D) or hex|tet (3-D); default quad / hex"},
+           {"--solver <type>", "simplicial_ldlt (default), amg_cg, conjugate_gradient "
+                               "or auto"},
+           {"--tolerance <t>", "relative residual of the iterative solvers (1e-10)"},
+           {"--smoother <s>", "multigrid smoother: chebyshev (default) or gauss_seidel"},
+           {"--no-objective", "skip the objective + gradient timing"},
            {"--output <dir>", "output directory (default results/benchmark)"},
            {"--verbosity <lvl>", "trace|debug|info|warn|error|silent"},
            {"--help", "show this message"}});
@@ -148,25 +181,55 @@ int main(int argc, char** argv) {
     if (!(aspect > 0.0)) throw ConfigError("--aspect must be positive");
     const int dim = cli.integer("dim", 2);
     if (dim != 2 && dim != 3) throw ConfigError("--dim must be 2 or 3");
+    const std::string element_name = cli.value("element", dim == 2 ? "quad" : "hex");
+    ElementType element = ElementType::Quad4;
+    if (element_name == "quad") {
+      element = ElementType::Quad4;
+    } else if (element_name == "tri") {
+      element = ElementType::Tri3;
+    } else if (element_name == "hex") {
+      element = ElementType::Hex8;
+    } else if (element_name == "tet") {
+      element = ElementType::Tet4;
+    } else {
+      throw ConfigError("--element must be quad, tri, hex or tet");
+    }
+    if (element_dimension(element) != dim) {
+      throw ConfigError("--element " + element_name + " does not match --dim " +
+                        std::to_string(dim));
+    }
+    LinearSolverOptions linear;
+    linear.type = parse_linear_solver_type(cli.value("solver", "simplicial_ldlt"));
+    linear.iterative_tolerance = cli.number("tolerance", 1.0e-10);
+    if (cli.has("smoother")) linear.amg.smoother = parse_amg_smoother(cli.value("smoother"));
+    const bool run_objective = !cli.has("no-objective");
 
     std::vector<Scalar> sizes =
         cli.has("sizes") ? cli.number_list("sizes")
         : dim == 2       ? std::vector<Scalar>{20, 40, 80, 160, 240, 320}
                          : std::vector<Scalar>{8, 16, 24, 32, 40};
 
-    CsvWriter csv(path_join(out_dir, dim == 2 ? "runtime_scaling.csv"
-                                              : "runtime_scaling_3d.csv"),
+    // The default configuration keeps the historical file names.
+    std::string stem = dim == 2 ? "runtime_scaling" : "runtime_scaling_3d";
+    const bool default_element = element == (dim == 2 ? ElementType::Quad4 : ElementType::Hex8);
+    if (!default_element) stem += "_" + element_name;
+    if (linear.type != LinearSolverType::SimplicialLdlt) stem += "_" + to_string(linear.type);
+    CsvWriter csv(path_join(out_dir, stem + ".csv"),
                   {"nx", "ny", "nz", "num_elements", "num_dofs", "stiffness_nonzeros",
                    "assemble[s]", "factorize[s]", "solve[s]", "objective_gradient[s]",
-                   "compliance[J]"});
+                   "compliance[J]", "iterations", "levels", "operator_complexity",
+                   "solver_nonzeros"});
 
     std::vector<BenchRow> rows;
+    std::cout << "element " << to_string(element) << ", solver " << to_string(linear.type)
+              << "\n";
     std::cout << std::left << std::setw(8) << "nx" << std::setw(8) << "ny"
               << std::setw(8) << "nz" << std::setw(12) << "elements" << std::setw(12)
               << "DOFs"
               << std::setw(14) << "assemble[s]" << std::setw(14) << "factorize[s]"
-              << std::setw(14) << "solve[s]" << std::setw(16) << "obj+grad[s]" << "\n";
-    std::cout << std::string(98, '-') << "\n";
+              << std::setw(14) << "solve[s]" << std::setw(16) << "obj+grad[s]"
+              << std::setw(8) << "iters" << "\n";
+    std::cout << std::string(106, '-') << "\n";
 
     for (Scalar size : sizes) {
       const Index nx = static_cast<Index>(std::llround(size));
@@ -179,7 +242,7 @@ int main(int argc, char** argv) {
       row.ny = ny;
       row.nz = nz;
 
-      FemModel model = build_bench_model(nx, ny, nz);
+      FemModel model = build_bench_model(element, nx, ny, nz);
       Assembler assembler(model);
       row.num_elements = model.mesh().num_elements();
       row.num_dofs = model.dofs().num_dofs();
@@ -196,8 +259,12 @@ int main(int argc, char** argv) {
         const SparseMatrix kff = assembler.reduce_free_free(k);
         row.nonzeros = static_cast<Index>(kff.nonZeros());
 
-        LinearSolverOptions lin;
-        auto solver = make_linear_solver(lin);
+        auto solver = make_linear_solver(linear);
+        DofLayout layout;
+        layout.dim = model.dim();
+        layout.coordinates = &model.mesh().coordinates();
+        layout.unknowns = &model.dofs().free_dofs();
+        solver->set_layout(layout);
         timer.reset();
         solver->factorize(kff);
         row.factorize = std::min(row.factorize, timer.elapsed_seconds());
@@ -208,17 +275,24 @@ int main(int argc, char** argv) {
         const Vector uf = solver->solve(rhs);
         row.solve = std::min(row.solve, timer.elapsed_seconds());
         row.compliance = rhs.dot(uf);
+        row.iterations = solver->last_iterations();
+        row.solver_nonzeros = solver->storage_nonzeros();
+        if (const AmgStats* stats = solver->amg_stats()) {
+          row.levels = static_cast<int>(stats->levels.size());
+          row.operator_complexity = stats->operator_complexity;
+        }
       }
 
       // One full objective + gradient evaluation, which is the unit of cost of
       // a topology-optimisation iteration.
-      {
+      if (run_objective) {
         const Scalar cell = 2.0 / static_cast<Scalar>(nx);
-        (void)nz;
         DensityFilter filter(model.mesh(), FilterType::Density, 1.5 * cell);
         DesignDomain domain(model, 0.5, 0.5, {});
         SimpOptions simp;
         StaticAnalysisOptions options;
+        options.linear = linear;
+        options.linear.warm_start = false;
         ComplianceObjective objective(model, assembler, filter, domain, simp, options);
         const Vector x = domain.initial_design();
         for (int r = 0; r < repeats; ++r) {
@@ -229,11 +303,14 @@ int main(int argc, char** argv) {
         }
       }
 
+      if (!run_objective) row.objective = 0.0;
       csv.row({static_cast<Scalar>(row.nx), static_cast<Scalar>(row.ny),
                static_cast<Scalar>(row.nz), static_cast<Scalar>(row.num_elements),
                static_cast<Scalar>(row.num_dofs), static_cast<Scalar>(row.nonzeros),
                row.assemble, row.factorize, row.solve, row.objective,
-               row.compliance});
+               row.compliance, static_cast<Scalar>(row.iterations),
+               static_cast<Scalar>(row.levels), row.operator_complexity,
+               static_cast<Scalar>(row.solver_nonzeros)});
       rows.push_back(row);
 
       std::cout << std::left << std::setw(8) << row.nx << std::setw(8) << row.ny
@@ -241,7 +318,7 @@ int main(int argc, char** argv) {
                 << std::setw(14) << app::format(row.assemble, 4) << std::setw(14)
                 << app::format(row.factorize, 4) << std::setw(14)
                 << app::format(row.solve, 4) << std::setw(16)
-                << app::format(row.objective, 4) << "\n";
+                << app::format(row.objective, 4) << std::setw(8) << row.iterations << "\n";
     }
     csv.close();
 
@@ -268,9 +345,23 @@ int main(int argc, char** argv) {
     summary.set("repeats", json::Value::make_number(repeats));
     summary.set("estimator",
                 json::Value::make_string("minimum over repeats (least noise-polluted)"));
-    summary.set("linear_solver", json::Value::make_string("SimplicialLDLT (AMD)"));
+    summary.set("linear_solver", json::Value::make_string(to_string(linear.type)));
+    if (linear.type != LinearSolverType::SimplicialLdlt) {
+      summary.set("iterative_tolerance", json::Value::make_number(linear.iterative_tolerance));
+      json::Value amg = json::Value::make_object();
+      amg.set("smoother", json::Value::make_string(to_string(linear.amg.smoother)));
+      amg.set("smoother_degree", json::Value::make_number(linear.amg.smoother_degree));
+      amg.set("strength_threshold", json::Value::make_number(linear.amg.strength_threshold));
+      amg.set("coarse_size", json::Value::make_number(linear.amg.coarse_size));
+      summary.set("multigrid", amg);
+    }
+#if defined(SPARLAB_HAVE_OPENMP)
+    summary.set("openmp_threads", json::Value::make_number(omp_get_max_threads()));
+#else
+    summary.set("openmp_threads", json::Value::make_number(1));
+#endif
     summary.set("dim", json::Value::make_number(dim));
-    summary.set("element", json::Value::make_string(dim == 2 ? "Quad4" : "Hex8"));
+    summary.set("element", json::Value::make_string(to_string(element)));
 
     json::Value exponents = json::Value::make_object();
     exponents.set("assemble", json::Value::make_number(log_log_slope(dofs, t_assemble)));
@@ -308,17 +399,20 @@ int main(int argc, char** argv) {
       rec.set("factorize_s", json::Value::make_number(row.factorize));
       rec.set("solve_s", json::Value::make_number(row.solve));
       rec.set("objective_gradient_s", json::Value::make_number(row.objective));
+      rec.set("iterations", json::Value::make_number(row.iterations));
+      rec.set("levels", json::Value::make_number(row.levels));
+      rec.set("operator_complexity", json::Value::make_number(row.operator_complexity));
+      rec.set("solver_nonzeros", json::Value::make_number(row.solver_nonzeros));
       records.push_back(rec);
     }
     summary.set("records", records);
 
-    std::ofstream out(path_join(out_dir, dim == 2 ? "runtime_scaling.json"
-                                                    : "runtime_scaling_3d.json"));
+    std::ofstream out(path_join(out_dir, stem + ".json"));
     if (!out) throw IoError("cannot write the benchmark summary");
     out << json::dump(summary, 2) << '\n';
     out.close();
 
-    std::cout << std::string(98, '-') << "\n";
+    std::cout << std::string(106, '-') << "\n";
     std::cout << "scaling exponents vs DOFs (largest three sizes): assemble "
               << app::format(log_log_slope(dofs, t_assemble), 3) << ", factorize "
               << app::format(log_log_slope(dofs, t_factorize), 3) << ", solve "

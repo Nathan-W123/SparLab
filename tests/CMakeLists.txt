@@ -26,6 +26,9 @@ set(SPARLAB_TEST_SOURCES
   test_solid.cpp
   test_geometry.cpp
   test_mma.cpp
+  test_unstructured.cpp
+  test_multigrid.cpp
+  test_projection.cpp
 )
 
 add_executable(sparlab_tests ${SPARLAB_TEST_SOURCES})

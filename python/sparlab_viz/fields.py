@@ -50,12 +50,15 @@ def element_collection(
         if values is not None:
             values = np.asarray(values, dtype=float)[mask]
 
+    # Triangles are drawn with an edge in their own colour: without it the
+    # anti-aliased seams between thousands of small cells show as a texture.
+    seamless = edge_color is None and mesh.is_simplex
     collection = PolyCollection(
         [poly for poly in polygons],
         cmap=cmap,
         alpha=alpha,
-        edgecolors=edge_color if edge_color else "none",
-        linewidths=edge_width,
+        edgecolors="face" if seamless else (edge_color if edge_color else "none"),
+        linewidths=0.25 if seamless else edge_width,
         antialiased=True,
     )
     if values is not None:
@@ -81,13 +84,15 @@ def signed_element_collection(ax, mesh: Mesh, values, **kwargs) -> PolyCollectio
 
 
 def _quad_triangulation(mesh: Mesh, coords: np.ndarray) -> Triangulation:
-    """Split each quadrilateral into two triangles for nodal shading."""
-    quads = mesh.elements
-    if quads.shape[1] != 4:
-        raise ValueError("nodal shading currently supports Quad4 meshes only")
-    triangles = np.vstack(
-        [quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]]
-    )
+    """Triangles for nodal shading: a Tri3 mesh's own cells, or each
+    quadrilateral split into two."""
+    cells = mesh.elements
+    if cells.shape[1] == 3:
+        triangles = cells
+    elif cells.shape[1] == 4:
+        triangles = np.vstack([cells[:, [0, 1, 2]], cells[:, [0, 2, 3]]])
+    else:
+        raise ValueError("nodal shading needs a plane (Quad4 or Tri3) mesh")
     return Triangulation(coords[:, 0], coords[:, 1], triangles)
 
 
@@ -172,19 +177,18 @@ def mesh_outline(ax, mesh: Mesh, coords: Optional[np.ndarray] = None,
                  color: str = INK_MUTED, linewidth: float = 0.8,
                  linestyle: str = "-", label: Optional[str] = None,
                  zorder: float = 2.0):
-    """Draw only the boundary of the mesh (edges owned by one element)."""
+    """Draw only the boundary of the mesh (edges owned by one element) - the
+    outline and any holes - for quadrilateral or triangular cells."""
     coords = mesh.nodes if coords is None else np.asarray(coords, dtype=float)
-    edges = {}
-    quads = mesh.elements
-    local = [(0, 1), (1, 2), (2, 3), (3, 0)]
-    for element in quads:
-        for a, b in local:
-            key = (min(element[a], element[b]), max(element[a], element[b]))
-            edges[key] = edges.get(key, 0) + 1
-
-    segments = [
-        [coords[a], coords[b]] for (a, b), count in edges.items() if count == 1
-    ]
+    cells = np.asarray(mesh.elements, dtype=int)
+    k = cells.shape[1]
+    starts = cells.reshape(-1)
+    ends = np.roll(cells, -1, axis=1).reshape(-1)
+    keys = np.stack([np.minimum(starts, ends), np.maximum(starts, ends)], axis=1)
+    unique, counts = np.unique(keys, axis=0, return_counts=True)
+    boundary = unique[counts == 1]
+    del k
+    segments = [[coords[a], coords[b]] for a, b in boundary]
     from matplotlib.collections import LineCollection
 
     collection = LineCollection(

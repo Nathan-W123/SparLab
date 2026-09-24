@@ -11,6 +11,7 @@
 #include <cmath>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -82,6 +83,10 @@ json::Value modal_json(const ModalResult& modal) {
   out.set("iterations", json::Value::make_number(modal.iterations));
   out.set("converged", json::Value::make_bool(modal.converged));
   out.set("final_relative_change", json::Value::make_number(modal.final_change));
+  if (!modal.linear_solver.empty()) {
+    out.set("linear_solver", json::Value::make_string(modal.linear_solver));
+    out.set("linear_iterations", json::Value::make_number(modal.linear_iterations));
+  }
   out.set("warnings", json::array_of(modal.warnings));
   return out;
 }
@@ -94,10 +99,55 @@ json::Value timings_json(const TimingLedger& timings) {
   return out;
 }
 
-json::Value mesh_stats_json(const FemModel& model) {
+json::Value mesh_quality_json(const MeshQuality& q) {
+  json::Value out = json::Value::make_object();
+  out.set("metric", json::Value::make_string(q.metric));
+  out.set("min", json::Value::make_number(q.min));
+  out.set("mean", json::Value::make_number(q.mean));
+  out.set("worst_element", json::Value::make_number(q.worst_element));
+  out.set("poor_threshold", json::Value::make_number(q.poor_threshold));
+  out.set("poor_elements", json::Value::make_number(q.poor_elements));
+  return out;
+}
+
+json::Value count_map_json(const std::map<std::string, Index>& counts) {
+  json::Value out = json::Value::make_object();
+  for (const auto& entry : counts) out.set(entry.first, json::Value::make_number(entry.second));
+  return out;
+}
+
+/// What the mesh reader found in a mesh file, so a summary records how the
+/// file was interpreted (sets, repairs, warnings) and not only its size.
+json::Value mesh_file_json(const Configuration& config) {
+  const MeshReadReport& r = config.mesh_report;
+  json::Value out = json::Value::make_object();
+  out.set("path", json::Value::make_string(config.mesh_file.path));
+  out.set("format", json::Value::make_string(r.format));
+  if (!r.version.empty()) out.set("version", json::Value::make_string(r.version));
+  out.set("scale", json::Value::make_number(r.scale));
+  out.set("nodes_in_file", json::Value::make_number(r.nodes_in_file));
+  out.set("nodes_used", json::Value::make_number(r.nodes_used));
+  out.set("unreferenced_nodes_dropped", json::Value::make_number(r.unreferenced_nodes));
+  out.set("elements_in_file", json::Value::make_number(r.elements_in_file));
+  out.set("cells", json::Value::make_number(r.cells));
+  out.set("boundary_elements", json::Value::make_number(r.boundary_elements));
+  out.set("cells_reoriented", json::Value::make_number(r.reoriented));
+  out.set("duplicate_nodes", json::Value::make_number(r.duplicate_nodes));
+  out.set("duplicates_merged", json::Value::make_bool(r.duplicates_merged));
+  out.set("node_sets", count_map_json(r.node_sets));
+  out.set("element_sets", count_map_json(r.element_sets));
+  out.set("ignored", count_map_json(r.ignored));
+  json::Value warnings = json::Value::make_array();
+  for (const std::string& w : r.warnings) warnings.push_back(json::Value::make_string(w));
+  out.set("warnings", warnings);
+  return out;
+}
+
+json::Value mesh_stats_json(const Configuration& config, const FemModel& model) {
   const Mesh& mesh = model.mesh();
   const int dim = mesh.dim();
   json::Value out = json::Value::make_object();
+  out.set("source", json::Value::make_string(to_string(config.mesh_kind)));
   out.set("element_type", json::Value::make_string(to_string(mesh.element_type())));
   out.set("dim", json::Value::make_number(dim));
   out.set("num_nodes", json::Value::make_number(mesh.num_nodes()));
@@ -126,7 +176,22 @@ json::Value mesh_stats_json(const FemModel& model) {
     if (dim == 3) grid.set("lz_m", json::Value::make_number(info.lz));
     grid.set("uniform", json::Value::make_bool(info.uniform));
     out.set("structured_grid", grid);
+  } else if (config.mesh_kind == MeshKind::StructuredTri ||
+             config.mesh_kind == MeshKind::StructuredTet) {
+    // The simplex box meshes split the cells of this grid.
+    json::Value grid = json::Value::make_object();
+    grid.set("nx", json::Value::make_number(config.mesh_spec.nx));
+    grid.set("ny", json::Value::make_number(config.mesh_spec.ny));
+    if (dim == 3) grid.set("nz", json::Value::make_number(config.mesh_spec.nz));
+    grid.set("lx_m", json::Value::make_number(config.mesh_spec.lx));
+    grid.set("ly_m", json::Value::make_number(config.mesh_spec.ly));
+    if (dim == 3) grid.set("lz_m", json::Value::make_number(config.mesh_spec.lz));
+    grid.set("elements_per_cell", json::Value::make_number(dim == 2 ? 2 : 6));
+    out.set("split_grid", grid);
   }
+  out.set("mean_element_size_m", json::Value::make_number(mesh.mean_element_size()));
+  out.set("quality", mesh_quality_json(mesh.quality()));
+  if (config.mesh_kind == MeshKind::File) out.set("file", mesh_file_json(config));
   return out;
 }
 
@@ -456,6 +521,8 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
     header.insert(header.end(), {"max_stress_ratio[-]", "stress_constraint[-]",
                                  "constraint_violation[-]"});
   }
+  header.push_back("linear_iterations[-]");
+  if (result.projected) header.push_back("beta[-]");
   CsvWriter csv(file("history.csv"), header);
   for (const TopologyIteration& it : result.history) {
     std::vector<Scalar> row{it.penalty, it.compliance, it.volume, it.volume_fraction,
@@ -466,6 +533,8 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
       row.insert(row.end(), {it.max_stress_ratio, it.stress_constraint,
                              it.constraint_violation});
     }
+    row.push_back(static_cast<Scalar>(it.linear_iterations));
+    if (result.projected) row.push_back(it.beta);
     csv.row(it.iteration, row);
   }
   csv.close();
@@ -479,6 +548,9 @@ void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
   if (dim == 2) header.push_back("area[m2]");
   header = concat(header, {"volume[m3]", "design_x[-]", "physical_density[-]",
                            "stiffness_factor[-]", "passive_tag[-]", "strain_energy[J]"});
+  const bool projected =
+      result.projected && result.filtered_density.size() == mesh.num_elements();
+  if (projected) header.push_back("filtered_density[-]");
   CsvWriter csv(file("density_final.csv"), header);
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     const Vector3 c = mesh.element_centroid(e);
@@ -494,6 +566,7 @@ void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
     row.push_back(result.element_strain_energy.size() > e
                       ? result.element_strain_energy(e)
                       : 0.0);
+    if (projected) row.push_back(result.filtered_density(e));
     csv.row(e, row);
   }
   csv.close();
@@ -638,6 +711,54 @@ json::Value make_provenance(const Configuration& config) {
 
 namespace {
 
+json::Value amg_stats_json(const AmgStats& st) {
+  json::Value out = json::Value::make_object();
+  out.set("levels", json::Value::make_number(static_cast<Scalar>(st.levels.size())));
+  json::Value levels = json::Value::make_array();
+  for (const AmgLevelStats& l : st.levels) {
+    json::Value lv = json::Value::make_object();
+    lv.set("unknowns", json::Value::make_number(l.unknowns));
+    lv.set("nonzeros", json::Value::make_number(l.nonzeros));
+    lv.set("lambda_max_Dinv_A", json::Value::make_number(l.lambda_max));
+    levels.push_back(lv);
+  }
+  out.set("level_sizes", levels);
+  out.set("operator_complexity", json::Value::make_number(st.operator_complexity));
+  out.set("grid_complexity", json::Value::make_number(st.grid_complexity));
+  out.set("near_null_space_dimension",
+          json::Value::make_number(st.near_null_space_dimension));
+  out.set("coarse_pivot_ratio", json::Value::make_number(st.coarse_pivot_ratio));
+  out.set("last_setup_seconds", json::Value::make_number(st.setup_seconds));
+  out.set("aggregates_reused_in_last_setup", json::Value::make_bool(st.reused_aggregates));
+  return out;
+}
+
+json::Value linear_solver_json(const LinearSolverOptions& o) {
+  json::Value out = json::Value::make_object();
+  out.set("type", json::Value::make_string(to_string(o.type)));
+  out.set("warm_start", json::Value::make_bool(o.warm_start));
+  if (o.type == LinearSolverType::Auto) {
+    out.set("auto_direct_limit_plane", json::Value::make_number(o.auto_direct_limit_2d));
+    out.set("auto_direct_limit_solid", json::Value::make_number(o.auto_direct_limit_3d));
+  }
+  if (o.type == LinearSolverType::AmgCg || o.type == LinearSolverType::Auto) {
+    json::Value amg = json::Value::make_object();
+    amg.set("strength_threshold", json::Value::make_number(o.amg.strength_threshold));
+    amg.set("max_levels", json::Value::make_number(o.amg.max_levels));
+    amg.set("coarse_size", json::Value::make_number(o.amg.coarse_size));
+    amg.set("smoother", json::Value::make_string(to_string(o.amg.smoother)));
+    amg.set("smoother_degree", json::Value::make_number(o.amg.smoother_degree));
+    amg.set("chebyshev_ratio", json::Value::make_number(o.amg.chebyshev_ratio));
+    amg.set("prolongator_damping", json::Value::make_number(o.amg.prolongator_damping));
+    amg.set("lanczos_steps", json::Value::make_number(o.amg.lanczos_steps));
+    amg.set("reuse_aggregates", json::Value::make_bool(o.amg.reuse_aggregates));
+    amg.set("coarse_pivot_tolerance",
+            json::Value::make_number(o.amg.coarse_pivot_tolerance));
+    out.set("multigrid", amg);
+  }
+  return out;
+}
+
 json::Value tolerance_json(const Configuration& config) {
   json::Value out = json::Value::make_object();
   out.set("linear_solver", json::Value::make_string(
@@ -648,6 +769,7 @@ json::Value tolerance_json(const Configuration& config) {
           json::Value::make_number(config.analysis.linear.iterative_tolerance));
   out.set("cholesky_pivot_tolerance",
           json::Value::make_number(config.analysis.linear.pivot_tolerance));
+  out.set("linear_solver_settings", linear_solver_json(config.analysis.linear));
   out.set("equilibrium_tolerance",
           json::Value::make_number(config.analysis.equilibrium_tolerance));
   out.set("modal_tolerance", json::Value::make_number(config.modal.options.tolerance));
@@ -670,7 +792,7 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
                                 const TimingLedger& timings) {
   json::Value out = json::Value::make_object();
   out.set("provenance", make_provenance(config));
-  out.set("mesh", mesh_stats_json(model));
+  out.set("mesh", mesh_stats_json(config, model));
   out.set("material", material_json(model.material(), model.stress_state()));
   out.set("tolerances", tolerance_json(config));
   out.set("model_diagnostics", diagnostics_json(diagnostics));
@@ -694,6 +816,7 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
               json::Value::make_number(sol.max_displacement_node));
     entry.set("scaled_residual", json::Value::make_number(sol.scaled_residual));
     entry.set("solver_iterations", json::Value::make_number(sol.solver_iterations));
+    entry.set("linear_solver", json::Value::make_string(sol.solver_name));
     entry.set("equilibrium", equilibrium_json(sol.equilibrium, model.dim()));
     if (l < stresses.size()) {
       entry.set("max_von_mises_Pa",
@@ -721,7 +844,7 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                                   const TimingLedger& timings) {
   json::Value out = json::Value::make_object();
   out.set("provenance", make_provenance(config));
-  out.set("mesh", mesh_stats_json(model));
+  out.set("mesh", mesh_stats_json(config, model));
   out.set("material", material_json(model.material(), model.stress_state()));
   out.set("tolerances", tolerance_json(config));
 
@@ -802,6 +925,25 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
               json::Value::make_number(config.topology.optimizer.constraint_tolerance));
       setup.set("mma", mma);
     }
+    {
+      const ProjectionOptions& po = config.topology.optimizer.projection;
+      json::Value pj = json::Value::make_object();
+      pj.set("enabled", json::Value::make_bool(po.enabled));
+      if (po.enabled) {
+        pj.set("eta", json::Value::make_number(po.eta));
+        pj.set("beta_start", json::Value::make_number(po.beta_start));
+        pj.set("beta_max", json::Value::make_number(po.beta_max));
+        pj.set("beta_factor", json::Value::make_number(po.beta_factor));
+        pj.set("beta_interval", json::Value::make_number(po.beta_interval));
+        pj.set("advance_on_convergence", json::Value::make_bool(po.advance_on_convergence));
+        pj.set("formulation",
+               json::Value::make_string(
+                   "rho_bar = (tanh(beta eta) + tanh(beta (rho_tilde - eta))) / "
+                   "(tanh(beta eta) + tanh(beta (1 - eta))) on the filtered density; "
+                   "SIMP, volume and stress act on rho_bar"));
+      }
+      setup.set("projection", pj);
+    }
     if (result.stress_constrained) {
       json::Value sc = json::Value::make_object();
       const StressConstraintOptions& so = config.topology.optimizer.stress;
@@ -829,6 +971,30 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
             json::Value::make_number(result.final_objective_change));
     res.set("iterations", json::Value::make_number(result.iterations));
     res.set("linear_solves", json::Value::make_number(result.linear_solves));
+    {
+      json::Value ls = json::Value::make_object();
+      ls.set("solver", json::Value::make_string(result.linear_solver));
+      ls.set("iterative_iterations_total",
+             json::Value::make_number(result.linear_iterations));
+      ls.set("iterative_iterations_per_solve",
+             json::Value::make_number(result.linear_solves > 0
+                                          ? static_cast<Scalar>(result.linear_iterations) /
+                                                static_cast<Scalar>(result.linear_solves)
+                                          : 0.0));
+      if (result.has_amg_stats) ls.set("multigrid", amg_stats_json(result.amg_stats));
+      res.set("linear_solver", ls);
+    }
+    if (result.projected) {
+      json::Value pj = json::Value::make_object();
+      pj.set("final_beta", json::Value::make_number(result.final_beta));
+      pj.set("eta", json::Value::make_number(result.projection_eta));
+      pj.set("filtered_grey_level",
+             json::Value::make_number(gray_level(result.filtered_density)));
+      pj.set("note", json::Value::make_string(
+                         "grey_level is that of the projected (physical) density; "
+                         "filtered_grey_level that of the density before projection"));
+      res.set("projection", pj);
+    }
     res.set("compliance_J", json::Value::make_number(result.compliance));
     res.set("load_case_compliance_J", json::array_of(result.load_case_compliance));
     res.set("volume_m3", json::Value::make_number(result.volume));

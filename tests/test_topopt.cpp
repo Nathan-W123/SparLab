@@ -15,7 +15,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
+#include <vector>
 
 using namespace sparlab;
 using namespace sparlab::testing;
@@ -611,6 +613,29 @@ TEST_CASE("optimality criteria validates its inputs",
       SolverError);
 }
 
+TEST_CASE("the objective-stall measure is the spread over its window", "[topopt]") {
+  // Too short a history: no verdict.
+  REQUIRE(std::isinf(objective_spread({1.0, 0.9}, 5)));
+
+  // Monotone: exactly the two-point change over the window.
+  std::vector<Scalar> monotone;
+  for (int k = 0; k < 30; ++k) monotone.push_back(1.0 + 1.0 / (1.0 + k));
+  const Scalar two_point = std::abs(monotone.back() - monotone[monotone.size() - 1 - 20]) /
+                           std::abs(monotone.back());
+  REQUIRE(objective_spread(monotone, 20) == two_point);
+
+  // A cycle of period 5 returns to the same compliance every 20 iterations: a
+  // two-point test over a window of 20 sees no change at all, the spread sees
+  // the full amplitude of the cycle.
+  const std::array<Scalar, 5> cycle = {0.0900, 0.0915, 0.0940, 0.0910, 0.0897};
+  std::vector<Scalar> oscillating;
+  for (int k = 0; k < 60; ++k) oscillating.push_back(cycle[static_cast<std::size_t>(k % 5)]);
+  const Scalar last = oscillating.back();
+  REQUIRE(std::abs(last - oscillating[oscillating.size() - 1 - 20]) == 0.0);
+  REQUIRE(objective_spread(oscillating, 20) == Approx((0.0940 - 0.0897) / last));
+  REQUIRE(objective_spread(oscillating, 20) > 1.0e-2);
+}
+
 TEST_CASE("grey level measures how binary a density field is", "[topopt]") {
   REQUIRE(gray_level(Vector::Zero(10)) == Approx(0.0));
   REQUIRE(gray_level(Vector::Ones(10)) == Approx(0.0));
@@ -766,6 +791,11 @@ TEST_CASE("non-convergence is reported instead of hidden",
   REQUIRE_FALSE(result.warnings.empty());
   REQUIRE(result.warnings.front().find("iteration cap") != std::string::npos);
   REQUIRE(result.iterations == 3);
+  // Three compliances cannot fill the default six-value window, and the
+  // warning says so instead of quoting an infinite spread.
+  REQUIRE_FALSE(std::isfinite(result.final_objective_change));
+  REQUIRE(result.warnings.front().find("could not be measured") != std::string::npos);
+  REQUIRE(result.warnings.front().find("inf") == std::string::npos);
   // The volume constraint still holds on the returned iterate.
   REQUIRE(result.volume_fraction == Approx(0.4).epsilon(1.0e-5));
 }

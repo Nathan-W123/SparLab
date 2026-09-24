@@ -34,24 +34,57 @@ reports its line and column.
 
 "mesh": { "type": "structured_hex", "nx": 32, "ny": 16, "nz": 8,
           "lx": 0.24, "ly": 0.12, "lz": 0.06 }
+
+"mesh": { "type": "file", "path": "../meshes/engine_mount_3d.inp", "scale": 0.001 }
 ```
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `type` | string | `structured_quad` | `structured_quad` (plane, Q4) or `structured_hex` (solid, Hex8) |
-| `nx`, `ny` | integer | required | elements per direction, `>= 1` |
-| `nz` | integer | required for `structured_hex` | elements through the third direction |
-| `lx`, `ly` | number | required | domain extents [m], `> 0` |
-| `lz` | number | required for `structured_hex` | extent in z [m] |
+| `type` | string | `structured_quad` | `structured_quad` (plane, Q4), `structured_tri` (plane, Tri3: each cell split into two triangles), `structured_hex` (solid, Hex8), `structured_tet` (solid, Tet4: each cell split into six Kuhn tetrahedra), or `file` (read from a mesh file) |
+| `nx`, `ny` | integer | required for the structured types | elements per direction, `>= 1` |
+| `nz` | integer | required for `structured_hex` / `structured_tet` | elements through the third direction |
+| `lx`, `ly` | number | required for the structured types | domain extents [m], `> 0` |
+| `lz` | number | required for `structured_hex` / `structured_tet` | extent in z [m] |
 | `x0`, `y0`, `z0` | number | `0` | lower corner [m] |
 
-The mesh type fixes the dimension of the whole deck: a `structured_hex` mesh
-has three displacement components per node, regions may use `zmin`/`zmax`
-and `sphere`, boundary conditions may fix `"z"`, forces and tractions carry
-three components, `model.thickness` must be absent (a solid has none) and
+The mesh type fixes the dimension of the whole deck: a solid mesh has three
+displacement components per node, regions may use `zmin`/`zmax` and
+`sphere`, boundary conditions may fix `"z"`, forces and tractions carry three
+components, `model.thickness` must be absent (a solid has none) and
 `model.stress_state` defaults to `three_dimensional`. Naming `nz`, `lz` or
-`z0` on a `structured_quad` mesh is an error, as is any z component on a
-plane deck.
+`z0` on a plane mesh is an error, as is any z component on a plane deck.
+
+**Meshes read from a file** (`"type": "file"`)
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `path` | string | required | the mesh file; a relative path resolves against the deck's directory |
+| `format` | string | `auto` | `auto` (from the extension: `.msh` is Gmsh, `.inp` is Abaqus / CalculiX), `gmsh` or `abaqus` |
+| `scale` | number | `1` | factor applied to every coordinate: `0.001` for a mesh drawn in millimetres |
+| `merge_duplicate_nodes` | bool | `false` | merge coincident nodes instead of only reporting them |
+| `duplicate_tolerance` | number [m] | `0` | distance below which two nodes coincide, after scaling; `0` means `1e-9` times the bounding-box diagonal |
+
+Gmsh MSH 2.2 and 4.1 ASCII and Abaqus / CalculiX `.inp` files are read. The
+cells of the highest dimension in the file become the mesh: linear triangles
+or quadrilaterals give a plane model, linear tetrahedra or hexahedra a solid
+one. A file that mixes cell types, or holds second-order cells, prisms or
+pyramids, is refused with a message saying how to re-export it. Lower
+dimensional elements (the boundary curves and facets a mesher writes for its
+physical groups) only feed the named sets. Each Gmsh physical group becomes a
+node set, and an element set when it holds cells; an Abaqus `*NSET` is a node
+set, and an `*ELSET` is an element set when it holds cells and a node set
+when it holds boundary elements. Inverted or mirrored cells are re-ordered
+and counted, nodes no cell uses are dropped, coincident nodes are reported,
+a plane mesh must lie in `z = 0`, and a domain larger than 20 m or smaller
+than 0.1 mm draws a warning about units. Boundary conditions, loads and
+materials in an `.inp` file are not imported, and the report names every
+ignored keyword. What was read and done is recorded under `mesh.file` in
+`summary.json`, with the cell-quality statistics under `mesh.quality`.
+
+The resolution of a file mesh comes from the mesher, so `nx` ... `z0` are
+errors on a `file` mesh, and so are `--nx`/`--ny`/`--nz` on the command line.
+`python/scripts/make_meshes.py` regenerates the two meshes the benchmark
+decks use (`make meshes`, which needs the `gmsh` Python package).
 
 ## `material`
 
@@ -78,9 +111,9 @@ plane deck.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `thickness` | number [m] | `1.0` | out-of-plane thickness, `> 0`; plane meshes only - a solid mesh rejects the key |
-| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh) | `plane_stress`, `plane_strain` or `three_dimensional`; the plane idealisations need a `structured_quad` mesh and `three_dimensional` a `structured_hex` one |
-| `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 (2x2 for the Q4, 2x2x2 for the Hex8) |
-| `integration.mass_points` | integer | `3` | Gauss points per direction for `M_e`, 1-4 |
+| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh) | `plane_stress`, `plane_strain` or `three_dimensional`; the plane idealisations need a plane mesh (Q4 or Tri3) and `three_dimensional` a solid one (Hex8 or Tet4) |
+| `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 (2x2 for the Q4, 2x2x2 for the Hex8); the linear simplices have a constant strain and integrate exactly with one point whatever is set here |
+| `integration.mass_points` | integer | `3` | Gauss points per direction for `M_e`, 1-4; the simplices use the exact closed-form consistent mass instead |
 | `integration.face_points` | integer | `2` | Gauss points per direction on a loaded edge or face, 1-4; `edge_points` is accepted as a synonym |
 
 ## Regions
@@ -109,9 +142,11 @@ A single primitive may also be written directly in the `region` object, without
 | `node_ids` | `[...]` | explicit nodes (node regions only) |
 | `element_ids` | `[...]` | explicit elements (element regions only) |
 | `nearest_node` | `[x, y(, z)]` | the single node closest to the point (node regions only) |
+| `group` | `"name"` | a named set of a mesh read from a file: its node set in a node region, its element set in an element region |
 
 A `center` or `nearest_node` point carries as many components as the mesh has
-dimensions.
+dimensions. A `group` that the mesh does not have is an error listing the
+sets it does have; so is a `group` on a structured mesh, which has none.
 
 | Region key | Type | Default | Meaning |
 |------------|------|---------|---------|
@@ -196,9 +231,12 @@ A load case with neither `point_loads` nor `tractions` is an error unless
 
 ```json
 "solver": {
-  "linear": { "type": "simplicial_ldlt", "residual_tolerance": 1e-8,
+  "linear": { "type": "auto", "residual_tolerance": 1e-8,
               "iterative_tolerance": 1e-12, "max_iterations": 0,
-              "pivot_tolerance": 1e-14 },
+              "pivot_tolerance": 1e-14, "warm_start": true,
+              "auto_direct_limit": { "plane": 50000, "solid": 10000 },
+              "amg": { "smoother": "chebyshev", "smoother_degree": 3,
+                       "strength_threshold": 0.02, "coarse_size": 1500 } },
   "equilibrium_tolerance": 1e-6,
   "check_model": true
 }
@@ -206,13 +244,41 @@ A load case with neither `point_loads` nor `tractions` is an error unless
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `linear.type` | string | `simplicial_ldlt` | `simplicial_ldlt`, `simplicial_llt`, `sparse_lu`, `conjugate_gradient`, `dense_lu` |
-| `linear.residual_tolerance` | number | `1e-8` | scaled residual accepted after each solve |
-| `linear.iterative_tolerance` | number | `1e-12` | requested relative residual for CG |
-| `linear.max_iterations` | integer | `0` | CG iteration cap; `0` uses Eigen's default of `2n` |
+| `linear.type` | string | `auto` | `auto`, `simplicial_ldlt`, `amg_cg` (also `amg`, `multigrid`), `conjugate_gradient`, `simplicial_llt`, `sparse_lu`, `dense_lu` |
+| `linear.residual_tolerance` | number | `1e-8` | scaled residual `||K u - f|| / ||f||` accepted after each solve, whatever the solver |
+| `linear.iterative_tolerance` | number | `1e-12` | relative residual the CG solvers iterate to |
+| `linear.max_iterations` | integer | `0` | CG iteration cap; `0` means `2n` for Jacobi CG and 1000 for multigrid CG |
 | `linear.pivot_tolerance` | number | `1e-14` | smallest accepted `min/max` LDL^T pivot ratio |
+| `linear.warm_start` | bool | `true` | start each iterative solve from the previous solution of the same load case (or adjoint); an optimisation loop then needs a fraction of the iterations |
+| `linear.auto_direct_limit.plane` | integer | `50000` | `auto` factorises a plane system with at most this many free unknowns and uses multigrid CG above it |
+| `linear.auto_direct_limit.solid` | integer | `10000` | the same limit for a solid system, where the Cholesky fill grows much faster |
 | `equilibrium_tolerance` | number | `1e-6` | relative force-balance error before `SolverError` |
 | `check_model` | bool | `true` | run the rigid-body and floating-region diagnostics before assembling |
+
+The solvers: `simplicial_ldlt` is Eigen's sparse LDL^T with an AMD ordering,
+the reference; `amg_cg` is conjugate gradients preconditioned by SparLab's
+smoothed-aggregation algebraic multigrid (`docs/formulation.md` gives the
+construction); `conjugate_gradient` is Eigen's Jacobi-preconditioned CG, kept
+as the baseline that shows what the multigrid buys; `simplicial_llt`,
+`sparse_lu` and `dense_lu` exist for the solver-agreement verification. The
+summary records which solver ran (`auto:AMG-CG(chebyshev)`, for instance),
+its settings and, for the iterative ones, the iteration counts.
+
+**`linear.amg`** - the multigrid preconditioner. The defaults are the
+measured ones; change them to study the solver, not to make a run work.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `strength_threshold` | number | `0.02` | node pairs whose coupling block is weaker than this (relative, Frobenius) are not aggregated together |
+| `max_levels` | integer | `12` | hierarchy depth cap |
+| `coarse_size` | integer | `1500` | unknowns at or below which a level is solved directly (dense LDL^T) |
+| `smoother` | string | `chebyshev` | `chebyshev` or `gauss_seidel` (symmetric) |
+| `smoother_degree` | integer | `3` | Chebyshev degree, or Gauss-Seidel sweeps |
+| `chebyshev_ratio` | number | `30` | the smoother targets eigenvalues in `[lambda_max / ratio, lambda_max]` |
+| `prolongator_damping` | number | `4/3` | Jacobi damping of the tentative prolongator, divided by `lambda_max(D^-1 A)` |
+| `lanczos_steps` | integer | `12` | Lanczos steps of the `lambda_max` estimate |
+| `reuse_aggregates` | bool | `true` | keep the aggregation (and the sparsity of every product) across refactorisations of a matrix with the same pattern, as in an optimisation loop |
+| `coarse_pivot_tolerance` | number | `1e-13` | a coarsest-level pivot below this, relative to the largest, is reported as an under-constrained model |
 
 ## `modal`
 
@@ -295,7 +361,7 @@ length scale fixed, which is what makes the optimum mesh convergent.
 |-----|------|---------|---------|
 | `max_iterations` | integer | `200` | iteration cap |
 | `change_tolerance` | number | `1e-2` | stop when `max |dx|` falls below this |
-| `objective_tolerance` | number | `0` | stop when the relative compliance change over `objective_window` iterations falls below this; `0` disables |
+| `objective_tolerance` | number | `0` | stop when the relative spread `(max - min) / |c_k|` of the last `objective_window + 1` compliances falls below this; `0` disables. For a monotone history that is the change over the window, and an oscillating design cannot satisfy it mid-cycle |
 | `objective_window` | integer | `5` | window for the above |
 | `move_limit` | number | `0.2` | maximum per-iteration density change, in `(0, 1]` |
 | `damping` | number | `0.5` | OC exponent `eta`, in `(0, 1]` |
@@ -313,7 +379,8 @@ length scale fixed, which is what makes the optimum mesh convergent.
 | `mma.asymptote_increase` | number | `1.2` | asymptote widening when a variable keeps moving the same way |
 | `mma.asymptote_decrease` | number | `0.7` | asymptote tightening when it oscillates |
 | `mma.constraint_penalty` | number | `1000` | Svanberg's `c_i`: the price of the artificial variables that relax a constraint |
-| `mma.subproblem_tolerance` | number | `1e-7` | interior-point residual at which the subproblem is converged |
+| `mma.subproblem_tolerance` | number | `1e-7` | final barrier parameter of the interior-point subproblem solver; each barrier level is converged when the KKT residual falls below 0.9 times it |
+| `mma.max_newton_iterations` | integer | `500` | Newton iterations allowed per barrier level, `>= 10`; running out is a `ConvergenceError` naming the residual block that stalled |
 
 ```json
 "topology": {
@@ -340,6 +407,35 @@ gradient the adjoint could use).
 
 `docs/topology_optimization.md` gives the formulation and says what the
 constraint does and does not guarantee.
+
+```json
+"topology": {
+  "projection": { "enabled": true, "eta": 0.5, "beta_start": 1, "beta_max": 32,
+                  "beta_factor": 2, "beta_interval": 40,
+                  "advance_on_convergence": true }
+}
+```
+
+**`projection`** - the smoothed Heaviside projection of the filtered density,
+with continuation of its sharpness `beta`. The projected density is the
+physical one: SIMP, the volume constraint, the stress constraint and the
+grey level all act on it. Needs the density filter (or no filter); with the
+sensitivity filter it is a `ConfigError`.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | project the filtered density |
+| `eta` | number | `0.5` | threshold of the step, in `(0, 1)` |
+| `beta_start` | number | `1` | first sharpness, `> 0` |
+| `beta_max` | number | `32` | final sharpness, `>= beta_start` |
+| `beta_factor` | number | `2` | multiplier per continuation stage, `> 1` |
+| `beta_interval` | integer | `50` | most iterations spent at one `beta` |
+| `advance_on_convergence` | bool | `true` | move to the next `beta` as soon as the design change at the current one falls below `change_tolerance` |
+
+Convergence is only declared at `beta_max`, and the objective-stall history
+restarts at every `beta` step because the objective changes with it. A run
+that stops at the iteration cap before reaching `beta_max` says so in a
+warning.
 
 **`passive_regions`** - an array of
 
@@ -377,16 +473,21 @@ duplicate a deck. Each corresponds to one deck field:
 --method oc|mma          topology.optimizer.method
 --stress-limit <Pa>      topology.stress.limit, and enables the constraint and MMA
 --no-stress              topology.stress.enabled = false
---nx --ny (--nz)         mesh.nx, mesh.ny (mesh.nz, solid meshes only)
+--nx --ny (--nz)         mesh.nx, mesh.ny (mesh.nz, solid meshes only; an error on a file mesh)
 --youngs-modulus         material.youngs_modulus
 --load-weights w1,w2,... one weight per load case, in deck order
 --modes N                modal.enabled = true, modal.num_modes = N
+--solver TYPE            solver.linear.type
+--projection             topology.projection.enabled = true (deck or default schedule)
+--no-projection          topology.projection.enabled = false
+--beta-max B             topology.projection.beta_max, and enables the projection
 --tag NAME               appended to the case name in summary.json
 ```
 
-`sparlab_solve --export-calculix` additionally writes one CalculiX input deck
-per load case (`calculix_<case>.inp`: CPS4, CPE4 or C3D8 elements, the same
-nodes, supports and nodal loads) into the output directory, which is what
-`scripts/run_cross_validation.sh` feeds to `ccx`.
+`sparlab_solve` takes `--solver` and `--modes` too. With `--export-calculix`
+it additionally writes one CalculiX input deck per load case
+(`calculix_<case>.inp`: CPS4 / CPE4, CPS3 / CPE3, C3D8 or C3D4 elements, the
+same nodes, supports and nodal loads) into the output directory, which is
+what `scripts/run_cross_validation.sh` feeds to `ccx`.
 
 Run any app with `--help` for its full flag list.

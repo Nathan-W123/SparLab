@@ -19,8 +19,11 @@
 /// declare convergence:
 ///   * the design change \f$\|x^{k+1}-x^k\|_\infty\f$ falls below
 ///     `change_tolerance`, or
-///   * `objective_tolerance` is enabled and the relative compliance change over
-///     the last `objective_window` iterations falls below it.
+///   * `objective_tolerance` is enabled and the relative spread
+///     (max - min) / |c_k| of the last `objective_window` + 1 compliance
+///     values falls below it. For a monotone history that is the change over
+///     the window; unlike a two-point difference it is not fooled by an
+///     oscillation whose period divides the window.
 /// With MMA the design must also be feasible: no constraint above
 /// `constraint_tolerance`. The second criterion matters on fine meshes, where
 /// a handful of elements can keep oscillating between bounds long after the
@@ -51,6 +54,7 @@
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
 #include "sparlab/topopt/Mma.hpp"
+#include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/OptimalityCriteria.hpp"
 #include "sparlab/topopt/Sensitivity.hpp"
 #include "sparlab/topopt/SimpInterpolation.hpp"
@@ -81,11 +85,10 @@ struct TopologyOptimizerOptions {
   int max_iterations = 200;
   /// Stop when max |dx| <= this value.
   Scalar change_tolerance = 1.0e-3;
-  /// Alternative stop criterion on the relative compliance change over
-  /// `objective_window` iterations; <= 0 disables it.
+  /// Alternative stop criterion on the relative spread (max - min) / |c_k| of
+  /// the last `objective_window` + 1 compliance values; <= 0 disables it.
   Scalar objective_tolerance = 0.0;
-  /// Window (in iterations) over which the relative compliance change is
-  /// measured.
+  /// Window (in iterations) over which the compliance spread is measured.
   int objective_window = 5;
   /// MMA only: largest constraint value (V/V* - 1, c g_PN - 1) accepted as
   /// feasible when declaring convergence.
@@ -103,6 +106,9 @@ struct TopologyOptimizerOptions {
   /// Threshold used when interpreting the final density field as solid
   /// geometry (reported, never silently applied to the optimisation itself).
   Scalar interpretation_threshold = 0.5;
+
+  /// Heaviside projection of the filtered density with beta continuation.
+  ProjectionOptions projection;
 };
 
 /// One iteration of the optimisation history.
@@ -118,6 +124,8 @@ struct TopologyIteration {
   Scalar seconds = 0.0;
   int bisections = 0;       ///< OC bisections or MMA subproblem Newton iterations
   bool volume_converged = false;
+  Scalar beta = 0.0;        ///< projection sharpness (0 when the projection is off)
+  int linear_iterations = 0;  ///< iterative-solver iterations, all solves of the iteration
   // MMA-only records (zero for OC runs).
   Scalar max_stress_ratio = 0.0;      ///< max over cases of max_e sigma_rel / sigma_lim
   Scalar stress_constraint = 0.0;     ///< max over cases of c g_PN - 1
@@ -168,6 +176,19 @@ struct TopologyOptimizationResult {
   std::vector<Vector> displacements;
   Vector element_strain_energy;
 
+  /// Heaviside projection at the end of the run (filtered_density is the
+  /// density before projection; physical_density after it).
+  bool projected = false;
+  Scalar final_beta = 0.0;
+  Scalar projection_eta = 0.0;
+  Vector filtered_density;
+
+  /// Linear solver actually used and its work over the whole run.
+  std::string linear_solver;
+  Index linear_iterations = 0;       ///< iterative-solver iterations, all solves
+  bool has_amg_stats = false;
+  AmgStats amg_stats;                ///< hierarchy of the last factorisation
+
   OptimizerMethod method = OptimizerMethod::OptimalityCriteria;
   bool stress_constrained = false;
   std::vector<StressConstraintRecord> stress;  ///< one per load case when constrained
@@ -206,5 +227,11 @@ class TopologyOptimizer {
 /// \f$ M_{nd} = \frac{4}{n}\sum_e \rho_e (1-\rho_e) \f$, which is 0 for a pure
 /// 0/1 design and 1 when every element sits at 0.5.
 Scalar gray_level(const Vector& density);
+
+/// The objective-stall measure: the relative spread (max - min) / |c_k| of
+/// the last `window` + 1 values of `history` (infinity while it is shorter).
+/// For a monotone history it equals |c_k - c_{k-w}| / |c_k|; an oscillation
+/// shows up as its full amplitude, whatever its period.
+Scalar objective_spread(const std::vector<Scalar>& history, int window);
 
 }  // namespace sparlab

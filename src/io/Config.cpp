@@ -4,6 +4,7 @@
 #include "sparlab/core/Logging.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <sstream>
 
 namespace sparlab {
@@ -120,12 +121,21 @@ Selector parse_selector_primitive(const ConfigNode& node, int dim) {
     sel.point = node.child("nearest_node").vector3(dim);
     ++matched;
   }
+  if (node.child("group").exists()) {
+    sel.kind = SelectorKind::Group;
+    sel.group = node.child("group").string();
+    if (sel.group.empty()) {
+      throw ConfigError("'" + node.child("group").path() + "' is an empty group name");
+    }
+    ++matched;
+  }
 
   if (matched == 0) {
     throw ConfigError(
         "'" + node.path() +
         "' does not name a region primitive; expected one of all, box, circle, "
-        "annulus, sphere, node_ids, element_ids, nearest_node (or an 'any_of' list)");
+        "annulus, sphere, node_ids, element_ids, nearest_node, group (or an 'any_of' "
+        "list)");
   }
   if (matched > 1) {
     throw ConfigError("'" + node.path() +
@@ -141,9 +151,14 @@ std::string to_string(MeshKind kind) {
   switch (kind) {
     case MeshKind::StructuredQuad: return "structured_quad";
     case MeshKind::StructuredHex: return "structured_hex";
+    case MeshKind::StructuredTri: return "structured_tri";
+    case MeshKind::StructuredTet: return "structured_tet";
+    case MeshKind::File: return "file";
   }
   return "unknown";
 }
+
+bool is_structured(MeshKind kind) { return kind != MeshKind::File; }
 
 SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name,
                            int dim) {
@@ -176,6 +191,36 @@ void Configuration::set_material(IsotropicMaterial material) {
   material_ = std::move(material);
 }
 
+int Configuration::dim() const {
+  switch (mesh_kind) {
+    case MeshKind::StructuredQuad:
+    case MeshKind::StructuredTri: return 2;
+    case MeshKind::StructuredHex:
+    case MeshKind::StructuredTet: return 3;
+    case MeshKind::File:
+      if (file_mesh == nullptr) {
+        throw ConfigError("the configuration names a mesh file that has not been read");
+      }
+      return file_mesh->dim();
+  }
+  throw ConfigError("unhandled mesh type");
+}
+
+std::string Configuration::describe_mesh() const {
+  std::ostringstream os;
+  if (mesh_kind == MeshKind::File) {
+    os << "file '" << mesh_file.path << "'";
+    if (file_mesh != nullptr) {
+      os << " (" << to_string(file_mesh->element_type()) << ", "
+         << file_mesh->num_elements() << " elements)";
+    }
+    return os.str();
+  }
+  os << to_string(mesh_kind) << " " << mesh_spec.nx << " x " << mesh_spec.ny;
+  if (dim() == 3) os << " x " << mesh_spec.nz;
+  return os.str();
+}
+
 Scalar Configuration::resolved_filter_radius(const Mesh& mesh) const {
   if (topology.filter_radius > 0.0) return topology.filter_radius;
   if (!(topology.filter_radius_elements > 0.0)) {
@@ -183,18 +228,13 @@ Scalar Configuration::resolved_filter_radius(const Mesh& mesh) const {
         "topology.filter needs either 'radius' (metres) or a positive "
         "'radius_elements'");
   }
-  // Mean element size: the side of the square (2-D) or cube (3-D) with the
-  // mean cell measure.
-  Scalar measure_sum = 0.0;
-  for (Index e = 0; e < mesh.num_elements(); ++e) measure_sum += mesh.element_measure(e);
-  const Scalar mean_measure = measure_sum / static_cast<Scalar>(mesh.num_elements());
-  const Scalar mean_size =
-      mesh.dim() == 2 ? std::sqrt(mean_measure) : std::cbrt(mean_measure);
-  return topology.filter_radius_elements * mean_size;
+  // The side of the square / cube with the mean cell measure for Q4 and
+  // Hex8, the mean edge length for triangles and tetrahedra (Mesh.hpp).
+  return topology.filter_radius_elements * mesh.mean_element_size();
 }
 
 Configuration parse_configuration(const json::Value& document, const std::string& source,
-                                  bool strict) {
+                                  bool strict, const std::string& base_directory) {
   if (!document.is_object()) {
     throw ConfigError(source + ": the top-level configuration must be a JSON object");
   }
@@ -216,27 +256,75 @@ Configuration parse_configuration(const json::Value& document, const std::string
       config.mesh_kind = MeshKind::StructuredQuad;
     } else if (type == "structured_hex") {
       config.mesh_kind = MeshKind::StructuredHex;
+    } else if (type == "structured_tri") {
+      config.mesh_kind = MeshKind::StructuredTri;
+    } else if (type == "structured_tet") {
+      config.mesh_kind = MeshKind::StructuredTet;
+    } else if (type == "file") {
+      config.mesh_kind = MeshKind::File;
     } else {
-      throw ConfigError("'" + mesh.path() +
-                        ".type' must be 'structured_quad' or 'structured_hex'; '" + type +
-                        "' is not implemented (the mesh layer is designed to accept "
-                        "further generators)");
+      throw ConfigError("'" + mesh.path() + ".type' must be one of structured_quad, "
+                        "structured_tri, structured_hex, structured_tet or file; got '" +
+                        type + "'");
     }
-    config.mesh_spec.nx = mesh.require("nx").integer();
-    config.mesh_spec.ny = mesh.require("ny").integer();
-    config.mesh_spec.lx = mesh.positive_number("lx");
-    config.mesh_spec.ly = mesh.positive_number("ly");
-    config.mesh_spec.x0 = mesh.number_or("x0", 0.0);
-    config.mesh_spec.y0 = mesh.number_or("y0", 0.0);
-    if (config.mesh_kind == MeshKind::StructuredHex) {
-      config.mesh_spec.nz = mesh.require("nz").integer();
-      config.mesh_spec.lz = mesh.positive_number("lz");
-      config.mesh_spec.z0 = mesh.number_or("z0", 0.0);
-    } else if (mesh.child("nz").exists() || mesh.child("lz").exists() ||
-               mesh.child("z0").exists()) {
-      throw ConfigError("'" + mesh.path() +
-                        "' gives nz/lz/z0 for a structured_quad mesh; use "
-                        "\"type\": \"structured_hex\" for a solid mesh");
+    if (config.mesh_kind == MeshKind::File) {
+      for (const char* key : {"nx", "ny", "nz", "lx", "ly", "lz", "x0", "y0", "z0"}) {
+        if (mesh.child(key).exists()) {
+          throw ConfigError("'" + mesh.path() + "." + key +
+                            "' does not apply to a mesh read from a file: its resolution "
+                            "and extent come from the mesher. Remove the key, or refine "
+                            "the mesh in the generator");
+        }
+      }
+      MeshFileConfig& file = config.mesh_file;
+      file.path = mesh.require("path").string();
+      std::filesystem::path resolved(file.path);
+      if (resolved.is_relative() && !base_directory.empty()) {
+        resolved = std::filesystem::path(base_directory) / resolved;
+      }
+      file.resolved_path = resolved.lexically_normal().string();
+      file.read.format = mesh.string_or("format", "auto");
+      file.read.scale = mesh.number_or("scale", 1.0);
+      if (!(file.read.scale > 0.0) || !std::isfinite(file.read.scale)) {
+        std::ostringstream os;
+        os << "'" << mesh.path() << ".scale' must be a positive factor (e.g. 0.001 for "
+           << "a mesh in millimetres), got " << file.read.scale;
+        throw ConfigError(os.str());
+      }
+      file.read.merge_duplicate_nodes = mesh.boolean_or("merge_duplicate_nodes", false);
+      file.read.duplicate_tolerance = mesh.number_or("duplicate_tolerance", 0.0);
+      // The reader's messages name the file and line; the deck key is added
+      // in front, and the error keeps its category (I/O versus mesh).
+      const std::string where = "'" + mesh.path() + ".path' = \"" + file.path + "\": ";
+      try {
+        config.file_mesh = std::make_shared<const Mesh>(
+            read_mesh_file(file.resolved_path, file.read, &config.mesh_report));
+      } catch (const IoError& e) {
+        throw IoError(where + e.what());
+      } catch (const MeshError& e) {
+        throw MeshError(where + e.what());
+      } catch (const ConfigError& e) {
+        throw ConfigError(where + e.what());
+      }
+    } else {
+      const bool solid = config.mesh_kind == MeshKind::StructuredHex ||
+                         config.mesh_kind == MeshKind::StructuredTet;
+      config.mesh_spec.nx = mesh.require("nx").integer();
+      config.mesh_spec.ny = mesh.require("ny").integer();
+      config.mesh_spec.lx = mesh.positive_number("lx");
+      config.mesh_spec.ly = mesh.positive_number("ly");
+      config.mesh_spec.x0 = mesh.number_or("x0", 0.0);
+      config.mesh_spec.y0 = mesh.number_or("y0", 0.0);
+      if (solid) {
+        config.mesh_spec.nz = mesh.require("nz").integer();
+        config.mesh_spec.lz = mesh.positive_number("lz");
+        config.mesh_spec.z0 = mesh.number_or("z0", 0.0);
+      } else if (mesh.child("nz").exists() || mesh.child("lz").exists() ||
+                 mesh.child("z0").exists()) {
+        throw ConfigError("'" + mesh.path() + "' gives nz/lz/z0 for a " + type +
+                          " mesh; use \"type\": \"structured_hex\" or "
+                          "\"structured_tet\" for a solid mesh");
+      }
     }
   }
   const int dim = config.dim();
@@ -264,8 +352,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
     }
     if (dim == 3 && config.thickness != 1.0) {
       std::ostringstream os;
-      os << "'model.thickness' is " << config.thickness
-         << " m but a structured_hex mesh is a solid with no thickness; remove the key";
+      os << "'model.thickness' is " << config.thickness << " m but the "
+         << config.describe_mesh() << " mesh is a solid with no thickness; remove the key";
       throw ConfigError(os.str());
     }
     config.stress_state = parse_stress_state(
@@ -273,8 +361,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
     if (stress_state_dimension(config.stress_state) != dim) {
       std::ostringstream os;
       os << "'model.stress_state' = \"" << to_string(config.stress_state) << "\" is a "
-         << stress_state_dimension(config.stress_state) << "-D idealisation but the mesh "
-         << "type '" << to_string(config.mesh_kind) << "' is " << dim << "-D";
+         << stress_state_dimension(config.stress_state) << "-D idealisation but the "
+         << config.describe_mesh() << " mesh is " << dim << "-D";
       throw ConfigError(os.str());
     }
     const ConfigNode integ = model.child("integration");
@@ -400,13 +488,40 @@ Configuration parse_configuration(const json::Value& document, const std::string
     const ConfigNode solver = root.child("solver");
     const ConfigNode lin = solver.child("linear");
     config.analysis.linear.type =
-        parse_linear_solver_type(lin.string_or("type", "simplicial_ldlt"));
+        parse_linear_solver_type(lin.string_or("type", "auto"));
     config.analysis.linear.iterative_tolerance =
         lin.number_or("iterative_tolerance", 1.0e-12);
     config.analysis.linear.max_iterations = lin.integer_or("max_iterations", 0);
     config.analysis.linear.residual_tolerance =
         lin.number_or("residual_tolerance", 1.0e-8);
     config.analysis.linear.pivot_tolerance = lin.number_or("pivot_tolerance", 1.0e-14);
+    config.analysis.linear.warm_start = lin.boolean_or("warm_start", true);
+    {
+      const ConfigNode limits = lin.child("auto_direct_limit");
+      LinearSolverOptions& l = config.analysis.linear;
+      l.auto_direct_limit_2d = limits.integer_or("plane", l.auto_direct_limit_2d);
+      l.auto_direct_limit_3d = limits.integer_or("solid", l.auto_direct_limit_3d);
+      if (l.auto_direct_limit_2d < 0 || l.auto_direct_limit_3d < 0) {
+        throw ConfigError("'solver.linear.auto_direct_limit' entries must be non-negative");
+      }
+    }
+    {
+      const ConfigNode amg = lin.child("amg");
+      AmgOptions& a = config.analysis.linear.amg;
+      a.strength_threshold = amg.number_or("strength_threshold", a.strength_threshold);
+      a.max_levels = amg.integer_or("max_levels", a.max_levels);
+      a.coarse_size = amg.integer_or("coarse_size", a.coarse_size);
+      a.smoother = parse_amg_smoother(amg.string_or("smoother", to_string(a.smoother)));
+      a.smoother_degree = amg.integer_or("smoother_degree", a.smoother_degree);
+      a.chebyshev_ratio = amg.number_or("chebyshev_ratio", a.chebyshev_ratio);
+      a.prolongator_damping = amg.number_or("prolongator_damping", a.prolongator_damping);
+      a.lanczos_steps = amg.integer_or("lanczos_steps", a.lanczos_steps);
+      a.reuse_aggregates = amg.boolean_or("reuse_aggregates", a.reuse_aggregates);
+      a.coarse_pivot_tolerance =
+          amg.number_or("coarse_pivot_tolerance", a.coarse_pivot_tolerance);
+      AmgPreconditioner check(a);  // validates, with the key in the message
+      (void)check;
+    }
     config.analysis.equilibrium_tolerance =
         solver.number_or("equilibrium_tolerance", 1.0e-6);
     config.analysis.check_model = solver.boolean_or("check_model", true);
@@ -431,6 +546,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
         modal.boolean_or("analyse_optimised_topology", true);
     config.modal.compare_mass_matched_baseline =
         modal.boolean_or("compare_mass_matched_baseline", true);
+    // The eigen solver factorises (or preconditions) with the deck's solver.
+    config.modal.options.linear = config.analysis.linear;
     if (config.modal.enabled && config.material().density() <= 0.0) {
       throw ConfigError(
           "modal analysis is enabled but material.density is zero; set a positive "
@@ -485,7 +602,30 @@ Configuration parse_configuration(const json::Value& document, const std::string
     o.mma.asymptote_decrease = mma.number_or("asymptote_decrease", 0.7);
     o.mma.c = mma.number_or("constraint_penalty", 1000.0);
     o.mma.epsimin = mma.number_or("subproblem_tolerance", 1.0e-7);
+    o.mma.max_inner_iterations =
+        mma.integer_or("max_newton_iterations", o.mma.max_inner_iterations);
+    o.mma.validate();
     o.constraint_tolerance = opt.number_or("constraint_tolerance", 1.0e-4);
+
+    // Heaviside projection with beta continuation.
+    {
+      const ConfigNode proj = topo.child("projection");
+      ProjectionOptions& pr = o.projection;
+      pr.enabled = proj.boolean_or("enabled", false);
+      pr.eta = proj.number_or("eta", pr.eta);
+      pr.beta_start = proj.number_or("beta_start", pr.beta_start);
+      pr.beta_max = proj.number_or("beta_max", pr.beta_max);
+      pr.beta_factor = proj.number_or("beta_factor", pr.beta_factor);
+      pr.beta_interval = proj.integer_or("beta_interval", pr.beta_interval);
+      pr.advance_on_convergence =
+          proj.boolean_or("advance_on_convergence", pr.advance_on_convergence);
+      pr.validate();
+      if (pr.enabled && config.topology.filter_type == FilterType::Sensitivity) {
+        throw ConfigError(
+            "'topology.projection' needs the density filter (or none): the sensitivity "
+            "filter has no chain rule to extend through the projection");
+      }
+    }
 
     // Aggregated von Mises stress constraint (MMA only).
     const ConfigNode stress = topo.child("stress");
@@ -554,13 +694,21 @@ Configuration parse_configuration(const json::Value& document, const std::string
 
 Configuration load_configuration(const std::string& path, bool strict) {
   const json::Value document = json::parse_file(path);
-  return parse_configuration(document, path, strict);
+  const std::string base = std::filesystem::path(path).parent_path().string();
+  return parse_configuration(document, path, strict, base.empty() ? "." : base);
 }
 
 Mesh build_mesh(const Configuration& config) {
   switch (config.mesh_kind) {
     case MeshKind::StructuredQuad: return make_structured_quad_mesh(config.mesh_spec);
     case MeshKind::StructuredHex: return make_structured_hex_mesh(config.mesh_spec);
+    case MeshKind::StructuredTri: return make_structured_tri_mesh(config.mesh_spec);
+    case MeshKind::StructuredTet: return make_structured_tet_mesh(config.mesh_spec);
+    case MeshKind::File:
+      if (config.file_mesh == nullptr) {
+        throw ConfigError("the configuration names a mesh file that has not been read");
+      }
+      return *config.file_mesh;
   }
   throw ConfigError("unhandled mesh type");
 }

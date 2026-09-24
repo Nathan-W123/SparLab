@@ -22,9 +22,10 @@ below it.
 |  io/          |          |  topopt/                |       |  fem/           |
 |  Json         |          |  DesignDomain           |       |  ModalAnalysis  |
 |  Config       |--------->|  SimpInterpolation      |------>|  StaticAnalysis |
-|  CsvWriter    |          |  DensityFilter          |       |  StressRecovery |
-|  VtkWriter    |          |  Sensitivity            |       |  ModelDiagnostics|
-|  StlWriter    |          |  StressConstraint       |       |  LinearSolver   |
+|  MeshReader   |          |  DensityFilter          |       |  StressRecovery |
+|  CsvWriter    |          |  Projection             |       |  ModelDiagnostics|
+|  VtkWriter    |          |  Sensitivity            |       |  LinearSolver   |
+|  StlWriter    |          |  StressConstraint       |       |  Multigrid      |
 |  CalculixWriter|         |  OptimalityCriteria     |       |  Assembler      |
 |  ResultWriter |          |  Mma                    |       |  FemModel       |
 +---------------+          |  TopologyOptimizer      |       |  BoundaryConds  |
@@ -38,8 +39,9 @@ below it.
                            +----------------+  +-------------+  +------------+
                            |  elements/     |  |  material/  |  |  mesh/     |
                            |  Element (abc) |  |  Isotropic  |  |  Mesh      |
-                           |  Quad4  Hex8   |  |  Material   |  |  Structured|
-                           |  Quadrature    |  |             |  |  SubMesh   |
+                           |  Quad4  Tri3   |  |  Material   |  |  Structured|
+                           |  Hex8   Tet4   |  |             |  |  SubMesh   |
+                           |  Quadrature    |  |             |  |            |
                            +-------+--------+  +------+------+  +-----+------+
                                    |                  |               |
                                    +--------+---------+---------------+
@@ -55,11 +57,14 @@ below it.
        loaders -> style -> fields / solid -> plots / plots3d / studies
    python/scripts/cross_validate.py  drives CalculiX and scikit-fem on the
        exported decks and compares nodal displacements
+   python/scripts/make_meshes.py  generates the two Gmsh meshes the
+       real-geometry decks read (the meshes are committed)
 ```
 
 The core is dimension-generic at run time: `Mesh::dim()` is 2 or 3, the
-element kernels are written for their own dimension (`Quad4` on a 2-D,
-`Hex8` on a 3-D mesh) and everything above the element layer - DOF
+element kernels are written for their own dimension (`Quad4` and `Tri3` on a
+2-D, `Hex8` and `Tet4` on a 3-D mesh) and everything above the element
+layer - DOF
 numbering, assembly, partitioning, stress recovery, modal analysis, the
 optimiser, the writers - is written against `dim`, `nodes_per_element` and
 the Voigt length rather than against a fixed 2. The Q4 kernels keep
@@ -72,19 +77,21 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | Component | Owns | Deliberately does *not* |
 |-----------|------|--------------------------|
 | `core/` | scalar and matrix aliases, the exception hierarchy, the logger, timing, build provenance | anything numerical |
-| `mesh/Mesh` | nodal coordinates (2-D or 3-D), flat connectivity with an explicit stride, validation, boundary edge / face extraction | materials, DOFs, physics |
-| `mesh/StructuredMesh` | the rectangular Q4 and the box Hex8 generators, each with a node-perturbing variant for patch tests | anything unstructured |
+| `mesh/Mesh` | nodal coordinates (2-D or 3-D), flat connectivity with an explicit stride, validation, boundary edge / face extraction, named node and element sets, cell-quality statistics | materials, DOFs, physics |
+| `mesh/StructuredMesh` | the rectangular Q4 and the box Hex8 generators, the Tri3 and Tet4 meshes split from them, each with a node-perturbing variant for patch tests | reading files |
 | `mesh/SubMesh` | extracting an element subset with compact renumbering; edge- (face-) connected components; the density-to-solid interpretation | deciding *whether* to interpret |
 | `material/IsotropicMaterial` | `(E, nu, rho)`, the plane-stress, plane-strain and three-dimensional matrices, input validation | element integration |
 | `elements/Element` | the abstract kernel interface: stiffness, consistent mass, strain operator, edge or face traction, local face tables | the element's own geometry |
 | `elements/Quad4`, `elements/Hex8` | the bilinear quadrilateral and the trilinear hexahedron | any other topology |
+| `elements/Tri3`, `elements/Tet4` | the constant-strain triangle and tetrahedron, in closed form | quadrature |
 | `elements/Quadrature` | Gauss-Legendre rules on the line, the square and the cube | where they are used |
 | `fem/DofManager` | DOF numbering, prescribed values, the free/prescribed partition, gather and scatter | assembly |
-| `fem/Selector` | purely geometric region selection (box, circle, annulus, ids, nearest node), unions and complements | what a region is *for* |
+| `fem/Selector` | region selection by geometry (box, circle, annulus, sphere, ids, nearest node) or by a mesh file's named group, unions and complements | what a region is *for* |
 | `fem/BoundaryConditions` | constraint and load specifications, and turning them into prescribed DOFs and a global force vector | solving |
 | `fem/FemModel` | the complete discrete model: mesh, material, idealisation, integration orders, DOFs, load cases | any numerics |
-| `fem/Assembler` | sparse assembly of `K` and `M`, block extraction, the uniform-mesh element cache | choosing scale factors |
-| `fem/LinearSolver` | five solver backends behind one interface, pivot inspection, residual verification | model semantics |
+| `fem/Assembler` | sparse assembly of `K` and `M`, block extraction, the uniform-mesh element cache, the cached sparsity pattern later assemblies scatter into | choosing scale factors |
+| `fem/LinearSolver` | the solver backends behind one interface (direct, multigrid CG, Jacobi CG, the automatic choice), warm starts, pivot inspection, residual verification | model semantics |
+| `fem/Multigrid` | the smoothed-aggregation hierarchy, its reuse across refactorisations, the V-cycle, preconditioned CG, the deterministic parallel kernels | which solver a model uses |
 | `fem/ModelDiagnostics` | per-component rigid-body and floating-region detection before any factorisation | fixing the model |
 | `fem/StaticAnalysis` | the reduced solve, reaction recovery, global equilibrium checks, one factorisation shared across load cases | stress |
 | `fem/StressRecovery` | strain, stress, von Mises, principal stresses, element strain energy, nodal averaging | plotting |
@@ -92,13 +99,15 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | `topopt/DesignDomain` | design variables, bounds, passive tags, element volumes, feasibility checks | the objective |
 | `topopt/SimpInterpolation` | `E(rho)`, its derivative, the mass laws | assembly |
 | `topopt/DensityFilter` | the filter operator, its exact adjoint, the Sigmund variant | the objective |
-| `topopt/Sensitivity` | the weighted-compliance objective, the exact gradients, the cached factorisation an adjoint solve reuses, and the finite-difference verifier | the update rule |
+| `topopt/Projection` | the smoothed Heaviside projection, its derivative, the `beta` schedule's options | when to raise `beta` |
+| `topopt/Sensitivity` | the weighted-compliance objective, the physical density (filtered and projected), the exact gradients through both, the linear solver an adjoint solve reuses, and the finite-difference verifier | the update rule |
 | `topopt/StressConstraint` | the relaxed, p-norm-aggregated von Mises constraint per load case, its adaptive scale and its adjoint gradient through the filter | the optimiser |
 | `topopt/OptimalityCriteria` | one OC step with multiplier bisection | the loop |
 | `topopt/Mma` | one MMA step: asymptotes, the convex subproblem and its primal-dual interior-point solve | the objective and constraints |
-| `topopt/TopologyOptimizer` | the loop for either method, continuation, convergence, history, snapshots | I/O |
+| `topopt/TopologyOptimizer` | the loop for either method, penalty and `beta` continuation, convergence, history, snapshots | I/O |
 | `io/Json` | a self-contained JSON reader/writer and a path-aware, typo-catching config reader | the schema |
 | `io/Config` | the input-deck schema, validation, and model construction | numerics |
+| `io/MeshReader` | Gmsh (MSH 2.2 / 4.1) and Abaqus / CalculiX `.inp` import: cell types, named sets, orientation repair, unused and duplicate nodes, units, the read report | boundary conditions or materials in the file |
 | `io/CsvWriter`, `io/VtkWriter` | plain-text export with explicit precision | what to export |
 | `io/StlWriter` | the boundary surface of a mesh (extruded for a plane one) as an indexed triangle surface, its closure and manifold checks, binary STL in and out | choosing what to export |
 | `io/CalculixWriter` | one CalculiX input deck per load case for the same discrete problem | running CalculiX |
@@ -106,6 +115,7 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | `apps/` | argument parsing, orchestration, console reports, exit codes | physics |
 | `python/sparlab_viz` | reading result files and drawing figures (plane fields in `fields`/`plots`, solid surfaces in `solid`/`plots3d`) | recomputing physics |
 | `python/scripts/cross_validate.py` | driving CalculiX and scikit-fem on the exported problems and comparing nodal displacements | judging which code is right |
+| `python/scripts/make_meshes.py` | the two Gmsh parts of the real-geometry decks, their physical groups, deterministic mesher options | the analysis |
 
 ## Design decisions worth naming
 
@@ -120,7 +130,51 @@ factorises `K_ff` once and `solve_load_vector()` reuses it, so a three-load-case
 design costs one factorisation and three back-substitutions per iteration rather
 than three factorisations. Combined with self-adjointness (no adjoint solve for
 the compliance gradient), that is what makes multi-load-case optimisation on a
-38 000-element mesh a 5-minute job rather than an hour.
+38 000-element mesh a 5-minute job rather than an hour. With the multigrid
+solver the same interface means one hierarchy update per iteration and one
+warm-started CG solve per load case: the objective keeps its solver, and the
+solver keeps its aggregates and each load case's last solution, between
+iterations.
+
+**A direct solver as the reference, multigrid for scale.** The committed 2-D
+decks and the verification studies run on the sparse Cholesky factorisation,
+whose answer does not depend on a tolerance - except the multigrid study
+itself, and the two finest Tet4 meshes of the simplex convergence study,
+where `auto` selects multigrid (the summary records which ran). The
+multigrid CG solver is the
+path to large 3-D models; it is verified against the direct solver (to the
+iterative tolerance, on every element type) rather than trusted, and `auto`
+switches to it only above a size where the factorisation's fill starts to
+dominate. Writing the multigrid rather than linking one kept the build at
+Eigen and a C++17 compiler, and let it use what the model knows - node
+coordinates for the rigid-body near-null space, the DOF blocks for the
+strength of connection - which a generic algebraic package would have to be
+told.
+
+**Assembly into a cached pattern.** An optimisation re-assembles a matrix
+whose pattern never changes, hundreds of times. The first assembly records
+where every element block lands; later ones scatter into those slots in
+element order - the order the triplet path sums duplicates in - so the
+matrix is bitwise identical, which a test asserts, and the per-assembly sort
+and triplet storage disappear. On the largest scaling mesh that was the
+difference between assembly dominating a multigrid solve and being a small
+part of it.
+
+**The projection defines the physical density.** With the Heaviside
+projection on, `rho_bar` rather than the filtered density is what the SIMP
+law, the volume constraint, the stress constraint, the grey level and the
+interpretation see, and the chain rule runs through it for every function.
+Nothing downstream needed to know whether the projection is on, and the
+finite-difference verification covers the combination.
+
+**A mesh file is checked, not trusted.** The readers treat a file from
+another tool the way a reviewer would: unsupported and mixed cell types are
+refused with the re-export that fixes them, orientation is repaired and
+counted, unused and coincident nodes are reported, the unit scale is checked
+for plausibility, and everything - including the keywords that were ignored -
+lands in the summary. Named groups become node and element sets, so a deck
+addresses `"group": "bolt_holes"` instead of coordinates that would break
+the moment the geometry changes.
 
 **Element-matrix cache for uniform grids.** On a uniform structured mesh every
 cell is geometrically identical, so `K_e^0` and `M_e^0` are integrated once. The
@@ -184,11 +238,15 @@ The interfaces were shaped so the following are additions, not rewrites.
 
 **A new element topology.** Implement `Element` (the kernels plus the local
 face table), add an `ElementType` enumerator, and register it in
-`make_element()`. That is exactly how `Hex8` was added: the layers above it
-are written against `dim()`, `num_nodes()`, `num_faces()` and `num_voigt()`
-and needed no change. `Mesh` already stores connectivity as a flat array with
-an explicit stride; mixed topologies need that stride replaced by a
-per-element offset table, which is the one change outside the new subclass.
+`make_element()`. That is exactly how `Hex8`, and later `Tri3` and `Tet4`,
+were added: the layers above them are written against `dim()`,
+`num_nodes()`, `num_faces()` and `num_voigt()` and needed no change beyond
+the writers' cell-type tables (VTK, CalculiX, STL faces). `Mesh` stores
+connectivity as a flat array with an explicit stride, so one mesh holds one
+cell type; mixed meshes (a quad-dominant plane mesh, a hex mesh with prisms)
+need that stride replaced by a per-element offset table, which is the one
+change outside the new subclasses. The readers refuse such files today and
+say how to re-export them.
 
 **Plane strain.** Already implemented and unit-tested end to end: set
 `model.stress_state` to `plane_strain`. The constitutive matrix, the von Mises
@@ -203,10 +261,12 @@ temperature-dependent material replaces that with a small interface returning
 `D` per element; nothing above the element layer depends on the material being
 isotropic.
 
-**An unstructured mesh.** `Mesh` accepts arbitrary coordinates and connectivity
-today, and everything except `StructuredMesh`, the structured index helpers and
-the `imshow` fast path in the Python layer already works on one. A reader for an
-external mesh format slots in beside `make_structured_quad_mesh`.
+**Another mesh format.** `io/MeshReader` reads Gmsh and Abaqus / CalculiX
+files into a `Mesh` with named sets and a `MeshReadReport`; a third format
+is one more function with the same signature, dispatched on `format` or the
+file extension. The checks after parsing (orientation, unused and duplicate
+nodes, units, quality) are shared, so a new reader only has to produce
+coordinates, cells and sets.
 
 **A different optimiser.** `ComplianceObjective::evaluate` returns the objective,
 the volume constraint and both gradients; `optimality_criteria_update` and
@@ -216,16 +276,25 @@ a third, again without touching the objective.
 
 **A new constraint.** `StressConstraint` is the template: it takes the model,
 the assembler and the filter, evaluates its value and gradient from an
-`ObjectiveEvaluation` (reusing the cached factorisation for its adjoint solve
-through `ComplianceObjective::solve_adjoint`) and hands one row of `fval` /
-`dfdx` to MMA. A frequency constraint, a displacement bound or a second volume
-budget on a region fits the same shape.
+`ObjectiveEvaluation` (reusing the objective's solver for its adjoint solve
+through `ComplianceObjective::solve_adjoint`, and its chain rule through the
+filter and projection through `ComplianceObjective::chain_to_design`) and
+hands one row of `fval` / `dfdx` to MMA. A frequency constraint, a
+displacement bound or a second volume budget on a region fits the same
+shape.
 
 **A new objective.** The self-adjoint shortcut in `Sensitivity.cpp` is specific
 to compliance. A non-self-adjoint objective (a displacement at a point, a
 frequency) needs an adjoint solve, which the stress constraint already
-exercises: the factorisation is cached and reused for the adjoint right-hand
-side.
+exercises: the solver is kept and reused for the adjoint right-hand side,
+with its own warm start per adjoint.
+
+**Another linear solver.** `LinearSolver` is the interface: `factorize`,
+`solve`, `solve_from` (with an initial guess), `set_layout` (the node
+coordinates and DOF map an algebraic multigrid needs), and the statistics
+the summary records. A new backend - a supernodal Cholesky, a GPU CG - is a
+subclass and an entry in `make_linear_solver()`; the verification studies'
+solver-agreement check then covers it.
 
 **A new external code for cross-validation.** `CalculixWriter` shows the
 shape: write the same nodes, connectivity, supports and nodal loads in the
@@ -239,11 +308,17 @@ node-by-node comparison, the tolerances and the summary.
 include/sparlab/          public headers, one per component, documented
 src/                      implementations, mirroring include/
 apps/                     four command-line drivers plus shared CLI support
-tests/                    twelve Catch2 translation units plus shared fixtures
-configs/benchmarks/       the six benchmark decks (four plane compliance cases,
-                          the stress-constrained L-bracket, the solid bracket)
+tests/                    fifteen Catch2 translation units plus shared fixtures
+configs/benchmarks/       the eleven benchmark decks (four plane compliance
+                          cases and the MBB beam's projected variant, the
+                          stress-constrained L-bracket, the solid bracket, its
+                          projected and its 356k-DOF variants, and the two
+                          parts read from mesh files)
+configs/meshes/           the Gmsh / Abaqus meshes those two parts read, each
+                          with a .json record of how it was generated
 configs/studies/          the design-study baseline deck
-configs/verification/     the plane and the solid static+modal decks
+configs/verification/     the static+modal decks the cross-validation solves
+                          (Q4, Hex8, Tri3, Tet4, and the lug at nu = 0)
 python/sparlab_viz/       loaders, style, field artists (plane and solid), figures
 python/scripts/           figure and table drivers, the cross-validation driver
 scripts/                  run scripts (benchmarks, verification, cross-validation,

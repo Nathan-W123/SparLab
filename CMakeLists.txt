@@ -54,12 +54,15 @@ add_library(sparlab STATIC
   src/elements/Element.cpp
   src/elements/Quad4.cpp
   src/elements/Hex8.cpp
+  src/elements/Tri3.cpp
+  src/elements/Tet4.cpp
   src/fem/DofManager.cpp
   src/fem/Selector.cpp
   src/fem/BoundaryConditions.cpp
   src/fem/FemModel.cpp
   src/fem/Assembler.cpp
   src/fem/LinearSolver.cpp
+  src/fem/Multigrid.cpp
   src/fem/ModelDiagnostics.cpp
   src/fem/StaticAnalysis.cpp
   src/fem/StressRecovery.cpp
@@ -70,6 +73,7 @@ add_library(sparlab STATIC
   src/topopt/Sensitivity.cpp
   src/topopt/OptimalityCriteria.cpp
   src/topopt/Mma.cpp
+  src/topopt/Projection.cpp
   src/topopt/StressConstraint.cpp
   src/topopt/TopologyOptimizer.cpp
   src/io/Json.cpp
@@ -78,6 +82,7 @@ add_library(sparlab STATIC
   src/io/VtkWriter.cpp
   src/io/StlWriter.cpp
   src/io/CalculixWriter.cpp
+  src/io/MeshReader.cpp
   src/io/ResultWriter.cpp
 )
 

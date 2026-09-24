@@ -39,7 +39,7 @@ a 41-point sweep is affordable.
 | SIMP | `p` = 3 with continuation from 1.5 in 3 stages of 30 iterations, `emin_ratio` = 1e-9, mass law `penalty_matched` |
 | Filter | density filter, radius 1.5 cells = 3.75 mm |
 | Optimiser | OC, move limit 0.2, damping 0.5 |
-| Convergence | `max |dx| < 1e-2` **or** relative objective change `< 5e-5` over 20 iterations, cap 600 iterations |
+| Convergence | `max |dx| < 1e-2` **or** relative compliance spread `(max - min) / c` `< 5e-5` over the last 21 iterations, cap 600 iterations |
 
 The convergence rule is deliberately identical to the four plane benchmark decks, so
 compliance is comparable between a study point and a benchmark, and every point

@@ -25,7 +25,8 @@ int main(int argc, char** argv) {
   return app::run_guarded([&]() -> int {
     const std::vector<std::string> known = {"config",   "output",        "verbosity",
                                             "strict-config", "modes",   "no-vtk",
-                                            "no-csv",   "export-calculix", "help"};
+                                            "no-csv",   "export-calculix", "solver",
+                                            "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -33,6 +34,8 @@ int main(int argc, char** argv) {
           {{"--config <file>", "input deck describing mesh, material, BCs, loads"},
            {"--output <dir>", "output directory (default results/<case>)"},
            {"--modes <n>", "override modal.num_modes and enable modal analysis"},
+           {"--solver <type>", "override solver.linear.type (simplicial_ldlt, amg_cg, "
+                               "auto, ...)"},
            {"--no-vtk", "skip VTK output"},
            {"--no-csv", "skip per-node/per-element CSV output"},
            {"--export-calculix", "also write one CalculiX .inp per load case into the "
@@ -51,6 +54,10 @@ int main(int argc, char** argv) {
     }
     if (cli.has("no-vtk")) config.output.write_vtk = false;
     if (cli.has("no-csv")) config.output.write_csv = false;
+    if (cli.has("solver")) {
+      config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
+      config.modal.options.linear.type = config.analysis.linear.type;
+    }
 
     const std::string out_dir =
         cli.value("output", app::default_output_directory(config.name));
@@ -133,6 +140,16 @@ int main(int argc, char** argv) {
     std::cout << "  mesh:        " << model.mesh().num_elements() << " elements, "
               << model.dofs().num_dofs() << " DOFs (" << model.dofs().num_free()
               << " free)\n";
+    if (!solutions.empty()) {
+      std::cout << "  solver:      " << solutions.front().solver_name;
+      int iterations = 0;
+      for (const StaticSolution& s : solutions) iterations += s.solver_iterations;
+      if (iterations > 0) {
+        std::cout << ", " << iterations << " CG iterations over " << solutions.size()
+                  << " load case(s)";
+      }
+      std::cout << "\n";
+    }
     for (std::size_t l = 0; l < solutions.size(); ++l) {
       const StaticSolution& s = solutions[l];
       std::cout << "  load case '" << s.load_case_name << "': compliance "

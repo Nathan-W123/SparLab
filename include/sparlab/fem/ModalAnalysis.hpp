@@ -34,6 +34,7 @@
 #include "sparlab/core/Types.hpp"
 #include "sparlab/fem/Assembler.hpp"
 #include "sparlab/fem/FemModel.hpp"
+#include "sparlab/fem/LinearSolver.hpp"
 
 #include <string>
 #include <vector>
@@ -58,6 +59,12 @@ struct ModalAnalysisOptions {
   /// Fixed seed for the random part of the starting subspace, so runs are
   /// bit-for-bit reproducible.
   unsigned int seed = 20240917u;
+  /// Solver for the shift-inverted systems. A sparse Cholesky factorisation
+  /// serves every subspace iteration with back-substitutions; multigrid CG
+  /// (or "auto" above its size limit) solves each column iteratively, warm
+  /// started from the converging subspace, and needs K - sigma M positive
+  /// definite (a shift at or below zero).
+  LinearSolverOptions linear;
 };
 
 struct ModalResult {
@@ -72,6 +79,8 @@ struct ModalResult {
   int iterations = 0;
   int subspace_size = 0;
   bool converged = false;
+  std::string linear_solver;     ///< solver of the shifted systems ("" for the dense path)
+  Index linear_iterations = 0;   ///< iterative-solver iterations over all subspace solves
   Scalar final_change = 0.0;
   std::vector<std::string> warnings;
 };

@@ -667,6 +667,15 @@ TEST_CASE("stress and method keys parse and are validated", "[stress][mma][io][c
   REQUIRE(ok.topology.optimizer.stress.limit == Approx(1.2e8));
   REQUIRE(ok.topology.optimizer.stress.p_norm == Approx(10.0));
   REQUIRE(ok.topology.optimizer.stress.relaxation == Approx(0.6));
+  REQUIRE(ok.topology.optimizer.mma.max_inner_iterations == 500);  // the default
+
+  // The Newton budget of the subproblem is a deck key, validated at load.
+  const Configuration budget = parse(R"(
+      "optimizer": { "method": "mma", "mma": { "max_newton_iterations": 750 } } } })");
+  REQUIRE(budget.topology.optimizer.mma.max_inner_iterations == 750);
+  REQUIRE_THROWS_AS(parse(R"(
+      "optimizer": { "method": "mma", "mma": { "max_newton_iterations": 5 } } } })"),
+                    ConfigError);
 
   // Stress without MMA, with the sensitivity filter, or with q >= p is refused.
   REQUIRE_THROWS_AS(parse(R"("stress": { "enabled": true, "limit": 1e8 } } })"), ConfigError);

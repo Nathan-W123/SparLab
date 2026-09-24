@@ -8,9 +8,9 @@
 /// interface is dimension-generic: coordinates, constitutive matrices and the
 /// strain operator are dynamic Eigen matrices sized by `dim()` and
 /// `num_voigt()`, so the assembler, stress recovery and load application are
-/// written once for the plane Q4 and the solid Hex8. Adding a new topology
-/// (Q8, T3, Tet4, ...) means adding one subclass and one entry to
-/// `make_element`; no other component changes.
+/// written once for every topology: the plane Q4 and Tri3 and the solid Hex8
+/// and Tet4. Adding a new topology (Q8, Tet10, ...) means adding one subclass
+/// and one entry to `make_element`; no other component changes.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -21,15 +21,17 @@
 
 namespace sparlab {
 
-/// Element-local coordinates on the reference domain. `zeta` is ignored by
-/// plane elements.
+/// Element-local coordinates on the reference domain: the square / cube
+/// [-1, 1]^dim for Q4 and Hex8, the unit triangle / tetrahedron for Tri3 and
+/// Tet4. `zeta` is ignored by plane elements.
 struct NaturalPoint {
   Scalar xi = 0.0;
   Scalar eta = 0.0;
   Scalar zeta = 0.0;
 };
 
-/// Quadrature orders used by an element's kernels.
+/// Quadrature orders used by an element's kernels. The linear simplices
+/// (Tri3, Tet4) evaluate every kernel in closed form, exactly, and ignore them.
 struct IntegrationOptions {
   int stiffness_points = 2;  ///< points per direction for K_e
   int mass_points = 3;       ///< points per direction for M_e
@@ -53,6 +55,11 @@ class Element {
   virtual int num_nodes() const = 0;
   /// Number of boundary faces (edges in 2-D).
   virtual int num_faces() const = 0;
+
+  /// Natural coordinates of the element centroid: the origin of the
+  /// reference square / cube, (1/3, 1/3) on the triangle, (1/4, 1/4, 1/4) on
+  /// the tetrahedron.
+  virtual NaturalPoint reference_centroid() const { return NaturalPoint(); }
 
   /// Degrees of freedom carried by the element (num_nodes * dim).
   int num_dofs() const { return num_nodes() * dim(); }

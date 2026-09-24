@@ -27,11 +27,13 @@ struct SubMeshResult {
 };
 
 /// Build a mesh from the given element subset, renumbering nodes compactly.
+/// Named node and element sets are carried over, restricted to the retained
+/// entities (a set may become empty).
 /// \throws MeshError when the subset is empty.
 SubMeshResult extract_element_subset(const Mesh& mesh, const std::vector<Index>& elements);
 
-/// Connected components of the element graph using *shared faces* (two shared
-/// nodes in 2-D, four in 3-D), which is the correct connectivity for load
+/// Connected components of the element graph using *shared faces* (an edge in
+/// 2-D, a quadrilateral or triangular face in 3-D), which is the correct connectivity for load
 /// transfer: elements that only touch at a corner or an edge form a hinge, not
 /// a connection.
 std::vector<std::vector<Index>> element_components_by_face(const Mesh& mesh);

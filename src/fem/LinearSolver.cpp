@@ -100,6 +100,11 @@ class LdltSolver final : public LinearSolver {
 
   std::string name() const override { return "SimplicialLDLT"; }
 
+  Index storage_nonzeros() const override {
+    return static_cast<Index>(solver_.matrixL().nestedExpression().nonZeros() +
+                              solver_.vectorD().size());
+  }
+
  private:
   Eigen::SimplicialLDLT<SparseMatrix, Eigen::Lower, Eigen::AMDOrdering<StorageIndex>> solver_;
   Scalar pivot_tol_;
@@ -154,8 +159,20 @@ class CgSolver final : public LinearSolver {
     report_info(solver_, name() + " setup");
   }
 
-  Vector solve(const Vector& b) override {
-    Vector x = solver_.solve(b);
+  Vector solve(const Vector& b) override { return check(solver_.solve(b)); }
+
+  Vector solve_from(const Vector& b, const Vector& initial_guess) override {
+    if (initial_guess.size() != b.size()) return solve(b);
+    return check(solver_.solveWithGuess(b, initial_guess));
+  }
+
+  std::string name() const override { return "ConjugateGradient(Jacobi)"; }
+  bool iterative() const override { return true; }
+  int last_iterations() const override { return iterations_; }
+  Scalar last_error() const override { return error_; }
+
+ private:
+  Vector check(Vector x) {
     if (solver_.info() != Eigen::Success) {
       std::ostringstream os;
       os << name() << " did not converge: " << solver_.iterations()
@@ -170,11 +187,6 @@ class CgSolver final : public LinearSolver {
     return x;
   }
 
-  std::string name() const override { return "ConjugateGradient(Jacobi)"; }
-  int last_iterations() const override { return iterations_; }
-  Scalar last_error() const override { return error_; }
-
- private:
   Eigen::ConjugateGradient<SparseMatrix, Eigen::Lower | Eigen::Upper,
                            Eigen::DiagonalPreconditioner<Scalar>>
       solver_;
@@ -182,6 +194,143 @@ class CgSolver final : public LinearSolver {
   int max_iterations_;
   int iterations_ = 0;
   Scalar error_ = 0.0;
+};
+
+/// Conjugate gradients preconditioned by one smoothed-aggregation V-cycle.
+class AmgCgSolver final : public LinearSolver {
+ public:
+  explicit AmgCgSolver(const LinearSolverOptions& options)
+      : options_(options), amg_(options.amg) {}
+
+  void set_layout(const DofLayout& layout) override {
+    layout_ = layout;
+    has_layout_ = true;
+  }
+
+  void factorize(const SparseMatrix& a) override {
+    check_square_finite(a, name());
+    if (!has_layout_) {
+      throw SolverError(name() +
+                        " needs the DOF layout (node coordinates of the unknowns) to "
+                        "build its rigid-body near-null space; the caller did not supply "
+                        "one. Use a direct solver for a bare matrix");
+    }
+    matrix_ = &a;
+    amg_.setup(a, layout_);
+  }
+
+  Vector solve(const Vector& b) override {
+    Vector x = Vector::Zero(b.size());
+    return run(b, x);
+  }
+
+  Vector solve_from(const Vector& b, const Vector& initial_guess) override {
+    Vector x = initial_guess.size() == b.size() ? initial_guess : Vector::Zero(b.size());
+    return run(b, x);
+  }
+
+  std::string name() const override {
+    return std::string("AMG-CG(") + to_string(options_.amg.smoother) + ")";
+  }
+  bool iterative() const override { return true; }
+  int last_iterations() const override { return iterations_; }
+  Scalar last_error() const override { return error_; }
+  const AmgStats* amg_stats() const override { return &amg_.stats(); }
+  Index storage_nonzeros() const override { return amg_.stats().storage_nonzeros; }
+
+ private:
+  Vector run(const Vector& b, Vector& x) {
+    if (matrix_ == nullptr) throw SolverError(name() + ": solve called before factorize");
+    const int cap = options_.max_iterations > 0 ? options_.max_iterations : 1000;
+    const PcgResult result =
+        pcg_solve(*matrix_, b, x, amg_, options_.iterative_tolerance, cap);
+    iterations_ = result.iterations;
+    error_ = result.relative_residual;
+    if (!result.converged) {
+      std::ostringstream os;
+      os << name() << " did not converge: " << result.iterations
+         << " iterations left a relative residual of " << result.relative_residual
+         << " against a tolerance of " << options_.iterative_tolerance << " ("
+         << amg_.stats().levels.size() << " levels, operator complexity "
+         << amg_.stats().operator_complexity
+         << "). Raise solver.linear.max_iterations, lower "
+            "solver.linear.amg.strength_threshold, raise amg.smoother_degree, or use "
+            "\"simplicial_ldlt\"";
+      throw ConvergenceError(os.str());
+    }
+    return x;
+  }
+
+  LinearSolverOptions options_;
+  AmgPreconditioner amg_;
+  DofLayout layout_;
+  bool has_layout_ = false;
+  const SparseMatrix* matrix_ = nullptr;
+  int iterations_ = 0;
+  Scalar error_ = 0.0;
+};
+
+/// Direct factorisation for small systems, multigrid CG for large ones. The
+/// choice is made at every factorisation from the number of unknowns and the
+/// dimension of the layout; a solver of the chosen kind is kept, so a
+/// multigrid hierarchy is reused across factorisations.
+class AutoSolver final : public LinearSolver {
+ public:
+  explicit AutoSolver(const LinearSolverOptions& options) : options_(options) {}
+
+  void set_layout(const DofLayout& layout) override {
+    layout_ = layout;
+    has_layout_ = true;
+    if (inner_) inner_->set_layout(layout);
+  }
+
+  void factorize(const SparseMatrix& a) override {
+    const int dim = has_layout_ ? layout_.dim : 2;
+    const Index limit =
+        dim == 3 ? options_.auto_direct_limit_3d : options_.auto_direct_limit_2d;
+    const LinearSolverType wanted =
+        (has_layout_ && static_cast<Index>(a.rows()) > limit) ? LinearSolverType::AmgCg
+                                                               : LinearSolverType::SimplicialLdlt;
+    if (!inner_ || wanted != chosen_) {
+      LinearSolverOptions o = options_;
+      o.type = wanted;
+      inner_ = make_linear_solver(o);
+      if (has_layout_) inner_->set_layout(layout_);
+      chosen_ = wanted;
+      log::debug("linear solver 'auto': ", a.rows(), " unknowns (limit ", limit, " in ",
+                 dim, "-D) -> ", inner_->name());
+    }
+    inner_->factorize(a);
+  }
+
+  Vector solve(const Vector& b) override { return inner().solve(b); }
+  Vector solve_from(const Vector& b, const Vector& x0) override {
+    return inner().solve_from(b, x0);
+  }
+  std::string name() const override {
+    return inner_ ? "auto:" + inner_->name() : std::string("auto");
+  }
+  bool iterative() const override { return inner_ && inner_->iterative(); }
+  int last_iterations() const override { return inner_ ? inner_->last_iterations() : 0; }
+  Scalar last_error() const override { return inner_ ? inner_->last_error() : 0.0; }
+  const AmgStats* amg_stats() const override {
+    return inner_ ? inner_->amg_stats() : nullptr;
+  }
+  Index storage_nonzeros() const override {
+    return inner_ ? inner_->storage_nonzeros() : 0;
+  }
+
+ private:
+  LinearSolver& inner() {
+    if (!inner_) throw SolverError("linear solver 'auto': solve called before factorize");
+    return *inner_;
+  }
+
+  LinearSolverOptions options_;
+  DofLayout layout_;
+  bool has_layout_ = false;
+  std::unique_ptr<LinearSolver> inner_;
+  LinearSolverType chosen_ = LinearSolverType::SimplicialLdlt;
 };
 
 class DenseLuSolver final : public LinearSolver {
@@ -227,6 +376,8 @@ std::string to_string(LinearSolverType type) {
     case LinearSolverType::SparseLu: return "sparse_lu";
     case LinearSolverType::ConjugateGradient: return "conjugate_gradient";
     case LinearSolverType::DenseLu: return "dense_lu";
+    case LinearSolverType::AmgCg: return "amg_cg";
+    case LinearSolverType::Auto: return "auto";
   }
   return "unknown";
 }
@@ -242,9 +393,11 @@ LinearSolverType parse_linear_solver_type(const std::string& text) {
   if (lower == "conjugate_gradient" || lower == "cg")
     return LinearSolverType::ConjugateGradient;
   if (lower == "dense_lu" || lower == "dense") return LinearSolverType::DenseLu;
+  if (lower == "amg_cg" || lower == "amg" || lower == "multigrid") return LinearSolverType::AmgCg;
+  if (lower == "auto") return LinearSolverType::Auto;
   throw ConfigError("unknown linear solver '" + text +
                     "' (expected simplicial_ldlt|simplicial_llt|sparse_lu|"
-                    "conjugate_gradient|dense_lu)");
+                    "conjugate_gradient|dense_lu|amg_cg|auto)");
 }
 
 std::unique_ptr<LinearSolver> make_linear_solver(const LinearSolverOptions& options) {
@@ -260,6 +413,10 @@ std::unique_ptr<LinearSolver> make_linear_solver(const LinearSolverOptions& opti
                                         options.max_iterations);
     case LinearSolverType::DenseLu:
       return std::make_unique<DenseLuSolver>();
+    case LinearSolverType::AmgCg:
+      return std::make_unique<AmgCgSolver>(options);
+    case LinearSolverType::Auto:
+      return std::make_unique<AutoSolver>(options);
   }
   throw ConfigError("unhandled linear solver type");
 }
