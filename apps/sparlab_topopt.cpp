@@ -38,6 +38,8 @@
 #include "sparlab/io/Config.hpp"
 #include "sparlab/io/ResultWriter.hpp"
 #include "sparlab/mesh/SubMesh.hpp"
+#include "sparlab/topopt/LengthScale.hpp"
+#include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
 #include <iostream>
@@ -121,7 +123,8 @@ int main(int argc, char** argv) {
         "youngs-modulus", "load-weights", "modes",     "no-vtk",
         "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
         "solver",        "projection",  "no-projection", "beta-max",   "buckling",
-        "min-load-factor", "no-buckling-constraint", "help"};
+        "min-load-factor", "no-buckling-constraint", "robust", "no-robust",
+        "overhang",      "no-overhang-filter", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -147,6 +150,11 @@ int main(int argc, char** argv) {
            {"--min-load-factor <l>", "enable the buckling constraint lambda >= l "
                                      "(switches to MMA)"},
            {"--no-buckling-constraint", "disable the deck's buckling constraint"},
+           {"--robust / --no-robust", "switch the robust (eroded/dilated) formulation on "
+                                      "(with the projection) or off"},
+           {"--overhang <dir>", "apply the overhang filter for build direction dir "
+                                "(+x, -y, +z, ...)"},
+           {"--no-overhang-filter", "keep the deck's overhang check but not its filter"},
            {"--solver <type>", "override solver.linear.type (simplicial_ldlt, amg_cg, "
                                "auto, ...)"},
            {"--projection / --no-projection", "switch the Heaviside projection on (with "
@@ -256,7 +264,23 @@ int main(int argc, char** argv) {
       config.topology.optimizer.projection.beta_max = cli.number("beta-max", 32.0);
     }
     if (cli.has("no-projection")) config.topology.optimizer.projection.enabled = false;
+    if (cli.has("robust") && cli.has("no-robust")) {
+      throw ConfigError("--robust and --no-robust contradict each other");
+    }
+    if (cli.has("robust")) {
+      config.topology.optimizer.projection.enabled = true;
+      config.topology.optimizer.projection.robust = true;
+      config.topology.length_scale_check = true;
+    }
+    if (cli.has("no-robust")) config.topology.optimizer.projection.robust = false;
     config.topology.optimizer.projection.validate();
+    if (cli.has("overhang")) {
+      config.topology.optimizer.overhang.direction =
+          parse_build_direction(cli.value("overhang"), config.dim());
+      config.topology.optimizer.overhang.filter = true;
+      config.topology.overhang_check = true;
+    }
+    if (cli.has("no-overhang-filter")) config.topology.optimizer.overhang.filter = false;
     if (cli.has("no-vtk")) config.output.write_vtk = false;
     if (cli.has("no-csv")) config.output.write_csv = false;
     if (cli.has("tag")) config.name += "_" + cli.value("tag");
@@ -446,6 +470,32 @@ int main(int argc, char** argv) {
       }
     }
 
+    // ---- manufacturability checks -------------------------------------------
+    // What the final design delivers on the two process limits this code
+    // models: unsupported overhangs for a build direction, and the minimum
+    // member and gap size. Nothing else about manufacturability is checked.
+    json::Value manufacturing = json::Value::make_object();
+    std::unique_ptr<OverhangReport> overhang_report;
+    std::unique_ptr<LengthScaleScan> length_report;
+    {
+      const Scalar threshold = config.topology.optimizer.interpretation_threshold;
+      if (config.topology.overhang_check) {
+        const OverhangFilter stencil(model.mesh(), config.topology.optimizer.overhang);
+        overhang_report = std::make_unique<OverhangReport>(check_overhang(
+            stencil, result.physical_density, domain.element_volumes(), threshold));
+        manufacturing.set("overhang", overhang_json(*overhang_report,
+                                                    result.overhang_filtered));
+      }
+      if (config.topology.length_scale_check) {
+        const Scalar cell = model.mesh().mean_element_size();
+        length_report = std::make_unique<LengthScaleScan>(scan_length_scale(
+            model.mesh(), result.physical_density, domain.element_volumes(), threshold,
+            0.5 * cell, config.topology.length_scale_max_radius_elements * cell,
+            config.topology.length_scale_tolerance));
+        manufacturing.set("length_scale", length_scale_json(*length_report));
+      }
+    }
+
     // ---- buckling check ------------------------------------------------------
     // The load factors of the full solid domain and of the interpreted
     // structure - the part the STL describes - for the same load cases. The
@@ -615,6 +665,7 @@ int main(int argc, char** argv) {
     }
     summary.set("geometry_export", geometry);
     if (!buckling_check.members().empty()) summary.set("buckling_check", buckling_check);
+    if (!manufacturing.members().empty()) summary.set("manufacturing_checks", manufacturing);
     writer.write_json("summary.json", summary);
 
     // ---- console report ----------------------------------------------------
@@ -674,6 +725,32 @@ int main(int argc, char** argv) {
                   << " of the limit";
       }
       std::cout << "\n";
+    }
+    if (result.robust) {
+      const RobustRecord& rr = result.robust_record;
+      std::cout << "  robust:      compliance eroded " << app::format(rr.compliance_eroded)
+                << " J, blueprint " << app::format(rr.compliance_intermediate)
+                << " J, dilated " << app::format(rr.compliance_dilated)
+                << " J; volume fractions " << app::format(rr.volume_fraction_eroded) << " / "
+                << app::format(rr.volume_fraction_intermediate) << " / "
+                << app::format(rr.volume_fraction_dilated) << "\n";
+    }
+    if (overhang_report) {
+      std::cout << "  overhang:    build " << overhang_report->build_direction << ", "
+                << overhang_report->unsupported_elements << " of "
+                << overhang_report->solid_elements << " solid elements unsupported ("
+                << app::format(100.0 * overhang_report->unsupported_fraction)
+                << " % of the solid volume)"
+                << (result.overhang_filtered ? ", filter on" : ", filter off") << "\n";
+    }
+    if (length_report) {
+      const Scalar cell = model.mesh().mean_element_size();
+      std::cout << "  length scale: members at least ~" << app::format(length_report->solid_min_size)
+                << " m (" << app::format(length_report->solid_min_size / cell)
+                << " cells), gaps at least ~" << app::format(length_report->void_min_size)
+                << " m (" << app::format(length_report->void_min_size / cell) << " cells)"
+                << (length_report->solid_bound_reached_cap ? ", solid bound at the scan cap" : "")
+                << "\n";
     }
     std::cout << "  interpreted: threshold "
               << app::format(interpretation->threshold) << " keeps "

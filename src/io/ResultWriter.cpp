@@ -571,6 +571,10 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
     header.insert(header.end(), {"min_load_factor[-]", "buckling_constraint[-]",
                                  "buckling_subspace_iterations[-]"});
   }
+  if (result.robust) {
+    header.insert(header.end(), {"eroded_volume_fraction[-]", "dilated_volume_fraction[-]",
+                                 "dilated_target_fraction[-]"});
+  }
   CsvWriter csv(file("history.csv"), header);
   for (const TopologyIteration& it : result.history) {
     std::vector<Scalar> row{it.penalty, it.compliance, it.volume, it.volume_fraction,
@@ -586,6 +590,10 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
     if (result.buckling_constrained) {
       row.insert(row.end(), {it.min_load_factor, it.buckling_constraint,
                              static_cast<Scalar>(it.buckling_iterations)});
+    }
+    if (result.robust) {
+      row.insert(row.end(), {it.eroded_volume_fraction, it.dilated_volume_fraction,
+                             it.dilated_target_fraction});
     }
     csv.row(it.iteration, row);
   }
@@ -603,6 +611,12 @@ void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
   const bool projected =
       result.projected && result.filtered_density.size() == mesh.num_elements();
   if (projected) header.push_back("filtered_density[-]");
+  const bool printable =
+      result.overhang_filtered && result.printable_density.size() == mesh.num_elements();
+  if (printable) header.push_back("printable_density[-]");
+  const bool robust = result.robust &&
+                      result.robust_record.eroded_density.size() == mesh.num_elements();
+  if (robust) header.insert(header.end(), {"eroded_density[-]", "dilated_density[-]"});
   CsvWriter csv(file("density_final.csv"), header);
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     const Vector3 c = mesh.element_centroid(e);
@@ -619,6 +633,11 @@ void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
                       ? result.element_strain_energy(e)
                       : 0.0);
     if (projected) row.push_back(result.filtered_density(e));
+    if (printable) row.push_back(result.printable_density(e));
+    if (robust) {
+      row.push_back(result.robust_record.eroded_density(e));
+      row.push_back(result.robust_record.dilated_density(e));
+    }
     csv.row(e, row);
   }
   csv.close();
@@ -932,6 +951,55 @@ json::Value buckling_json(const std::vector<BucklingResult>& results,
   return out;
 }
 
+json::Value overhang_json(const OverhangReport& report, bool filtered) {
+  json::Value out = json::Value::make_object();
+  out.set("build_direction", json::Value::make_string(report.build_direction));
+  out.set("overhang_angle_deg", json::Value::make_number(report.overhang_angle_degrees));
+  out.set("threshold", json::Value::make_number(report.threshold));
+  out.set("filtered_during_optimisation", json::Value::make_bool(filtered));
+  out.set("solid_elements", json::Value::make_number(report.solid_elements));
+  out.set("unsupported_elements", json::Value::make_number(report.unsupported_elements));
+  out.set("solid_volume_m3", json::Value::make_number(report.solid_volume));
+  out.set("unsupported_volume_m3", json::Value::make_number(report.unsupported_volume));
+  out.set("unsupported_fraction", json::Value::make_number(report.unsupported_fraction));
+  out.set("lowest_unsupported_layer", json::Value::make_number(report.lowest_unsupported_layer));
+  out.set("note", json::Value::make_string(
+                      "a solid element (density >= threshold) off the build plate is "
+                      "supported when a solid element lies in its stencil in the layer "
+                      "below: directly below or diagonally (3 elements in 2-D, a cross of 5 "
+                      "in 3-D). Only this overhang rule is modelled; no other process "
+                      "limit (support removal, thermal distortion, minimum wall) is"));
+  return out;
+}
+
+json::Value length_scale_json(const LengthScaleScan& scan) {
+  json::Value out = json::Value::make_object();
+  out.set("solid_min_size_m", json::Value::make_number(scan.solid_min_size));
+  out.set("void_min_size_m", json::Value::make_number(scan.void_min_size));
+  out.set("solid_bound_reached_scan_cap", json::Value::make_bool(scan.solid_bound_reached_cap));
+  out.set("void_bound_reached_scan_cap", json::Value::make_bool(scan.void_bound_reached_cap));
+  out.set("radius_step_m", json::Value::make_number(scan.step));
+  out.set("tolerance", json::Value::make_number(scan.tolerance));
+  json::Value probes = json::Value::make_array();
+  for (const LengthScaleReport& p : scan.probes) {
+    json::Value e = json::Value::make_object();
+    e.set("radius_m", json::Value::make_number(p.radius));
+    e.set("solid_fraction_removed_by_opening",
+          json::Value::make_number(p.solid_violation_fraction));
+    e.set("void_fraction_filled_by_closing", json::Value::make_number(p.void_violation_fraction));
+    probes.push_back(e);
+  }
+  out.set("probes", probes);
+  out.set("note", json::Value::make_string(
+                      "morphological opening (solid) and closing (void) of the thresholded "
+                      "design with balls of growing radius r on the element centroids: a "
+                      "probe flags members thinner (gaps narrower) than about 2r. The minimum "
+                      "sizes are twice the largest radius flagging at most `tolerance` of the "
+                      "solid (void) volume, to within one radius step; a measurement of the "
+                      "design, not a guarantee"));
+  return out;
+}
+
 json::Value make_topology_summary(const Configuration& config, const FemModel& model,
                                   const DesignDomain& domain,
                                   const DensityFilter& filter,
@@ -1041,8 +1109,37 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                    "rho_bar = (tanh(beta eta) + tanh(beta (rho_tilde - eta))) / "
                    "(tanh(beta eta) + tanh(beta (1 - eta))) on the filtered density; "
                    "SIMP, volume and stress act on rho_bar"));
+        pj.set("robust", json::Value::make_bool(po.robust));
+        if (po.robust) {
+          pj.set("robust_delta", json::Value::make_number(po.robust_delta));
+          pj.set("eta_eroded", json::Value::make_number(po.eroded_eta()));
+          pj.set("eta_dilated", json::Value::make_number(po.dilated_eta()));
+          pj.set("robust_volume_interval",
+                 json::Value::make_number(po.robust_volume_interval));
+          pj.set("robust_formulation",
+                 json::Value::make_string(
+                     "objective and all constraints but the volume on the eroded design "
+                     "(eta + delta); volume on the dilated design (eta - delta) against "
+                     "V* V_dilated / V_blueprint, rescaled every robust_volume_interval "
+                     "iterations; the blueprint (eta) is reported and exported"));
+        }
       }
       setup.set("projection", pj);
+    }
+    if (result.overhang_filtered) {
+      const OverhangOptions& oh = config.topology.optimizer.overhang;
+      json::Value am = json::Value::make_object();
+      am.set("build_direction", json::Value::make_string(oh.direction.label()));
+      am.set("smax_exponent", json::Value::make_number(oh.smax_exponent));
+      am.set("smax_reference", json::Value::make_number(oh.smax_reference));
+      am.set("smin_epsilon", json::Value::make_number(oh.smin_epsilon));
+      am.set("formulation",
+             json::Value::make_string(
+                 "Langelaar's AM filter on the filtered density, layer by layer from the "
+                 "build plate: xi_e = smin(rho_e, smax over the supporting elements of the "
+                 "layer below - 3 in 2-D, a cross of 5 in 3-D); passive elements keep "
+                 "their density; the projection acts on xi"));
+      setup.set("overhang_filter", am);
     }
     if (result.stress_constrained) {
       json::Value sc = json::Value::make_object();
@@ -1110,13 +1207,38 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
     if (result.projected) {
       json::Value pj = json::Value::make_object();
       pj.set("final_beta", json::Value::make_number(result.final_beta));
-      pj.set("eta", json::Value::make_number(result.projection_eta));
+      pj.set("eta", json::Value::make_number(
+                        result.robust ? result.robust_record.eta_intermediate
+                                      : result.projection_eta));
       pj.set("filtered_grey_level",
              json::Value::make_number(gray_level(result.filtered_density)));
       pj.set("note", json::Value::make_string(
                          "grey_level is that of the projected (physical) density; "
                          "filtered_grey_level that of the density before projection"));
       res.set("projection", pj);
+    }
+    if (result.robust) {
+      const RobustRecord& rr = result.robust_record;
+      json::Value rb = json::Value::make_object();
+      json::Value designs = json::Value::make_array();
+      const auto design = [&](const char* name, Scalar eta, Scalar c, Scalar vf) {
+        json::Value d = json::Value::make_object();
+        d.set("design", json::Value::make_string(name));
+        d.set("eta", json::Value::make_number(eta));
+        d.set("compliance_J", json::Value::make_number(c));
+        d.set("volume_fraction", json::Value::make_number(vf));
+        designs.push_back(d);
+      };
+      design("eroded", rr.eta_eroded, rr.compliance_eroded, rr.volume_fraction_eroded);
+      design("intermediate (blueprint)", rr.eta_intermediate, rr.compliance_intermediate,
+             rr.volume_fraction_intermediate);
+      design("dilated", rr.eta_dilated, rr.compliance_dilated, rr.volume_fraction_dilated);
+      rb.set("designs", designs);
+      rb.set("dilated_target_fraction", json::Value::make_number(rr.dilated_target_fraction));
+      rb.set("note", json::Value::make_string(
+                         "compliance_J and volume_fraction below are the blueprint's; the "
+                         "optimiser minimised the eroded design's compliance"));
+      res.set("robust", rb);
     }
     res.set("compliance_J", json::Value::make_number(result.compliance));
     res.set("load_case_compliance_J", json::array_of(result.load_case_compliance));

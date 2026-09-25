@@ -37,6 +37,7 @@
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
+#include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/SimpInterpolation.hpp"
 
@@ -51,7 +52,10 @@ struct ObjectiveEvaluation {
   /// projection is on (\f$\bar\rho\f$), otherwise \f$\tilde\rho\f$ itself.
   Vector physical_density;
   Vector filtered_density;        ///< \f$\tilde\rho\f$ [-]
-  /// \f$d\bar\rho/d\tilde\rho\f$; empty when the projection is off.
+  /// \f$\xi\f$, the overhang filter's output (the filtered density itself
+  /// when the overhang filter is off) [-].
+  Vector printable_density;
+  /// \f$d\bar\rho/d\xi\f$; empty when the projection is off.
   Vector projection_derivative;
   Vector stiffness_factors;       ///< \f$E(\tilde\rho)/E_0\f$ [-]
   Scalar compliance = 0.0;        ///< weighted compliance [J]
@@ -94,12 +98,30 @@ class ComplianceObjective {
   /// \throws ConfigError with the sensitivity filter, which has no chain rule.
   void set_projection(Scalar beta, Scalar eta);
   void disable_projection() { projection_ = false; }
+
+  /// Apply the additive-manufacturing overhang filter between the density
+  /// filter and the projection (nullptr switches it off). The filter must
+  /// outlive the objective.
+  /// \throws ConfigError with the sensitivity filter, which has no chain rule.
+  void set_overhang(const OverhangFilter* overhang);
+  const OverhangFilter* overhang() const { return overhang_; }
   bool projection() const { return projection_; }
   Scalar projection_beta() const { return beta_; }
   Scalar projection_eta() const { return eta_; }
 
-  /// Physical density of a design: filtered, clamped to [0, 1], projected.
+  /// Physical density of a design: filtered, clamped to [0, 1], passed
+  /// through the overhang filter (when on) and projected.
   Vector physical_density(const Vector& x) const;
+
+  /// The same chain with the projection threshold `eta` in place of the
+  /// objective's own, at the current sharpness: the eroded, intermediate and
+  /// dilated designs of the robust formulation.
+  /// \throws ConfigError when the projection is off.
+  Vector physical_density_at(const Vector& x, Scalar eta) const;
+
+  /// Chain a derivative with respect to the density projected at `eta` back
+  /// to the design variables, at the state of evaluation `eval`.
+  Vector chain_at(const ObjectiveEvaluation& eval, Scalar eta, const Vector& d_dphysical) const;
 
   /// Chain a derivative with respect to the physical density back to the
   /// design variables through the projection and the filter, using the
@@ -148,6 +170,7 @@ class ComplianceObjective {
   bool projection_ = false;
   Scalar beta_ = 1.0;
   Scalar eta_ = 0.5;
+  const OverhangFilter* overhang_ = nullptr;
   Index num_solves_ = 0;
   /// One solver for the whole optimisation (a multigrid hierarchy is reused;
   /// a direct factorisation is simply recomputed).

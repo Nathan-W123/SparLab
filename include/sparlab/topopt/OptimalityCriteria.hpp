@@ -61,9 +61,12 @@ struct OptimalityCriteriaStep {
 ///        callable so the update stays independent of the filter type.
 /// \throws ConvergenceError when the bisection cannot bracket the target
 ///         volume, which means the bounds make the constraint unreachable.
+/// \param volume_target the volume the bisection meets [m^3]; zero or less
+///        uses the domain's target (the robust formulation passes the
+///        rescaled target of its dilated design).
 OptimalityCriteriaStep optimality_criteria_update(
     const DesignDomain& domain, const Vector& x, const Vector& dc_dx,
     const Vector& dv_dx, const std::function<Scalar(const Vector&)>& physical_volume_of,
-    const OptimalityCriteriaOptions& options);
+    const OptimalityCriteriaOptions& options, Scalar volume_target = 0.0);
 
 }  // namespace sparlab

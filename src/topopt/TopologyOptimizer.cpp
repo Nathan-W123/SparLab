@@ -46,6 +46,39 @@ class BetaSchedule {
   int start_ = 1;
 };
 
+/// The overhang filter of a run, built when the options ask for it; passive
+/// elements keep their density.
+std::unique_ptr<OverhangFilter> make_overhang(const OverhangOptions& options, const Mesh& mesh,
+                                              const DesignDomain& domain) {
+  if (!options.filter) return nullptr;
+  std::vector<char> passive(static_cast<std::size_t>(domain.num_elements()), 0);
+  for (Index e = 0; e < domain.num_elements(); ++e) {
+    passive[static_cast<std::size_t>(e)] = domain.is_free(e) ? 0 : 1;
+  }
+  return std::make_unique<OverhangFilter>(mesh, options, passive);
+}
+
+/// Volumes of the robust formulation at one design: the dilated design's
+/// volume and gradient (the constrained quantity) and the blueprint's.
+struct RobustVolumes {
+  Scalar dilated = 0.0;
+  Scalar intermediate = 0.0;
+  Scalar eroded = 0.0;
+  Vector dilated_gradient;
+};
+
+RobustVolumes robust_volumes(const ComplianceObjective& objective, const DesignDomain& domain,
+                             const ObjectiveEvaluation& eval, const Vector& x,
+                             const ProjectionOptions& projection) {
+  RobustVolumes out;
+  out.dilated = domain.volume_of(objective.physical_density_at(x, projection.dilated_eta()));
+  out.intermediate = domain.volume_of(objective.physical_density_at(x, projection.eta));
+  out.eroded = eval.volume;
+  out.dilated_gradient =
+      objective.chain_at(eval, projection.dilated_eta(), domain.element_volumes());
+  return out;
+}
+
 /// ", beta = ..., CG iterations = ..." for the iteration log, when present.
 std::string iteration_extras(const TopologyIteration& record) {
   std::ostringstream os;
@@ -156,6 +189,14 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
   }
   options_.stress.validate(options_.simp);
   options_.projection.validate();
+  if (options_.overhang.filter) {
+    options_.overhang.validate();
+    if (filter_.type() == FilterType::Sensitivity) {
+      throw ConfigError(
+          "the overhang filter needs the density filter (or none): the sensitivity filter "
+          "has no chain rule to extend through it");
+    }
+  }
   if (options_.projection.enabled && filter_.type() == FilterType::Sensitivity) {
     throw ConfigError(
         "topology.projection needs the density filter (or none): the sensitivity filter "
@@ -263,6 +304,57 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
       result.buckling.push_back(rec);
     }
   }
+  // Robust formulation: the objective and the constraints above act on the
+  // eroded design; what is reported and exported is the blueprint, with the
+  // dilated design recorded next to it.
+  if (options_.projection.enabled && options_.projection.robust) {
+    result.robust = true;
+    RobustRecord& rr = result.robust_record;
+    const Scalar beta = objective.projection_beta();
+    rr.eta_eroded = options_.projection.eroded_eta();
+    rr.eta_intermediate = options_.projection.eta;
+    rr.eta_dilated = options_.projection.dilated_eta();
+    rr.compliance_eroded = eval.compliance;
+    rr.volume_fraction_eroded = eval.volume_fraction;
+    rr.eroded_density = eval.physical_density;
+    objective.set_projection(beta, rr.eta_dilated);
+    const ObjectiveEvaluation dilated = objective.evaluate(x, /*need_gradients=*/false);
+    rr.compliance_dilated = dilated.compliance;
+    rr.volume_fraction_dilated = dilated.volume_fraction;
+    rr.dilated_density = dilated.physical_density;
+    objective.set_projection(beta, rr.eta_intermediate);
+    const ObjectiveEvaluation blueprint = objective.evaluate(x, /*need_gradients=*/false);
+    rr.compliance_intermediate = blueprint.compliance;
+    rr.volume_fraction_intermediate = blueprint.volume_fraction;
+    rr.dilated_target_fraction =
+        result.history.empty() ? 0.0 : result.history.back().dilated_target_fraction;
+    objective.set_projection(beta, rr.eta_eroded);
+    result.physical_density = blueprint.physical_density;
+    result.stiffness_factors = blueprint.stiffness_factors;
+    result.compliance = blueprint.compliance;
+    result.load_case_compliance = blueprint.load_case_compliance;
+    result.volume = blueprint.volume;
+    result.volume_fraction = blueprint.volume_fraction;
+    result.gray_level = gray_level(blueprint.physical_density);
+    result.displacements = blueprint.displacements;
+    result.element_strain_energy = blueprint.element_strain_energy;
+    result.volume_constraint_violation = (result.volume - target) / target;
+    // The volume constraint of the loop is the dilated design's against its
+    // rescaled target; the blueprint meets V* only up to the lag of that
+    // rescaling, which the summary records.
+    Scalar violation = rr.dilated_target_fraction > 0.0
+                           ? rr.volume_fraction_dilated / rr.dilated_target_fraction - 1.0
+                           : 0.0;
+    for (const StressConstraintRecord& rec : result.stress) {
+      violation = std::max(violation, rec.constraint);
+    }
+    for (const BucklingConstraintRecord& rec : result.buckling) {
+      violation = std::max(violation, rec.constraint);
+    }
+    result.constraint_violation = violation;
+  }
+  result.overhang_filtered = objective.overhang() != nullptr;
+  if (result.overhang_filtered) result.printable_density = eval.printable_density;
   result.feasible = result.constraint_violation <= options_.constraint_tolerance;
   result.linear_solves = objective.num_solves();
   result.projected = objective.projection();
@@ -325,7 +417,22 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
 
   const Scalar volume_tolerance =
       result.method == OptimizerMethod::MMA ? options_.constraint_tolerance : 1.0e-6;
-  if (result.volume_constraint_violation > volume_tolerance) {
+  if (result.robust) {
+    const RobustRecord& rr = result.robust_record;
+    const Scalar dilated_violation =
+        rr.dilated_target_fraction > 0.0
+            ? rr.volume_fraction_dilated / rr.dilated_target_fraction - 1.0
+            : 0.0;
+    if (dilated_violation > std::max(volume_tolerance, 1.0e-6)) {
+      std::ostringstream os;
+      os << "the robust volume constraint is violated: the dilated design's volume "
+            "fraction "
+         << rr.volume_fraction_dilated << " exceeds its rescaled target "
+         << rr.dilated_target_fraction << " by a relative " << dilated_violation;
+      result.warnings.push_back(os.str());
+      log::warn(os.str());
+    }
+  } else if (result.volume_constraint_violation > volume_tolerance) {
     std::ostringstream os;
     os << "the volume constraint is violated: final volume " << result.volume
        << " m^3 exceeds the target " << target << " m^3 by a relative "
@@ -364,16 +471,25 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
 
   ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
                                 options_.analysis);
+  const std::unique_ptr<OverhangFilter> overhang =
+      make_overhang(options_.overhang, model_.mesh(), domain_);
+  objective.set_overhang(overhang.get());
   BetaSchedule beta_schedule(options_.projection);
-  if (beta_schedule.enabled()) {
-    objective.set_projection(beta_schedule.beta(), options_.projection.eta);
-  }
+  const bool robust = options_.projection.enabled && options_.projection.robust;
+  // The objective acts on the eroded design in a robust run.
+  const Scalar objective_eta =
+      robust ? options_.projection.eroded_eta() : options_.projection.eta;
+  if (beta_schedule.enabled()) objective.set_projection(beta_schedule.beta(), objective_eta);
 
   // The bisection's volume is that of the physical (filtered and, when on,
-  // projected) density the update would produce.
-  const auto volume_of_design = [this, &objective](const Vector& xi) {
-    return domain_.volume_of(objective.physical_density(xi));
+  // projected) density the update would produce - of the dilated design in a
+  // robust run, whose target is rescaled so the blueprint meets V*.
+  const auto volume_of_design = [this, &objective, robust](const Vector& xi) {
+    return domain_.volume_of(robust ? objective.physical_density_at(
+                                          xi, options_.projection.dilated_eta())
+                                    : objective.physical_density(xi));
   };
+  Scalar dilated_target = domain_.volume_target();
 
   Vector x = domain_.initial_design();
   domain_.clamp(x);
@@ -415,8 +531,19 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
 
     eval = objective.evaluate(x, /*need_gradients=*/true);
 
-    const OptimalityCriteriaStep step = optimality_criteria_update(
-        domain_, x, eval.dc_dx, eval.dv_dx, volume_of_design, options_.oc);
+    Vector dv_dx = eval.dv_dx;
+    RobustVolumes rv;
+    if (robust) {
+      rv = robust_volumes(objective, domain_, eval, x, options_.projection);
+      if ((iteration - 1) % options_.projection.robust_volume_interval == 0 &&
+          rv.intermediate > 0.0) {
+        dilated_target = domain_.volume_target() * rv.dilated / rv.intermediate;
+      }
+      dv_dx = rv.dilated_gradient;
+    }
+    const OptimalityCriteriaStep step =
+        optimality_criteria_update(domain_, x, eval.dc_dx, dv_dx, volume_of_design,
+                                   options_.oc, robust ? dilated_target : 0.0);
 
     TopologyIteration record;
     record.iteration = iteration;
@@ -431,6 +558,13 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
     record.volume_converged = step.volume_converged;
     record.beta = beta_schedule.beta();
     record.linear_iterations = eval.linear_iterations;
+    if (robust) {
+      record.volume = rv.intermediate;
+      record.volume_fraction = rv.intermediate / domain_.domain_volume();
+      record.eroded_volume_fraction = eval.volume_fraction;
+      record.dilated_volume_fraction = rv.dilated / domain_.domain_volume();
+      record.dilated_target_fraction = dilated_target / domain_.domain_volume();
+    }
     record.seconds = iter_timer.elapsed_seconds();
     result.history.push_back(record);
     compliance_history.push_back(eval.compliance);
@@ -480,7 +614,7 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
       break;
     }
     if (beta_schedule.advance(iteration, step.max_change, options_.change_tolerance)) {
-      objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+      objective.set_projection(beta_schedule.beta(), objective_eta);
       compliance_history.clear();  // the objective changes with beta
       log::info("continuation: projection beta raised to ", beta_schedule.beta(),
                 " after iteration ", iteration);
@@ -510,10 +644,15 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
 
   ComplianceObjective objective(model_, assembler_, filter_, domain_, options_.simp,
                                 options_.analysis);
+  const std::unique_ptr<OverhangFilter> overhang =
+      make_overhang(options_.overhang, model_.mesh(), domain_);
+  objective.set_overhang(overhang.get());
   BetaSchedule beta_schedule(options_.projection);
-  if (beta_schedule.enabled()) {
-    objective.set_projection(beta_schedule.beta(), options_.projection.eta);
-  }
+  const bool robust = options_.projection.enabled && options_.projection.robust;
+  const Scalar objective_eta =
+      robust ? options_.projection.eroded_eta() : options_.projection.eta;
+  if (beta_schedule.enabled()) objective.set_projection(beta_schedule.beta(), objective_eta);
+  Scalar dilated_target = domain_.volume_target();
   std::unique_ptr<StressConstraint> stress;
   if (options_.stress.enabled) {
     stress = std::make_unique<StressConstraint>(model_, assembler_, filter_,
@@ -612,8 +751,21 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     const Vector df0 = pack(eval.dc_dx) / c_ref;
     Vector fval(m);
     Matrix dfdx(m, nf);
-    fval(0) = eval.volume / target - 1.0;
-    dfdx.row(0) = (pack(eval.dv_dx) / target).transpose();
+    RobustVolumes rv;
+    if (robust) {
+      // The volume constraint acts on the dilated design against a target
+      // rescaled so that the blueprint meets the volume fraction.
+      rv = robust_volumes(objective, domain_, eval, x, options_.projection);
+      if ((iteration - 1) % options_.projection.robust_volume_interval == 0 &&
+          rv.intermediate > 0.0) {
+        dilated_target = target * rv.dilated / rv.intermediate;
+      }
+      fval(0) = rv.dilated / dilated_target - 1.0;
+      dfdx.row(0) = (pack(rv.dilated_gradient) / dilated_target).transpose();
+    } else {
+      fval(0) = eval.volume / target - 1.0;
+      dfdx.row(0) = (pack(eval.dv_dx) / target).transpose();
+    }
 
     std::vector<StressEvaluation> stress_evals;
     Scalar max_stress_ratio = 0.0;
@@ -672,6 +824,13 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     record.constraint_violation = fval.maxCoeff();
     record.beta = beta_schedule.beta();
     record.linear_iterations = eval.linear_iterations + objective.adjoint_iterations();
+    if (robust) {
+      record.volume = rv.intermediate;
+      record.volume_fraction = rv.intermediate / domain_.domain_volume();
+      record.eroded_volume_fraction = eval.volume_fraction;
+      record.dilated_volume_fraction = rv.dilated / domain_.domain_volume();
+      record.dilated_target_fraction = dilated_target / domain_.domain_volume();
+    }
     record.seconds = iter_timer.elapsed_seconds();
     result.history.push_back(record);
     compliance_history.push_back(eval.compliance);
@@ -723,7 +882,7 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     }
     x = x_new;
     if (beta_schedule.advance(iteration, step.max_change, options_.change_tolerance)) {
-      objective.set_projection(beta_schedule.beta(), options_.projection.eta);
+      objective.set_projection(beta_schedule.beta(), objective_eta);
       compliance_history.clear();  // the objective changes with beta
       log::info("continuation: projection beta raised to ", beta_schedule.beta(),
                 " after iteration ", iteration);

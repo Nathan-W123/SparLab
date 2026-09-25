@@ -31,6 +31,7 @@ set(SPARLAB_TEST_SOURCES
   test_projection.cpp
   test_tet10.cpp
   test_buckling.cpp
+  test_manufacturing.cpp
 )
 
 add_executable(sparlab_tests ${SPARLAB_TEST_SOURCES})

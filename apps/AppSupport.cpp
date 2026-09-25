@@ -18,7 +18,8 @@ CommandLine::CommandLine(int argc, char** argv, const std::vector<std::string>& 
   const std::vector<std::string> switches = {"help",         "strict-config", "no-vtk",
                                              "no-csv",       "no-stress",     "export-calculix",
                                              "list",         "no-objective",  "no-projection",
-                                             "projection"};
+                                             "projection",   "robust",        "no-robust",
+                                             "no-buckling-constraint", "no-overhang-filter"};
 
   for (int i = 1; i < argc; ++i) {
     std::string token = argv[i];

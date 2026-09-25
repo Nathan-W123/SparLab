@@ -717,6 +717,10 @@ Configuration parse_configuration(const json::Value& document, const std::string
       pr.beta_interval = proj.integer_or("beta_interval", pr.beta_interval);
       pr.advance_on_convergence =
           proj.boolean_or("advance_on_convergence", pr.advance_on_convergence);
+      pr.robust = proj.boolean_or("robust", false);
+      pr.robust_delta = proj.number_or("robust_delta", pr.robust_delta);
+      pr.robust_volume_interval =
+          proj.integer_or("robust_volume_interval", pr.robust_volume_interval);
       pr.validate();
       if (pr.enabled && config.topology.filter_type == FilterType::Sensitivity) {
         throw ConfigError(
@@ -744,6 +748,47 @@ Configuration parse_configuration(const json::Value& document, const std::string
           "has no exact chain rule for the stress gradient");
     }
     if (config.topology.enabled) o.stress.validate(o.simp);
+
+    // Additive-manufacturing overhang: check, and optionally filter.
+    {
+      const ConfigNode am = topo.child("overhang");
+      if (am.exists()) {
+        config.topology.overhang_check = true;
+        OverhangOptions& oh = o.overhang;
+        oh.filter = am.boolean_or("filter", false);
+        oh.direction = parse_build_direction(am.require("build_direction").string(), dim);
+        oh.smax_exponent = am.number_or("smax_exponent", oh.smax_exponent);
+        oh.smax_reference = am.number_or("smax_reference", oh.smax_reference);
+        oh.smin_epsilon = am.number_or("smin_epsilon", oh.smin_epsilon);
+        oh.validate();
+        if (config.mesh_kind != MeshKind::StructuredQuad &&
+            config.mesh_kind != MeshKind::StructuredHex) {
+          throw ConfigError("'" + am.path() + "' needs a structured_quad or structured_hex "
+                            "mesh: the supports of an element are the grid cells of the "
+                            "layer below it");
+        }
+        if (oh.filter && config.topology.filter_type == FilterType::Sensitivity) {
+          throw ConfigError("'" + am.path() + ".filter' needs the density filter (or none): "
+                            "the sensitivity filter has no chain rule through it");
+        }
+      }
+    }
+    {
+      const ConfigNode ls = topo.child("length_scale_check");
+      config.topology.length_scale_check =
+          ls.boolean_or("enabled", ls.exists() || (o.projection.enabled && o.projection.robust));
+      config.topology.length_scale_max_radius_elements =
+          ls.number_or("max_radius_elements", config.topology.length_scale_max_radius_elements);
+      config.topology.length_scale_tolerance =
+          ls.number_or("tolerance", config.topology.length_scale_tolerance);
+      if (!(config.topology.length_scale_max_radius_elements >= 0.5)) {
+        throw ConfigError("'" + ls.path() + ".max_radius_elements' must be at least 0.5");
+      }
+      if (!(config.topology.length_scale_tolerance >= 0.0 &&
+            config.topology.length_scale_tolerance < 0.5)) {
+        throw ConfigError("'" + ls.path() + ".tolerance' must lie in [0, 0.5)");
+      }
+    }
 
     // Aggregated lower bound on the buckling load factors (MMA only).
     const ConfigNode buckle = topo.child("buckling_constraint");

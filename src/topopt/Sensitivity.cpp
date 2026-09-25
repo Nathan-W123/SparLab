@@ -47,9 +47,41 @@ void ComplianceObjective::set_projection(Scalar beta, Scalar eta) {
   eta_ = eta;
 }
 
+void ComplianceObjective::set_overhang(const OverhangFilter* overhang) {
+  if (overhang != nullptr && filter_.type() == FilterType::Sensitivity) {
+    throw ConfigError(
+        "the overhang filter needs the density filter (or none): the sensitivity filter "
+        "modifies the gradient heuristically, so there is no chain rule through it");
+  }
+  if (overhang != nullptr && overhang->num_elements() != model_.mesh().num_elements()) {
+    throw ConfigError("the overhang filter was built for a different mesh than the model");
+  }
+  overhang_ = overhang;
+}
+
 Vector ComplianceObjective::physical_density(const Vector& x) const {
   Vector rho = filter_.to_physical(x).cwiseMax(0.0).cwiseMin(1.0);
+  if (overhang_ != nullptr) rho = overhang_->apply(rho);
   return projection_ ? heaviside_project(rho, beta_, eta_) : rho;
+}
+
+Vector ComplianceObjective::physical_density_at(const Vector& x, Scalar eta) const {
+  if (!projection_) {
+    throw ConfigError("a density at another projection threshold needs the projection on");
+  }
+  Vector rho = filter_.to_physical(x).cwiseMax(0.0).cwiseMin(1.0);
+  if (overhang_ != nullptr) rho = overhang_->apply(rho);
+  return heaviside_project(rho, beta_, eta);
+}
+
+Vector ComplianceObjective::chain_at(const ObjectiveEvaluation& eval, Scalar eta,
+                                     const Vector& d_dphysical) const {
+  if (!projection_) {
+    throw ConfigError("a gradient at another projection threshold needs the projection on");
+  }
+  Vector d = d_dphysical.cwiseProduct(heaviside_derivative(eval.printable_density, beta_, eta));
+  if (overhang_ != nullptr) d = overhang_->pull_back(eval.filtered_density, d);
+  return filter_.pull_back(d);
 }
 
 const SparseMatrix& ComplianceObjective::stiffness() const {
@@ -61,10 +93,11 @@ const SparseMatrix& ComplianceObjective::stiffness() const {
 
 Vector ComplianceObjective::chain_to_design(const ObjectiveEvaluation& eval,
                                             const Vector& d_dphysical) const {
-  if (eval.projection_derivative.size() == d_dphysical.size()) {
-    return filter_.pull_back(d_dphysical.cwiseProduct(eval.projection_derivative));
-  }
-  return filter_.pull_back(d_dphysical);
+  Vector d = eval.projection_derivative.size() == d_dphysical.size()
+                 ? Vector(d_dphysical.cwiseProduct(eval.projection_derivative))
+                 : d_dphysical;
+  if (overhang_ != nullptr) d = overhang_->pull_back(eval.filtered_density, d);
+  return filter_.pull_back(d);
 }
 
 ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gradients) {
@@ -81,11 +114,13 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
   // Filtering is a convex combination, so the result stays in [0,1] up to
   // round-off; clamp to keep pow() well defined.
   out.filtered_density = filter_.to_physical(x).cwiseMax(0.0).cwiseMin(1.0);
+  out.printable_density =
+      overhang_ != nullptr ? overhang_->apply(out.filtered_density) : out.filtered_density;
   if (projection_) {
-    out.physical_density = heaviside_project(out.filtered_density, beta_, eta_);
-    out.projection_derivative = heaviside_derivative(out.filtered_density, beta_, eta_);
+    out.physical_density = heaviside_project(out.printable_density, beta_, eta_);
+    out.projection_derivative = heaviside_derivative(out.printable_density, beta_, eta_);
   } else {
-    out.physical_density = out.filtered_density;
+    out.physical_density = out.printable_density;
   }
   out.stiffness_factors = simp_stiffness_factors(out.physical_density, simp_);
 
@@ -147,11 +182,11 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
 
   if (need_gradients) {
     out.dc_dphysical = dc_dphys;
-    if (projection_) {
-      // Through the projection first, then the (linear) density filter.
-      out.dc_dx = filter_.pull_back(dc_dphys.cwiseProduct(out.projection_derivative));
-      out.dv_dx = filter_.pull_back(
-          domain_.element_volumes().cwiseProduct(out.projection_derivative));
+    if (projection_ || overhang_ != nullptr) {
+      // Through the projection, the overhang filter and the (linear) density
+      // filter, in that order.
+      out.dc_dx = chain_to_design(out, dc_dphys);
+      out.dv_dx = chain_to_design(out, domain_.element_volumes());
     } else {
       out.dc_dx = filter_.transform_gradient(x, dc_dphys);
       out.dv_dx = filter_.pull_back(domain_.element_volumes());

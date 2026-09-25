@@ -40,7 +40,7 @@ Vector oc_candidate(const DesignDomain& domain, const Vector& x, const Vector& d
 OptimalityCriteriaStep optimality_criteria_update(
     const DesignDomain& domain, const Vector& x, const Vector& dc_dx,
     const Vector& dv_dx, const std::function<Scalar(const Vector&)>& physical_volume_of,
-    const OptimalityCriteriaOptions& options) {
+    const OptimalityCriteriaOptions& options, Scalar volume_target) {
   const Index ne = domain.num_elements();
   if (x.size() != ne || dc_dx.size() != ne || dv_dx.size() != ne) {
     throw ConfigError("optimality criteria received vectors of inconsistent length");
@@ -59,7 +59,7 @@ OptimalityCriteriaStep optimality_criteria_update(
     throw SolverError("optimality criteria received a non-finite gradient");
   }
 
-  const Scalar target = domain.volume_target();
+  const Scalar target = volume_target > 0.0 ? volume_target : domain.volume_target();
 
   // Volume is monotonically non-increasing in lambda, so widen the bracket
   // until it straddles the target.

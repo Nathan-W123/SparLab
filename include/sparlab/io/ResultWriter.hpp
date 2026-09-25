@@ -35,6 +35,8 @@
 #include "sparlab/io/Config.hpp"
 #include "sparlab/io/Json.hpp"
 #include "sparlab/mesh/SubMesh.hpp"
+#include "sparlab/topopt/LengthScale.hpp"
+#include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
 #include <string>
@@ -142,5 +144,11 @@ json::Value make_provenance(const Configuration& config);
 /// method, its tolerances and what a load factor means.
 json::Value buckling_json(const std::vector<BucklingResult>& results,
                           const BucklingOptions& options, const std::string& what);
+
+/// Summary block of the overhang check of the final design.
+json::Value overhang_json(const OverhangReport& report, bool filtered);
+
+/// Summary block of the minimum length-scale scan of the final design.
+json::Value length_scale_json(const LengthScaleScan& scan);
 
 }  // namespace sparlab

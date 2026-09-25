@@ -40,6 +40,21 @@
 /// changing at the current \f$\beta\f$ - up to `beta_max`. Convergence is only
 /// accepted at `beta_max`. The projection needs the density filter (or no
 /// filter): the sensitivity filter has no chain rule to extend.
+///
+/// **Robust formulation** (Wang, Lazarov and Sigmund 2011). One filtered
+/// field projected at three thresholds gives three designs: the *eroded*
+/// one (\f$\eta + \Delta\eta\f$), the *intermediate* blueprint
+/// (\f$\eta\f$) and the *dilated* one (\f$\eta - \Delta\eta\f$), as if the
+/// part came out uniformly thinner or thicker than drawn. The objective and
+/// every constraint but the volume act on the eroded design - for compliance
+/// and buckling the worst of the three - and the volume constraint on the
+/// dilated one, with its target rescaled every `robust_volume_interval`
+/// iterations to \f$V^*\,V_d/V_i\f$ so that the blueprint meets the volume
+/// fraction. A member thinner than the erosion vanishes from the eroded
+/// design, so the optimiser gains nothing from it: the blueprint's members
+/// and gaps keep a minimum size set by the filter radius and
+/// \f$\Delta\eta\f$, which LengthScale.hpp measures after the run. The
+/// blueprint is the design that is reported and exported.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -56,6 +71,13 @@ struct ProjectionOptions {
   /// Advance to the next beta as soon as the design change at the current
   /// one falls below the optimiser's change tolerance.
   bool advance_on_convergence = true;
+  /// Robust formulation over eroded / intermediate / dilated designs.
+  bool robust = false;
+  Scalar robust_delta = 0.1;       ///< Delta eta: thresholds eta +- robust_delta
+  int robust_volume_interval = 1;  ///< iterations between dilated-target updates
+
+  Scalar eroded_eta() const { return eta + robust_delta; }
+  Scalar dilated_eta() const { return eta - robust_delta; }
 
   /// \throws ConfigError with the offending key.
   void validate() const;

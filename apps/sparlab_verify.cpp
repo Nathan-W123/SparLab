@@ -35,13 +35,21 @@
 ///   * `multigrid`        multigrid CG against Cholesky and Jacobi CG under
 ///                        refinement (Hex8 and Tet4);
 ///   * `sensitivity-projection` the gradient check through the Heaviside
-///                        projection at three sharpnesses.
+///                        projection at three sharpnesses;
+///   * `patch-test-quadratic` pure bending on distorted Tet10 meshes (exact)
+///                        against Tet4 and Hex8;
+///   * `mesh-convergence-tet10` Tet10, Tet4 and Hex8 cantilevers vs Timoshenko;
+///   * `buckling-euler`   buckling of a cantilever column (Q4, Hex8, Tet4, Tet10)
+///                        vs Euler with Engesser's shear correction;
+///   * `sensitivity-buckling` the adjoint gradient of the buckling constraint;
+///   * `sensitivity-overhang` the compliance gradient through the overhang filter.
 
 #include "AppSupport.hpp"
 
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Timer.hpp"
 #include "sparlab/fem/Assembler.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/ModelDiagnostics.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
@@ -50,6 +58,8 @@
 #include "sparlab/io/CsvWriter.hpp"
 #include "sparlab/io/Json.hpp"
 #include "sparlab/mesh/StructuredMesh.hpp"
+#include "sparlab/topopt/BucklingConstraint.hpp"
+#include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/Sensitivity.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
@@ -1911,6 +1921,609 @@ StudyOutcome study_sensitivity_projection(const std::string& out_dir, json::Valu
   return outcome;
 }
 
+// ---------------------------------------------------------------------------
+// Quadratic tetrahedra, buckling and manufacturing constraints
+// ---------------------------------------------------------------------------
+
+/// Clamped-root solid cantilever of `mesh` under a traction on the tip face
+/// whose resultant is `force` (consistent nodal loads for every element).
+FemModel solid_cantilever(Mesh mesh, const SolidCantileverSpec& spec, const Vector3& force) {
+  FemModel model(std::move(mesh), IsotropicMaterial(spec.youngs, spec.poisson, spec.density, "c"),
+                 1.0, StressState::ThreeDimensional, IntegrationOptions());
+  DisplacementConstraint root;
+  Selector box;
+  box.kind = SelectorKind::Box;
+  box.xmax = 0.0;
+  root.region.members.push_back(box);
+  root.fix_x = root.fix_y = root.fix_z = true;
+  model.constraints().push_back(root);
+  LoadCaseSpec load;
+  load.name = "tip";
+  TractionLoadSpec tip;
+  Selector end;
+  end.kind = SelectorKind::Box;
+  end.xmin = spec.length;
+  tip.region.members.push_back(end);
+  tip.traction = force / (spec.height * spec.width);
+  load.tractions.push_back(tip);
+  model.load_case_specs().push_back(load);
+  model.finalize();
+  return model;
+}
+
+/// The pure-bending field u_x = -k x z, u_y = nu k y z,
+/// u_z = k/2 (x^2 + nu (z^2 - y^2)): an exact solution with sigma_xx = -E k z.
+Vector3 pure_bending(const Vector3& x, Scalar kappa, Scalar nu) {
+  return Vector3(-kappa * x.x() * x.z(), nu * kappa * x.y() * x.z(),
+                 0.5 * kappa * (x.x() * x.x() + nu * (x.z() * x.z() - x.y() * x.y())));
+}
+
+/// Quadratic (pure-bending) patch test: Tet10 must reproduce it exactly on
+/// distorted meshes; Tet4 and Hex8 cannot, and their error is reported.
+StudyOutcome study_patch_test_quadratic(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "patch_test_quadratic.csv"),
+                {"element", "perturbation[-]", "num_elements", "num_dofs",
+                 "relative_displacement_error[-]", "relative_stress_error[-]"});
+  const Scalar kappa = 2.0e-3;
+  const IsotropicMaterial material(200.0e9, 0.3, 7850.0, "patch");
+  json::Value records = json::Value::make_array();
+  Scalar worst_tet10 = 0.0;
+  Scalar best_linear = std::numeric_limits<Scalar>::max();
+  for (const ElementType type : {ElementType::Tet10, ElementType::Tet4, ElementType::Hex8}) {
+    for (const Scalar perturbation : {0.0, 0.15, 0.3}) {
+      StructuredMeshSpec ms;
+      ms.nx = ms.ny = ms.nz = 3;
+      ms.lx = 1.5;
+      ms.ly = 1.0;
+      ms.lz = 1.2;
+      Mesh mesh = type == ElementType::Tet10  ? make_perturbed_tet10_mesh(ms, perturbation, 7u)
+                  : type == ElementType::Tet4 ? make_perturbed_tet_mesh(ms, perturbation, 7u)
+                                              : make_perturbed_hex_mesh(ms, perturbation, 7u);
+      FemModel model(std::move(mesh), material, 1.0, StressState::ThreeDimensional,
+                     IntegrationOptions());
+      std::vector<char> on(static_cast<std::size_t>(model.mesh().num_nodes()), 0);
+      for (const Mesh::BoundaryFace& f : model.mesh().boundary_faces()) {
+        for (Index n : f.nodes) on[static_cast<std::size_t>(n)] = 1;
+      }
+      std::vector<Index> boundary;
+      for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+        if (on[static_cast<std::size_t>(n)]) boundary.push_back(n);
+      }
+      DisplacementConstraint bc;
+      Selector sel;
+      sel.kind = SelectorKind::NodeIds;
+      sel.ids = boundary;
+      bc.region.members.push_back(sel);
+      bc.fix_x = bc.fix_y = bc.fix_z = true;
+      model.constraints().push_back(bc);
+      LoadCaseSpec load;
+      load.name = "bending";
+      load.prescribed_displacement_only = true;
+      model.load_case_specs().push_back(load);
+      model.finalize();
+      for (Index n : boundary) {
+        const Vector3 u = pure_bending(model.mesh().node(n), kappa, 0.3);
+        for (int k = 0; k < 3; ++k) model.dofs().prescribe(n, k, u(k));
+      }
+      Assembler assembler(model);
+      StaticAnalysisOptions options;
+      options.linear.type = LinearSolverType::SimplicialLdlt;
+      StaticAnalysis analysis(model, assembler, options);
+      const Vector u = analysis.solve_all().front().displacement;
+      Scalar error = 0.0;
+      Scalar scale = 0.0;
+      for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+        const Vector3 exact = pure_bending(model.mesh().node(n), kappa, 0.3);
+        error = std::max(error, (u.segment<3>(3 * n) - exact).cwiseAbs().maxCoeff());
+        scale = std::max(scale, exact.cwiseAbs().maxCoeff());
+      }
+      // Element-average stress against the exact linear sigma_xx at the
+      // element's volume centroid.
+      const StressField field = recover_stresses(model, assembler, u);
+      Scalar stress_error = 0.0;
+      const Scalar stress_scale = material.youngs_modulus() * kappa * ms.lz;
+      for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+        const Vector3 c = model.mesh().element_coordinates(e).leftCols(corner_nodes(type))
+                              .rowwise().mean();
+        Vector6 exact = Vector6::Zero();
+        exact(0) = -material.youngs_modulus() * kappa * c.z();
+        stress_error = std::max(stress_error,
+                                (Vector6(field.element_stress.col(e)) - exact).cwiseAbs().maxCoeff());
+      }
+      const Scalar rel = error / scale;
+      const Scalar rel_stress = stress_error / stress_scale;
+      if (type == ElementType::Tet10) {
+        worst_tet10 = std::max({worst_tet10, rel, rel_stress});
+      } else if (perturbation > 0.0) {
+        // On the undistorted grid the linear elements hit the nodal values
+        // exactly (nodal superconvergence of a symmetric grid), so only the
+        // distorted meshes test them.
+        best_linear = std::min(best_linear, rel);
+      }
+      csv.raw_row({to_string(type), app::format(perturbation, 3),
+                   app::format(static_cast<Scalar>(model.mesh().num_elements()), 6),
+                   app::format(static_cast<Scalar>(model.dofs().num_dofs()), 6),
+                   app::format(rel, 4), app::format(rel_stress, 4)});
+      json::Value rec = json::Value::make_object();
+      rec.set("element", json::Value::make_string(to_string(type)));
+      rec.set("perturbation", json::Value::make_number(perturbation));
+      rec.set("relative_displacement_error", json::Value::make_number(rel));
+      rec.set("relative_stress_error", json::Value::make_number(rel_stress));
+      records.push_back(rec);
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("note", json::Value::make_string(
+                        "Pure bending about y prescribed on the boundary nodes of a "
+                        "3 x 3 x 3 box, interior nodes solved. The field is quadratic, so "
+                        "straight-sided Tet10 cells (edge nodes at the midpoints of the "
+                        "distorted edges) contain it and must reproduce it and its linear "
+                        "stress exactly; the Tet4 and the Hex8 cannot, and their errors show "
+                        "the size of what the Tet10 removes. On the undistorted grid "
+                        "(perturbation 0) the linear elements still hit the nodal values "
+                        "exactly - nodal superconvergence of a symmetric grid, not a passed "
+                        "patch test: the Tet4 element stresses are wrong there - so the "
+                        "linear elements are judged on the distorted meshes."));
+  summary.set("patch_test_quadratic", block);
+  StudyOutcome outcome;
+  outcome.name = "quadratic patch test (pure bending, distorted Tet10 meshes)";
+  outcome.kind = "verification";
+  outcome.metric = "max relative displacement / stress error of the Tet10";
+  outcome.value = worst_tet10;
+  outcome.tolerance = 1.0e-9;
+  outcome.passed = worst_tet10 <= outcome.tolerance && best_linear > 1.0e-4;
+  std::ostringstream note;
+  note << "smallest error of the linear elements on the distorted meshes "
+       << app::format(best_linear, 3) << " (they cannot pass)";
+  outcome.note = note.str();
+  return outcome;
+}
+
+/// Tet10 against Tet4 and Hex8 on the same solid cantilevers, loaded by a
+/// consistent tip traction, against Timoshenko beam theory.
+StudyOutcome study_mesh_convergence_tet10(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "mesh_convergence_tet10.csv"),
+                {"element", "nx", "ny", "nz", "num_elements", "num_dofs", "h[m]", "tip_mean[m]",
+                 "timoshenko[m]", "rel_error_timoshenko[-]", "solve_seconds[s]"});
+  const SolidCantileverSpec spec;
+  const Scalar reference = timoshenko_tip_3d(spec);
+  const std::vector<std::array<Index, 3>> grids = {{10, 2, 1}, {20, 4, 2}, {40, 8, 4}};
+  json::Value blocks = json::Value::make_object();
+  Scalar tet10_finest = 0.0;
+  Scalar tet10_coarsest = 0.0;
+  std::ostringstream note;
+  for (const ElementType type : {ElementType::Hex8, ElementType::Tet4, ElementType::Tet10}) {
+    json::Value records = json::Value::make_array();
+    Scalar finest = 0.0;
+    for (std::size_t g = 0; g < grids.size(); ++g) {
+      StructuredMeshSpec ms;
+      ms.nx = grids[g][0];
+      ms.ny = grids[g][1];
+      ms.nz = grids[g][2];
+      ms.lx = spec.length;
+      ms.ly = spec.height;
+      ms.lz = spec.width;
+      Mesh mesh = type == ElementType::Hex8   ? make_structured_hex_mesh(ms)
+                  : type == ElementType::Tet4 ? make_structured_tet_mesh(ms)
+                                              : make_structured_tet10_mesh(ms);
+      FemModel model = solid_cantilever(std::move(mesh), spec, Vector3(0.0, spec.tip_load, 0.0));
+      Assembler assembler(model);
+      StaticAnalysisOptions options;
+      options.linear.type = LinearSolverType::SimplicialLdlt;
+      Timer timer;
+      StaticAnalysis analysis(model, assembler, options);
+      const StaticSolution sol = analysis.solve_all().front();
+      const Scalar seconds = timer.elapsed_seconds();
+      const Scalar tip = tip_mean_deflection(model, sol.displacement, spec.length);
+      const Scalar error = std::abs(tip - reference) / std::abs(reference);
+      const Scalar h = spec.length / static_cast<Scalar>(ms.nx);
+      finest = error;
+      if (type == ElementType::Tet10 && g == 0) tet10_coarsest = error;
+      csv.raw_row({to_string(type), app::format(static_cast<Scalar>(ms.nx), 6),
+                   app::format(static_cast<Scalar>(ms.ny), 6),
+                   app::format(static_cast<Scalar>(ms.nz), 6),
+                   app::format(static_cast<Scalar>(model.mesh().num_elements()), 9),
+                   app::format(static_cast<Scalar>(model.dofs().num_dofs()), 9),
+                   app::format(h, 6), app::format(tip, 12), app::format(reference, 12),
+                   app::format(error, 6), app::format(seconds, 4)});
+      json::Value rec = json::Value::make_object();
+      rec.set("nx", json::Value::make_number(ms.nx));
+      rec.set("num_dofs", json::Value::make_number(model.dofs().num_dofs()));
+      rec.set("tip_mean_m", json::Value::make_number(tip));
+      rec.set("relative_error_vs_timoshenko", json::Value::make_number(error));
+      records.push_back(rec);
+    }
+    if (type == ElementType::Tet10) tet10_finest = finest;
+    json::Value block = json::Value::make_object();
+    block.set("records", records);
+    block.set("finest_mesh_relative_error_vs_timoshenko", json::Value::make_number(finest));
+    blocks.set(to_string(type), block);
+    note << to_string(type) << " finest " << app::format(100.0 * finest, 3) << " %; ";
+  }
+  csv.close();
+  blocks.set("kind", json::Value::make_string("verification + validation (Timoshenko)"));
+  blocks.set("note", json::Value::make_string(
+                         "The 1 m x 0.1 m x 0.05 m cantilever of the Hex8 study (nu = 0), "
+                         "loaded by a tip traction whose consistent nodal loads each "
+                         "element computes, on the same grids for the three elements. The "
+                         "Tet10 meshes split each cell into six Kuhn tetrahedra with edge "
+                         "nodes at the edge midpoints."));
+  summary.set("mesh_convergence_tet10", blocks);
+  StudyOutcome outcome;
+  outcome.name = "mesh convergence (Tet10 vs Tet4 and Hex8 cantilever)";
+  outcome.kind = "verification + validation";
+  outcome.metric = "Tet10 finest-mesh relative error vs Timoshenko";
+  outcome.value = tet10_finest;
+  outcome.tolerance = 0.01;
+  outcome.passed = tet10_finest <= outcome.tolerance;
+  note << "Tet10 on the coarsest (10 x 2 x 1) grid " << app::format(100.0 * tet10_coarsest, 3)
+       << " %";
+  outcome.note = note.str();
+  return outcome;
+}
+
+/// Buckling load of a cantilever column (clamped base, axial tip traction)
+/// against Euler with Engesser's shear correction.
+StudyOutcome study_buckling_euler(const std::string& out_dir, json::Value& summary) {
+  CsvWriter csv(path_join(out_dir, "buckling_euler.csv"),
+                {"element", "nx", "ny", "nz", "num_dofs", "load_factor_1[N]", "load_factor_2[N]",
+                 "engesser[N]", "euler[N]", "rel_error_engesser[-]", "iterations",
+                 "transformed"});
+  const Scalar length = 1.0;
+  const Scalar h = 0.05;
+  const Scalar t2d = 0.02;
+  const Scalar e = 200.0e9;
+  const Scalar nu = 0.3;
+  json::Value blocks = json::Value::make_object();
+  std::map<std::string, Scalar> finest;
+  const auto run = [&](const ElementType type, Mesh mesh) {
+    const int dim = mesh.dim();
+    const Scalar t = dim == 2 ? t2d : 1.0;
+    const Scalar width = dim == 2 ? t2d : h;
+    const Scalar inertia = width * h * h * h / 12.0;
+    const Scalar area = width * h;
+    const Scalar reference = engesser_cantilever_load(e, nu, inertia, area, length);
+    FemModel model(std::move(mesh), IsotropicMaterial(e, nu, 7850.0, "steel"), t,
+                   dim == 2 ? StressState::PlaneStress : StressState::ThreeDimensional,
+                   IntegrationOptions());
+    DisplacementConstraint root;
+    Selector box;
+    box.kind = SelectorKind::Box;
+    box.xmax = 0.0;
+    root.region.members.push_back(box);
+    root.fix_x = root.fix_y = true;
+    root.fix_z = dim == 3;
+    model.constraints().push_back(root);
+    LoadCaseSpec load;
+    load.name = "axial";
+    TractionLoadSpec top;
+    Selector end;
+    end.kind = SelectorKind::Box;
+    end.xmin = length;
+    top.region.members.push_back(end);
+    top.traction = Vector3(-1.0 / area, 0.0, 0.0);  // 1 N: lambda is the load in N
+    load.tractions.push_back(top);
+    model.load_case_specs().push_back(load);
+    model.finalize();
+    Assembler assembler(model);
+    BucklingOptions options;
+    options.num_modes = 2;
+    options.linear.type = LinearSolverType::SimplicialLdlt;
+    const BucklingResult r = analyse_buckling(model, assembler, 0, options);
+    const Scalar error = r.load_factors(0) / reference - 1.0;
+    const StructuredGridInfo& info = *model.mesh().structured_info();
+    (void)info;
+    return std::make_tuple(r, reference, error, model.dofs().num_dofs(),
+                           euler_cantilever_load(e, inertia, length));
+  };
+  const auto record = [&](const ElementType type, const StructuredMeshSpec& ms, int dim,
+                          json::Value& records) {
+    Mesh mesh = dim == 2                    ? make_structured_quad_mesh(ms)
+                : type == ElementType::Hex8 ? make_structured_hex_mesh(ms)
+                : type == ElementType::Tet4 ? make_structured_tet_mesh(ms)
+                                            : make_structured_tet10_mesh(ms);
+    const std::string name = dim == 2 ? "Quad4" : to_string(type);
+    const auto [r, reference, error, dofs, euler] = run(type, std::move(mesh));
+    csv.raw_row({name, app::format(static_cast<Scalar>(ms.nx), 6),
+                 app::format(static_cast<Scalar>(ms.ny), 6),
+                 app::format(static_cast<Scalar>(dim == 3 ? ms.nz : 0), 6),
+                 app::format(static_cast<Scalar>(dofs), 9), app::format(r.load_factors(0), 10),
+                 app::format(r.load_factors(1), 10), app::format(reference, 10),
+                 app::format(euler, 10), app::format(error, 6),
+                 app::format(static_cast<Scalar>(r.iterations), 6), r.transformed ? "1" : "0"});
+    json::Value rec = json::Value::make_object();
+    rec.set("nx", json::Value::make_number(ms.nx));
+    rec.set("num_dofs", json::Value::make_number(dofs));
+    rec.set("load_factor_1_N", json::Value::make_number(r.load_factors(0)));
+    rec.set("engesser_N", json::Value::make_number(reference));
+    rec.set("relative_error_vs_engesser", json::Value::make_number(error));
+    records.push_back(rec);
+    finest[name] = error;
+  };
+  {
+    json::Value records = json::Value::make_array();
+    for (Index nx : {20, 40, 80, 160}) {
+      StructuredMeshSpec ms;
+      ms.nx = nx;
+      ms.ny = nx / 20 * 2;
+      ms.lx = length;
+      ms.ly = h;
+      record(ElementType::Quad4, ms, 2, records);
+    }
+    blocks.set("Quad4", records);
+  }
+  for (const ElementType type : {ElementType::Hex8, ElementType::Tet4, ElementType::Tet10}) {
+    json::Value records = json::Value::make_array();
+    for (const std::array<Index, 3>& g :
+         std::vector<std::array<Index, 3>>{{10, 1, 1}, {20, 2, 2}, {40, 4, 4}}) {
+      StructuredMeshSpec ms;
+      ms.nx = g[0];
+      ms.ny = g[1];
+      ms.nz = g[2];
+      ms.lx = length;
+      ms.ly = h;
+      ms.lz = h;
+      record(type, ms, 3, records);
+    }
+    blocks.set(to_string(type), records);
+  }
+  csv.close();
+  blocks.set("kind", json::Value::make_string("verification + validation (Euler-Engesser)"));
+  blocks.set("note", json::Value::make_string(
+                         "A 1 m column of 0.05 m square (3-D) or 0.05 m x 0.02 m (plane "
+                         "stress) section, clamped at x = 0, under a unit axial compressive "
+                         "tip traction, so the first load factor is the critical load in "
+                         "newtons. Reference: Euler P = pi^2 E I / (4 L^2) with Engesser's "
+                         "shear correction 1/P_s = 1/P + 1/(5/6 G A); displacement elements "
+                         "converge to it from above."));
+  summary.set("buckling_euler", blocks);
+  StudyOutcome outcome;
+  outcome.name = "linear buckling of a cantilever column vs Euler-Engesser";
+  outcome.kind = "verification + validation";
+  outcome.metric = "larger finest-mesh error of Q4 and Tet10";
+  outcome.value = std::max(std::abs(finest["Quad4"]), std::abs(finest["Tet10"]));
+  outcome.tolerance = 0.01;
+  outcome.passed = outcome.value <= outcome.tolerance;
+  std::ostringstream note;
+  for (const auto& kv : finest) {
+    note << kv.first << " " << app::format(100.0 * kv.second, 3) << " %; ";
+  }
+  outcome.note = note.str();
+  return outcome;
+}
+
+/// A clamped-left block with a tip load for the gradient checks below.
+FemModel gradient_block(Mesh mesh, Scalar compression) {
+  const int dim = mesh.dim();
+  const BoundingBox bb = mesh.bounding_box();
+  FemModel model(std::move(mesh), IsotropicMaterial(70.0e9, 0.3, 2700.0, "block"),
+                 dim == 2 ? 0.01 : 1.0,
+                 dim == 2 ? StressState::PlaneStress : StressState::ThreeDimensional,
+                 IntegrationOptions());
+  DisplacementConstraint root;
+  Selector box;
+  box.kind = SelectorKind::Box;
+  box.xmax = bb.lower.x();
+  root.region.members.push_back(box);
+  root.fix_x = root.fix_y = true;
+  root.fix_z = dim == 3;
+  model.constraints().push_back(root);
+  LoadCaseSpec load;
+  load.name = "tip";
+  TractionLoadSpec end;
+  Selector face;
+  face.kind = SelectorKind::Box;
+  face.xmin = bb.upper.x();
+  end.region.members.push_back(face);
+  end.traction = Vector3(-compression, -0.1 * compression, 0.0);
+  load.tractions.push_back(end);
+  model.load_case_specs().push_back(load);
+  model.finalize();
+  return model;
+}
+
+/// Central differences of the aggregated buckling constraint and of lambda_1,
+/// through the density filter and the projection.
+StudyOutcome study_sensitivity_buckling(const std::string& out_dir, json::Value& summary,
+                                        Scalar tolerance) {
+  CsvWriter csv(path_join(out_dir, "sensitivity_buckling.csv"),
+                {"mesh", "beta[-]", "step[-]", "num_tested", "ks_max_scaled_error[-]",
+                 "lambda1_max_scaled_error[-]", "lambda_1[-]", "lambda_2[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst = 0.0;
+  struct Case {
+    std::string name;
+    Mesh mesh;
+    Scalar beta;
+  };
+  std::vector<Case> cases;
+  {
+    StructuredMeshSpec ms;
+    ms.nx = 16;
+    ms.ny = 8;
+    ms.lx = 0.8;
+    ms.ly = 0.4;
+    cases.push_back({"Q4 16 x 8", make_structured_quad_mesh(ms), 0.0});
+    cases.push_back({"Q4 16 x 8", make_structured_quad_mesh(ms), 4.0});
+    StructuredMeshSpec ms3;
+    ms3.nx = 5;
+    ms3.ny = ms3.nz = 2;
+    ms3.lx = 0.5;
+    ms3.ly = ms3.lz = 0.2;
+    cases.push_back({"Hex8 5 x 2 x 2", make_structured_hex_mesh(ms3), 0.0});
+  }
+  for (Case& c : cases) {
+    FemModel model = gradient_block(std::move(c.mesh), 1.0e6);
+    Assembler assembler(model);
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.5, 0.5, {});
+    StaticAnalysisOptions options;
+    options.linear.type = LinearSolverType::SimplicialLdlt;
+    ComplianceObjective objective(model, assembler, filter, domain, SimpOptions(), options);
+    if (c.beta > 0.0) objective.set_projection(c.beta, 0.5);
+    BucklingConstraintOptions bo;
+    bo.enabled = true;
+    bo.min_load_factor = 1.0;
+    bo.num_modes = 3;
+    bo.ks_parameter = 20.0;
+    bo.eigen.tolerance = 1.0e-14;
+    bo.eigen.residual_tolerance = 1.0e-11;
+    bo.eigen.max_iterations = 5000;
+    BucklingConstraint buckling(model, assembler, bo);
+    Vector x = domain.initial_design();
+    for (Index e = 0; e < domain.num_elements(); ++e) {
+      const Vector3 p = model.mesh().element_centroid(e);
+      x(e) = 0.5 + 0.3 * std::sin(11.0 * p.x()) * std::cos(7.0 * p.y() + 5.0 * p.z());
+    }
+    domain.clamp(x);
+    const ObjectiveEvaluation eval = objective.evaluate(x, true);
+    const BucklingEvaluation be = buckling.evaluate(objective, eval, 0, true);
+    const Vector dl = objective.chain_to_design(eval, be.dlambda_dphysical.front());
+    Scalar best = std::numeric_limits<Scalar>::max();
+    for (Scalar step : {1.0e-3, 1.0e-4, 1.0e-5}) {
+      Scalar ks_err = 0.0;
+      Scalar l_err = 0.0;
+      const Scalar ks_floor = 1.0e-3 * be.dg_dx.cwiseAbs().maxCoeff();
+      const Scalar l_floor = 1.0e-3 * dl.cwiseAbs().maxCoeff();
+      Index tested = 0;
+      for (Index e = 0; e < domain.num_elements(); e += 3) {
+        Vector xp = x;
+        Vector xm = x;
+        xp(e) += step;
+        xm(e) -= step;
+        const BucklingEvaluation bp =
+            buckling.evaluate(objective, objective.evaluate(xp, false), 0, false);
+        const BucklingEvaluation bm =
+            buckling.evaluate(objective, objective.evaluate(xm, false), 0, false);
+        const Scalar fd_ks = (bp.constraint - bm.constraint) / (2.0 * step);
+        const Scalar fd_l = (bp.load_factors(0) - bm.load_factors(0)) / (2.0 * step);
+        ks_err = std::max(ks_err, std::abs(fd_ks - be.dg_dx(e)) /
+                                      std::max({std::abs(fd_ks), std::abs(be.dg_dx(e)), ks_floor}));
+        l_err = std::max(l_err, std::abs(fd_l - dl(e)) /
+                                    std::max({std::abs(fd_l), std::abs(dl(e)), l_floor}));
+        ++tested;
+      }
+      best = std::min(best, std::max(ks_err, l_err));
+      csv.raw_row({c.name, app::format(c.beta, 3), app::format(step, 3),
+                   app::format(static_cast<Scalar>(tested), 6), app::format(ks_err, 4),
+                   app::format(l_err, 4), app::format(be.load_factors(0), 8),
+                   app::format(be.load_factors(1), 8)});
+    }
+    worst = std::max(worst, best);
+    json::Value rec = json::Value::make_object();
+    rec.set("mesh", json::Value::make_string(c.name));
+    rec.set("beta", json::Value::make_number(c.beta));
+    rec.set("lambda_1", json::Value::make_number(be.load_factors(0)));
+    rec.set("best_max_scaled_error", json::Value::make_number(best));
+    records.push_back(rec);
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("note", json::Value::make_string(
+                        "Aggregated buckling constraint KS(1 / lambda_i) - 1 over the lowest "
+                        "three load factors and lambda_1 itself, adjoint gradient against "
+                        "central differences through the density filter (and the projection "
+                        "at beta = 4) on every third element; entries judged against "
+                        "max(|analytical|, |FD|, 1e-3 ||gradient||_inf), eigensolves "
+                        "converged to 1e-14."));
+  summary.set("sensitivity_buckling", block);
+  StudyOutcome outcome;
+  outcome.name = "buckling-constraint sensitivity (Q4 and Hex8)";
+  outcome.kind = "verification";
+  outcome.metric = "worst case of the best (over steps) max scaled error";
+  outcome.value = worst;
+  outcome.tolerance = tolerance;
+  outcome.passed = worst <= tolerance;
+  return outcome;
+}
+
+/// Central differences of the compliance through the overhang filter and the
+/// projection.
+StudyOutcome study_sensitivity_overhang(const std::string& out_dir, json::Value& summary,
+                                        Scalar tolerance) {
+  CsvWriter csv(path_join(out_dir, "sensitivity_overhang.csv"),
+                {"mesh", "build_direction", "beta[-]", "step[-]", "num_tested",
+                 "max_scaled_error[-]", "directional_relative_error[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst = 0.0;
+  for (int dim : {2, 3}) {
+    StructuredMeshSpec ms;
+    ms.nx = dim == 2 ? 16 : 6;
+    ms.ny = dim == 2 ? 8 : 4;
+    ms.nz = 4;
+    ms.lx = dim == 2 ? 0.8 : 0.6;
+    ms.ly = dim == 2 ? 0.4 : 0.4;
+    ms.lz = 0.4;
+    FemModel model = gradient_block(
+        dim == 2 ? make_structured_quad_mesh(ms) : make_structured_hex_mesh(ms), 1.0e5);
+    Assembler assembler(model);
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.5, 0.5, {});
+    StaticAnalysisOptions options;
+    options.linear.type = LinearSolverType::SimplicialLdlt;
+    ComplianceObjective objective(model, assembler, filter, domain, SimpOptions(), options);
+    OverhangOptions oh;
+    oh.filter = true;
+    oh.direction = parse_build_direction(dim == 2 ? "+y" : "+z", dim);
+    const OverhangFilter am(model.mesh(), oh);
+    objective.set_overhang(&am);
+    Vector x = domain.initial_design();
+    for (Index e = 0; e < domain.num_elements(); ++e) {
+      const Vector3 p = model.mesh().element_centroid(e);
+      x(e) = 0.5 + 0.3 * std::sin(11.0 * p.x()) * std::cos(7.0 * p.y() + 5.0 * p.z());
+    }
+    domain.clamp(x);
+    for (Scalar beta : {0.0, 4.0, 16.0}) {
+      if (beta > 0.0) {
+        objective.set_projection(beta, 0.5);
+      } else {
+        objective.disable_projection();
+      }
+      Scalar best = std::numeric_limits<Scalar>::max();
+      for (Scalar step : {1.0e-3, 1.0e-4, 1.0e-5}) {
+        const SensitivityCheckResult check =
+            verify_sensitivities(objective, domain, x, {}, step, tolerance);
+        best = std::min(best, std::max(check.max_scaled_error, check.directional_relative_error));
+        csv.raw_row({dim == 2 ? "Q4" : "Hex8", oh.direction.label(), app::format(beta, 3),
+                     app::format(step, 3), app::format(static_cast<Scalar>(check.num_tested), 6),
+                     app::format(check.max_scaled_error, 4),
+                     app::format(check.directional_relative_error, 4)});
+      }
+      worst = std::max(worst, best);
+      json::Value rec = json::Value::make_object();
+      rec.set("mesh", json::Value::make_string(dim == 2 ? "Q4" : "Hex8"));
+      rec.set("beta", json::Value::make_number(beta));
+      rec.set("best_error", json::Value::make_number(best));
+      records.push_back(rec);
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("note", json::Value::make_string(
+                        "Compliance gradient through the density filter, the overhang "
+                        "filter (its adjoint recursion) and, at beta > 0, the projection, "
+                        "against central differences; entries judged against max(|analytical|, "
+                        "|FD|, 1e-3 ||gradient||_inf), plus the directional derivative."));
+  summary.set("sensitivity_overhang", block);
+  StudyOutcome outcome;
+  outcome.name = "sensitivity through the overhang filter (Q4 and Hex8)";
+  outcome.kind = "verification";
+  outcome.metric = "worst over beta of the best max(scaled entry error, directional error)";
+  outcome.value = worst;
+  outcome.tolerance = tolerance;
+  outcome.passed = worst <= tolerance;
+  return outcome;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1925,7 +2538,9 @@ int main(int argc, char** argv) {
             "all (default) | sensitivity | mesh-convergence | modal | "
             "solver-agreement | patch-test | patch-test-3d | mesh-convergence-3d | "
             "sensitivity-3d | modal-3d | patch-test-simplex | mesh-convergence-simplex | "
-            "multigrid | sensitivity-projection"},
+            "multigrid | sensitivity-projection | patch-test-quadratic | "
+            "mesh-convergence-tet10 | buckling-euler | sensitivity-buckling | "
+            "sensitivity-overhang"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -1994,6 +2609,21 @@ int main(int argc, char** argv) {
     }
     if (all || study == "sensitivity-projection") {
       outcomes.push_back(study_sensitivity_projection(out_dir, summary, sensitivity_tolerance));
+    }
+    if (all || study == "patch-test-quadratic") {
+      outcomes.push_back(study_patch_test_quadratic(out_dir, summary));
+    }
+    if (all || study == "mesh-convergence-tet10") {
+      outcomes.push_back(study_mesh_convergence_tet10(out_dir, summary));
+    }
+    if (all || study == "buckling-euler") {
+      outcomes.push_back(study_buckling_euler(out_dir, summary));
+    }
+    if (all || study == "sensitivity-buckling") {
+      outcomes.push_back(study_sensitivity_buckling(out_dir, summary, sensitivity_tolerance));
+    }
+    if (all || study == "sensitivity-overhang") {
+      outcomes.push_back(study_sensitivity_overhang(out_dir, summary, sensitivity_tolerance));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

@@ -115,6 +115,17 @@ struct TopologyConfig {
   Scalar filter_radius_elements = 1.5;
   TopologyOptimizerOptions optimizer;
   std::vector<PassiveRegionSpec> passive_regions;
+  /// A `topology.overhang` section names a build direction: the final design
+  /// is checked for unsupported material, and with `filter` the overhang
+  /// filter shapes the optimisation (optimizer.overhang holds the settings).
+  bool overhang_check = false;
+  /// Minimum length-scale check of the final design: probe radii from half a
+  /// cell size up to `length_scale_max_radius_elements` cells in half-cell
+  /// steps, a probe passing while it flags at most `length_scale_tolerance`
+  /// of the volume. On by default with the robust formulation.
+  bool length_scale_check = false;
+  Scalar length_scale_max_radius_elements = 6.0;
+  Scalar length_scale_tolerance = 0.02;
 };
 
 struct OutputConfig {

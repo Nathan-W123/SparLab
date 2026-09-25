@@ -112,8 +112,12 @@ struct TopologyOptimizerOptions {
   /// geometry (reported, never silently applied to the optimisation itself).
   Scalar interpretation_threshold = 0.5;
 
-  /// Heaviside projection of the filtered density with beta continuation.
+  /// Heaviside projection of the filtered density with beta continuation
+  /// (and, optionally, the robust formulation).
   ProjectionOptions projection;
+
+  /// Additive-manufacturing overhang filter (applied when `overhang.filter`).
+  OverhangOptions overhang;
 };
 
 /// One iteration of the optimisation history.
@@ -137,7 +141,28 @@ struct TopologyIteration {
   Scalar min_load_factor = 0.0;       ///< min over constrained cases of lambda_1
   Scalar buckling_constraint = 0.0;   ///< max over cases of KS - 1
   int buckling_iterations = 0;        ///< subspace iterations, all cases
+  // Robust formulation (zero otherwise): `compliance` is then the eroded
+  // design's and `volume_fraction` the blueprint's.
+  Scalar eroded_volume_fraction = 0.0;
+  Scalar dilated_volume_fraction = 0.0;
+  Scalar dilated_target_fraction = 0.0;  ///< rescaled target of the dilated design
   Scalar constraint_violation = 0.0;  ///< max over all constraints, > 0 = violated
+};
+
+/// The three designs of a robust run at its final iterate.
+struct RobustRecord {
+  Scalar eta_eroded = 0.0;
+  Scalar eta_intermediate = 0.0;
+  Scalar eta_dilated = 0.0;
+  Scalar compliance_eroded = 0.0;        ///< the objective [J]
+  Scalar compliance_intermediate = 0.0;  ///< the blueprint [J]
+  Scalar compliance_dilated = 0.0;       ///< [J]
+  Scalar volume_fraction_eroded = 0.0;
+  Scalar volume_fraction_intermediate = 0.0;
+  Scalar volume_fraction_dilated = 0.0;
+  Scalar dilated_target_fraction = 0.0;
+  Vector eroded_density;
+  Vector dilated_density;
 };
 
 /// Buckling state of one constrained load case at the final design.
@@ -213,6 +238,17 @@ struct TopologyOptimizationResult {
   Scalar max_stress_ratio = 0.0;               ///< max over cases of max_relaxed_ratio
   bool buckling_constrained = false;
   std::vector<BucklingConstraintRecord> buckling;  ///< one per constrained load case
+
+  /// Robust formulation: the reported density, compliance, volume and
+  /// displacements above are the blueprint's (the intermediate design);
+  /// the eroded and dilated ones are here.
+  bool robust = false;
+  RobustRecord robust_record;
+
+  /// The overhang filter was part of the density chain; `printable_density`
+  /// is its output at the final design (before projection).
+  bool overhang_filtered = false;
+  Vector printable_density;
   Scalar min_load_factor = 0.0;                ///< min over constrained cases of lambda_1
   Scalar constraint_violation = 0.0;           ///< max over all constraints at the end
   bool feasible = true;                        ///< constraint_violation <= tolerance
