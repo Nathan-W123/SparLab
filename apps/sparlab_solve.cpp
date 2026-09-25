@@ -1,14 +1,17 @@
 /// \file sparlab_solve.cpp
-/// \brief Linear static (and optional modal) analysis of one configuration.
+/// \brief Linear static (and optional modal and buckling) analysis of one
+///        configuration.
 ///
 /// Solves every load case of the deck, recovers stresses and reactions, checks
-/// global equilibrium, optionally runs a modal analysis, and writes the full
-/// result set to the output directory.
+/// global equilibrium, optionally runs a modal analysis and a linear buckling
+/// check of the load cases (reusing the static factorisation), and writes the
+/// full result set to the output directory.
 
 #include "AppSupport.hpp"
 
 #include "sparlab/core/Timer.hpp"
 #include "sparlab/fem/Assembler.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/ModelDiagnostics.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
@@ -26,7 +29,7 @@ int main(int argc, char** argv) {
     const std::vector<std::string> known = {"config",   "output",        "verbosity",
                                             "strict-config", "modes",   "no-vtk",
                                             "no-csv",   "export-calculix", "solver",
-                                            "help"};
+                                            "buckling", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -34,6 +37,8 @@ int main(int argc, char** argv) {
           {{"--config <file>", "input deck describing mesh, material, BCs, loads"},
            {"--output <dir>", "output directory (default results/<case>)"},
            {"--modes <n>", "override modal.num_modes and enable modal analysis"},
+           {"--buckling <n>", "enable the linear buckling check with n modes per load "
+                              "case"},
            {"--solver <type>", "override solver.linear.type (simplicial_ldlt, amg_cg, "
                                "auto, ...)"},
            {"--no-vtk", "skip VTK output"},
@@ -54,9 +59,14 @@ int main(int argc, char** argv) {
     }
     if (cli.has("no-vtk")) config.output.write_vtk = false;
     if (cli.has("no-csv")) config.output.write_csv = false;
+    if (cli.has("buckling")) {
+      config.buckling.enabled = true;
+      config.buckling.options.num_modes = cli.integer("buckling", 4);
+    }
     if (cli.has("solver")) {
       config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
       config.modal.options.linear.type = config.analysis.linear.type;
+      config.buckling.options.linear.type = config.analysis.linear.type;
     }
 
     const std::string out_dir =
@@ -83,10 +93,29 @@ int main(int argc, char** argv) {
                                               : "disabled (general mesh)"));
 
     std::vector<StaticSolution> solutions;
+    StaticAnalysis analysis(model, assembler, config.analysis);
     {
       ScopedTimer t(timings, "static_solve");
-      StaticAnalysis analysis(model, assembler, config.analysis);
       solutions = analysis.solve_all();
+    }
+
+    // Buckling of each checked load case, with the static factorisation.
+    std::vector<BucklingResult> buckling;
+    if (config.buckling.enabled) {
+      ScopedTimer t(timings, "buckling_analysis");
+      const DofManager& dofs = model.dofs();
+      const FreeSolve solve = [&](const Vector& b) {
+        return dofs.restrict_to_free(analysis.solve_homogeneous(dofs.expand(b)));
+      };
+      for (std::size_t l : config.buckling_load_cases()) {
+        const SparseMatrix k_g =
+            assemble_geometric_stiffness(model, assembler, solutions[l].displacement);
+        BucklingResult result = solve_buckling(model, assembler, analysis.stiffness(), k_g,
+                                               config.buckling.options, solve);
+        result.load_case = solutions[l].load_case_name;
+        result.linear_solver = analysis.solver().name();
+        buckling.push_back(std::move(result));
+      }
     }
 
     std::vector<StressField> stresses;
@@ -124,6 +153,7 @@ int main(int argc, char** argv) {
         }
       }
       if (modal) writer.write_modal(model.mesh(), *modal);
+      if (!buckling.empty()) writer.write_buckling(model.mesh(), buckling);
       if (cli.has("export-calculix")) {
         const std::vector<std::string> decks =
             write_calculix_decks(model, writer.file("calculix"), config.name);
@@ -132,9 +162,13 @@ int main(int argc, char** argv) {
     }
 
     timings.add("total", wall.elapsed_seconds());
-    writer.write_json("summary.json",
-                      make_static_summary(config, model, diagnostics, solutions,
-                                          stresses, modal.get(), timings));
+    json::Value summary = make_static_summary(config, model, diagnostics, solutions,
+                                              stresses, modal.get(), timings);
+    if (!buckling.empty()) {
+      summary.set("buckling", buckling_json(buckling, config.buckling.options,
+                                            "the model as meshed"));
+    }
+    writer.write_json("summary.json", summary);
 
     std::cout << "case: " << config.name << "\n";
     std::cout << "  mesh:        " << model.mesh().num_elements() << " elements, "
@@ -176,6 +210,18 @@ int main(int argc, char** argv) {
       }
       std::cout << "\n";
       std::cout << "      total mass " << app::format(modal->total_mass) << " kg\n";
+    }
+    for (const BucklingResult& b : buckling) {
+      std::cout << "  buckling '" << b.load_case << "': ";
+      if (b.no_positive_load_factor) {
+        std::cout << "no positive load factor (the load case only stiffens the model)";
+      } else {
+        for (Eigen::Index i = 0; i < b.load_factors.size(); ++i) {
+          std::cout << (i ? ", " : "") << "lambda" << i + 1 << " = "
+                    << app::format(b.load_factors(i));
+        }
+      }
+      std::cout << "\n";
     }
     std::cout << "  runtime:     " << app::format(timings.get("total")) << " s\n";
     std::cout << "  results:     " << out_dir << "\n";

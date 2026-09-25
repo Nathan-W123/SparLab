@@ -52,6 +52,13 @@ Vector ComplianceObjective::physical_density(const Vector& x) const {
   return projection_ ? heaviside_project(rho, beta_, eta_) : rho;
 }
 
+const SparseMatrix& ComplianceObjective::stiffness() const {
+  if (!analysis_) {
+    throw ModelError("the stiffness matrix was requested before the first evaluation");
+  }
+  return analysis_->stiffness();
+}
+
 Vector ComplianceObjective::chain_to_design(const ObjectiveEvaluation& eval,
                                             const Vector& d_dphysical) const {
   if (eval.projection_derivative.size() == d_dphysical.size()) {

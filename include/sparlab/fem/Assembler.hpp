@@ -35,6 +35,7 @@
 #include "sparlab/core/Types.hpp"
 #include "sparlab/fem/FemModel.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace sparlab {
@@ -58,7 +59,9 @@ class Assembler {
   SparseMatrix assemble_stiffness(const Vector* scale = nullptr) const;
 
   /// Assemble the global mass matrix [kg].
-  /// \param type consistent or row-sum lumped.
+  /// \param type consistent or lumped: row sums for the linear elements, the
+  ///        diagonal scaled to the element mass (HRZ) for the Tet10, whose
+  ///        corner row sums are negative.
   /// \param scale optional per-element mass factors; `nullptr` means all ones.
   SparseMatrix assemble_mass(MassType type, const Vector* scale = nullptr) const;
 
@@ -74,6 +77,16 @@ class Assembler {
 
   /// Total structural mass of the model [kg] for the given element factors.
   Scalar total_mass(const Vector* scale = nullptr) const;
+
+  /// Assemble \f$\sum_e A_e^T M_e A_e\f$ for element matrices computed on
+  /// demand by `element_matrix(e)` (num_dofs x num_dofs of the element, in
+  /// its node-major DOF order), for matrices that are neither the stiffness
+  /// nor the mass: the geometric stiffness of a buckling analysis, say. Any
+  /// element matrix fits the stiffness sparsity pattern, so the cached
+  /// pattern is used (or the triplet path when pattern assembly is off) and
+  /// the result can be reduced with `reduce_free_free`. Entries may have any
+  /// sign.
+  SparseMatrix assemble_elementwise(const std::function<Matrix(Index)>& element_matrix) const;
 
   /// Use the cached-pattern path (default) or the triplet path. Both give the
   /// same matrices; the switch exists so the tests can compare them.

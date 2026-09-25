@@ -143,4 +143,14 @@ Vector Tri3Element::boundary_traction(const Matrix& coords, int local_face,
   return fe;
 }
 
+std::vector<IntegrationPoint> Tri3Element::integration_rule(
+    const IntegrationOptions& /*opts*/) const {
+  // One point at the centroid; the reference triangle has area 1/2 and
+  // det J = 2A, so w det J = A.
+  IntegrationPoint ip;
+  ip.point = reference_centroid();
+  ip.weight = 0.5;
+  return {ip};
+}
+
 }  // namespace sparlab

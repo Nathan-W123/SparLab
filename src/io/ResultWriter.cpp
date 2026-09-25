@@ -11,6 +11,7 @@
 #include <cmath>
 #include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <string>
@@ -510,6 +511,49 @@ void ResultWriter::write_modal(const Mesh& mesh, const ModalResult& modal,
   }
 }
 
+void ResultWriter::write_buckling(const Mesh& mesh, const std::vector<BucklingResult>& results,
+                                  const std::string& tag) const {
+  const int dim = mesh.dim();
+  const std::string suffix = tag.empty() ? "" : "_" + sanitise(tag);
+  {
+    CsvWriter csv(file("buckling" + suffix + ".csv"),
+                  {"load_case", "mode", "load_factor[-]", "eigenpair_residual[-]",
+                   "solid_energy_fraction[-]"});
+    for (const BucklingResult& r : results) {
+      for (Eigen::Index i = 0; i < r.load_factors.size(); ++i) {
+        std::ostringstream lf;
+        lf << std::setprecision(17) << r.load_factors(i);
+        std::ostringstream res;
+        res << std::setprecision(6) << r.residuals(i);
+        std::ostringstream solid;
+        solid << std::setprecision(6) << r.solid_energy_fraction(i);
+        csv.raw_row({r.load_case, std::to_string(i + 1), lf.str(), res.str(), solid.str()});
+      }
+    }
+    csv.close();
+  }
+  if (!config_.output.write_mode_shapes || !config_.output.write_vtk) return;
+  for (const BucklingResult& r : results) {
+    for (Eigen::Index i = 0; i < r.mode_shapes.cols(); ++i) {
+      Vector shape = r.mode_shapes.col(i);
+      Scalar largest = 0.0;
+      for (Index n = 0; n < mesh.num_nodes(); ++n) largest = std::max(largest, magnitude(shape, n, dim));
+      if (largest > 0.0) shape /= largest;
+      std::ostringstream title;
+      title << "SparLab buckling mode " << i + 1 << " of load case " << r.load_case
+            << " at load factor " << r.load_factors(i) << " (max |phi| = 1)";
+      VtkWriter writer(mesh, title.str());
+      writer.add_point_vectors("buckling_mode", shape);
+      Vector mag(mesh.num_nodes());
+      for (Index n = 0; n < mesh.num_nodes(); ++n) mag(n) = magnitude(shape, n, dim);
+      writer.add_point_scalars("buckling_mode_magnitude", mag);
+      std::ostringstream name;
+      name << "buckling" << suffix << "_" << sanitise(r.load_case) << "_" << i + 1 << ".vtk";
+      writer.write(file(name.str()));
+    }
+  }
+}
+
 void ResultWriter::write_history(const TopologyOptimizationResult& result) const {
   const bool mma = result.method == OptimizerMethod::MMA;
   std::vector<std::string> header{
@@ -523,6 +567,10 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
   }
   header.push_back("linear_iterations[-]");
   if (result.projected) header.push_back("beta[-]");
+  if (result.buckling_constrained) {
+    header.insert(header.end(), {"min_load_factor[-]", "buckling_constraint[-]",
+                                 "buckling_subspace_iterations[-]"});
+  }
   CsvWriter csv(file("history.csv"), header);
   for (const TopologyIteration& it : result.history) {
     std::vector<Scalar> row{it.penalty, it.compliance, it.volume, it.volume_fraction,
@@ -535,6 +583,10 @@ void ResultWriter::write_history(const TopologyOptimizationResult& result) const
     }
     row.push_back(static_cast<Scalar>(it.linear_iterations));
     if (result.projected) row.push_back(it.beta);
+    if (result.buckling_constrained) {
+      row.insert(row.end(), {it.min_load_factor, it.buckling_constraint,
+                             static_cast<Scalar>(it.buckling_iterations)});
+    }
     csv.row(it.iteration, row);
   }
   csv.close();
@@ -775,6 +827,9 @@ json::Value tolerance_json(const Configuration& config) {
   out.set("modal_tolerance", json::Value::make_number(config.modal.options.tolerance));
   out.set("modal_residual_tolerance",
           json::Value::make_number(config.modal.options.residual_tolerance));
+  out.set("buckling_tolerance", json::Value::make_number(config.buckling.options.tolerance));
+  out.set("buckling_residual_tolerance",
+          json::Value::make_number(config.buckling.options.residual_tolerance));
   out.set("optimizer_change_tolerance",
           json::Value::make_number(config.topology.optimizer.change_tolerance));
   out.set("optimizer_volume_tolerance",
@@ -830,6 +885,50 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
 
   if (modal != nullptr) out.set("modal", modal_json(*modal));
   out.set("timings_s", timings_json(timings));
+  return out;
+}
+
+json::Value buckling_json(const std::vector<BucklingResult>& results,
+                          const BucklingOptions& options, const std::string& what) {
+  json::Value out = json::Value::make_object();
+  out.set("structure", json::Value::make_string(what));
+  out.set("method", json::Value::make_string(
+                        "linear buckling (K_ff + lambda K_G,ff(u)) phi = 0 of the linear "
+                        "static stress state of each load case, by subspace iteration on "
+                        "(-K_G, K) with a Rayleigh-Ritz projection (dense eigensolve up "
+                        "to 400 free DOFs)"));
+  out.set("meaning", json::Value::make_string(
+                         "the structure is predicted to buckle at load_factor times the "
+                         "load case; an upper bound for a real, imperfect structure "
+                         "(bifurcation of the ideal geometry, no follower forces, no "
+                         "post-buckling)"));
+  out.set("tolerance", json::Value::make_number(options.tolerance));
+  out.set("residual_tolerance", json::Value::make_number(options.residual_tolerance));
+  out.set("requested_modes", json::Value::make_number(options.num_modes));
+  json::Value cases = json::Value::make_array();
+  for (const BucklingResult& r : results) {
+    json::Value c = json::Value::make_object();
+    c.set("load_case", json::Value::make_string(r.load_case));
+    c.set("load_factors", json::array_of(r.load_factors));
+    c.set("eigenpair_residuals", json::array_of(r.residuals));
+    c.set("solid_energy_fraction", json::array_of(r.solid_energy_fraction));
+    c.set("no_positive_load_factor", json::Value::make_bool(r.no_positive_load_factor));
+    c.set("iterations", json::Value::make_number(r.iterations));
+    c.set("subspace_size", json::Value::make_number(r.subspace_size));
+    c.set("spectral_transformation", json::Value::make_bool(r.transformed));
+    if (r.transformed) {
+      c.set("transformation_shift", json::Value::make_number(r.sigma));
+      c.set("shifted_factorizations", json::Value::make_number(r.factorizations));
+    }
+    c.set("converged", json::Value::make_bool(r.converged));
+    c.set("final_relative_change", json::Value::make_number(r.final_change));
+    if (!r.linear_solver.empty()) {
+      c.set("linear_solver", json::Value::make_string(r.linear_solver));
+    }
+    c.set("warnings", json::array_of(r.warnings));
+    cases.push_back(c);
+  }
+  out.set("load_cases", cases);
   return out;
 }
 
@@ -959,6 +1058,29 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                                 "case: c * g_PN - 1 <= 0"));
       setup.set("stress_constraint", sc);
     }
+    if (result.buckling_constrained) {
+      json::Value bc = json::Value::make_object();
+      const BucklingConstraintOptions& bo = config.topology.optimizer.buckling;
+      bc.set("min_load_factor", json::Value::make_number(bo.min_load_factor));
+      bc.set("num_modes", json::Value::make_number(bo.num_modes));
+      bc.set("ks_parameter", json::Value::make_number(bo.ks_parameter));
+      bc.set("ks_overestimate_bound",
+             json::Value::make_number(std::log(static_cast<Scalar>(bo.num_modes)) /
+                                      bo.ks_parameter));
+      bc.set("solid_threshold", json::Value::make_number(bo.solid_threshold));
+      bc.set("eigen_tolerance", json::Value::make_number(bo.eigen.tolerance));
+      bc.set("eigen_residual_tolerance",
+             json::Value::make_number(bo.eigen.residual_tolerance));
+      bc.set("formulation",
+             json::Value::make_string(
+                 "(K(rho) + lambda K_G(rho, u)) phi = 0 with E_K = E_min + rho^p (E_0 - "
+                 "E_min) and the stress in K_G from E_G = rho^p E_0 (no E_min floor, "
+                 "against pseudo modes in void); one constraint per load case: KS_P("
+                 "lambda_req / lambda_i) - 1 <= 0 over the lowest num_modes positive "
+                 "load factors, which overestimates max_i lambda_req / lambda_i by at "
+                 "most ln(num_modes) / P"));
+      setup.set("buckling_constraint", bc);
+    }
     out.set("optimization_setup", setup);
   }
 
@@ -1057,6 +1179,28 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                              "re-solve of the thresholded structure: those are the numbers "
                              "that say whether the structure meets the limit."));
       res.set("stress", stress);
+    }
+    if (result.buckling_constrained) {
+      json::Value buckling = json::Value::make_object();
+      buckling.set("min_load_factor", json::Value::make_number(result.min_load_factor));
+      json::Value cases = json::Value::make_array();
+      for (const BucklingConstraintRecord& rec : result.buckling) {
+        json::Value c = json::Value::make_object();
+        c.set("load_case", json::Value::make_string(rec.load_case));
+        c.set("load_factors", json::array_of(rec.load_factors));
+        c.set("solid_energy_fraction", json::array_of(rec.solid_energy_fraction));
+        c.set("ks", json::Value::make_number(rec.ks));
+        c.set("constraint_value", json::Value::make_number(rec.constraint));
+        c.set("no_positive_load_factor", json::Value::make_bool(rec.no_positive_load_factor));
+        cases.push_back(c);
+      }
+      buckling.set("load_cases", cases);
+      buckling.set("note", json::Value::make_string(
+                               "Load factors of the SIMP model the constraint acts on "
+                               "(void material keeps rho^p of its stress stiffness). The "
+                               "buckling_check block re-solves the interpreted structure, "
+                               "which is the number that says whether the part is stable."));
+      res.set("buckling", buckling);
     }
     out.set("optimization_result", res);
   }

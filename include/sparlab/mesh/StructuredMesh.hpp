@@ -92,6 +92,10 @@ Mesh make_structured_tri_mesh(const StructuredMeshSpec& spec);
 /// split into six positively oriented Kuhn tetrahedra.
 Mesh make_structured_tet_mesh(const StructuredMeshSpec& spec);
 
+/// Structured Tet10 mesh: `make_structured_tet_mesh(spec)` with a node at the
+/// midpoint of every edge (`elevate_to_tet10`).
+Mesh make_structured_tet10_mesh(const StructuredMeshSpec& spec);
+
 /// The perturbed quad / hex meshes above, split the same way (identical node
 /// positions for the same seed), for patch tests on distorted simplices.
 /// \{
@@ -99,6 +103,11 @@ Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation
                              unsigned int seed = 12345u);
 Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed = 12345u);
+/// Straight-sided Tet10 cells on the perturbed Tet4 mesh (edge nodes at the
+/// midpoints of the distorted edges), so every cell map stays affine and the
+/// element space contains every quadratic field.
+Mesh make_perturbed_tet10_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                               unsigned int seed = 12345u);
 /// \}
 
 /// Convenience accessors for structured grids (used by tests and selectors).

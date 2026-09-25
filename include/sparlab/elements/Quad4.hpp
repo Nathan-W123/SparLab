@@ -49,6 +49,9 @@ class Quad4Element final : public Element {
   std::vector<NaturalPoint> stress_evaluation_points(
       const IntegrationOptions& opts) const override;
 
+  std::vector<IntegrationPoint> integration_rule(
+      const IntegrationOptions& opts) const override;
+
   Vector boundary_traction(const Matrix& coords, int local_face, const Vector3& traction,
                            Scalar thickness, const IntegrationOptions& opts) const override;
 };

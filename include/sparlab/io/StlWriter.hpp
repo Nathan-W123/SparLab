@@ -6,8 +6,10 @@
 /// thresholding the final density field and keeping its largest connected
 /// group ("after"). Both are written as watertight triangle surfaces:
 ///
-///   * a 3-D (Hex8) mesh contributes its boundary faces, each split into two
-///     triangles wound so the right-hand normal points out of the material;
+///   * a 3-D mesh contributes its boundary faces wound so the right-hand
+///     normal points out of the material: a Tet4 face as it is, a Hex8 face
+///     split into two triangles, and a 6-node Tet10 face into four through
+///     its edge nodes, so a curved face is followed at node resolution;
 ///   * a 2-D (Q4) mesh is extruded through the model thickness along +z: the
 ///     element polygons become the two caps and the boundary edges become the
 ///     side walls.
@@ -18,8 +20,10 @@
 /// the volume it encloses (divergence theorem) are integrated as well. On a
 /// mesh with planar faces the enclosed volume equals the cell volume; on a
 /// distorted hex mesh a cut face is a bilinear patch that two flat triangles
-/// only approximate, so the two volumes then differ by the geometric error of
-/// the triangulation, which is reported rather than hidden.
+/// only approximate, and a curved Tet10 face is a quadratic patch that four
+/// flat triangles approximate, so the two volumes then differ by the
+/// geometric error of the triangulation, which is reported rather than
+/// hidden.
 ///
 /// The STL carries geometry only. What it represents is stated where it is
 /// written: a density field interpreted at a threshold, not a design that has

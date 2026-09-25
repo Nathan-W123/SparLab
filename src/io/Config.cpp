@@ -211,13 +211,15 @@ std::string Configuration::describe_mesh() const {
   if (mesh_kind == MeshKind::File) {
     os << "file '" << mesh_file.path << "'";
     if (file_mesh != nullptr) {
-      os << " (" << to_string(file_mesh->element_type()) << ", "
-         << file_mesh->num_elements() << " elements)";
+      os << " (" << (mesh_elevated ? "Tet4 elevated to " : "")
+         << to_string(file_mesh->element_type()) << ", " << file_mesh->num_elements()
+         << " elements)";
     }
     return os.str();
   }
   os << to_string(mesh_kind) << " " << mesh_spec.nx << " x " << mesh_spec.ny;
   if (dim() == 3) os << " x " << mesh_spec.nz;
+  if (mesh_order == 2) os << " (Tet10)";
   return os.str();
 }
 
@@ -232,6 +234,42 @@ Scalar Configuration::resolved_filter_radius(const Mesh& mesh) const {
   // Hex8, the mean edge length for triangles and tetrahedra (Mesh.hpp).
   return topology.filter_radius_elements * mesh.mean_element_size();
 }
+
+std::vector<std::size_t> Configuration::buckling_load_cases() const {
+  std::vector<std::size_t> out;
+  if (buckling.load_cases.empty()) {
+    for (std::size_t l = 0; l < load_cases.size(); ++l) out.push_back(l);
+    return out;
+  }
+  for (const std::string& wanted : buckling.load_cases) {
+    std::size_t l = 0;
+    while (l < load_cases.size() && load_cases[l].name != wanted) ++l;
+    if (l == load_cases.size()) {
+      throw ConfigError("'buckling.load_cases' names '" + wanted +
+                        "', which is not a load case of the deck");
+    }
+    out.push_back(l);
+  }
+  return out;
+}
+
+namespace {
+
+/// The eigensolver keys shared by the buckling check and the constraint.
+void parse_buckling_solver(const ConfigNode& node, BucklingOptions& options) {
+  options.max_iterations = node.integer_or("max_iterations", options.max_iterations);
+  options.tolerance = node.number_or("tolerance", options.tolerance);
+  options.residual_tolerance = node.number_or("residual_tolerance", options.residual_tolerance);
+  options.seed = static_cast<unsigned int>(node.integer_or("seed", static_cast<int>(options.seed)));
+}
+
+std::vector<std::string> string_list(const ConfigNode& parent, const std::string& key) {
+  std::vector<std::string> out;
+  for (const ConfigNode& item : parent.array(key)) out.push_back(item.string());
+  return out;
+}
+
+}  // namespace
 
 Configuration parse_configuration(const json::Value& document, const std::string& source,
                                   bool strict, const std::string& base_directory) {
@@ -292,6 +330,7 @@ Configuration parse_configuration(const json::Value& document, const std::string
         throw ConfigError(os.str());
       }
       file.read.merge_duplicate_nodes = mesh.boolean_or("merge_duplicate_nodes", false);
+      const ConfigNode order_node = mesh.child("order");
       file.read.duplicate_tolerance = mesh.number_or("duplicate_tolerance", 0.0);
       // The reader's messages name the file and line; the deck key is added
       // in front, and the error keeps its category (I/O versus mesh).
@@ -306,6 +345,32 @@ Configuration parse_configuration(const json::Value& document, const std::string
       } catch (const ConfigError& e) {
         throw ConfigError(where + e.what());
       }
+      const ElementType read_type = config.file_mesh->element_type();
+      config.mesh_order = read_type == ElementType::Tet10 ? 2 : 1;
+      if (order_node.exists()) {
+        const long long order = order_node.integer();
+        if (order != 1 && order != 2) {
+          throw ConfigError("'" + order_node.path() + "' must be 1 or 2, got " +
+                            std::to_string(order));
+        }
+        if (order == 1 && read_type == ElementType::Tet10) {
+          throw ConfigError("'" + order_node.path() + "' is 1 but " + file.path +
+                            " holds 10-node tetrahedra; SparLab does not drop edge "
+                            "nodes. Remove the key, or re-export the mesh with linear "
+                            "elements");
+        }
+        if (order == 2 && read_type != ElementType::Tet4 && read_type != ElementType::Tet10) {
+          throw ConfigError("'" + order_node.path() + "' is 2 but " + file.path +
+                            " holds " + to_string(read_type) +
+                            " cells; the quadratic element is the 10-node tetrahedron, "
+                            "so order 2 needs a tetrahedral mesh");
+        }
+        if (order == 2 && read_type == ElementType::Tet4) {
+          config.file_mesh = std::make_shared<const Mesh>(elevate_to_tet10(*config.file_mesh));
+          config.mesh_elevated = true;
+        }
+        config.mesh_order = static_cast<int>(order);
+      }
     } else {
       const bool solid = config.mesh_kind == MeshKind::StructuredHex ||
                          config.mesh_kind == MeshKind::StructuredTet;
@@ -319,8 +384,23 @@ Configuration parse_configuration(const json::Value& document, const std::string
         config.mesh_spec.nz = mesh.require("nz").integer();
         config.mesh_spec.lz = mesh.positive_number("lz");
         config.mesh_spec.z0 = mesh.number_or("z0", 0.0);
-      } else if (mesh.child("nz").exists() || mesh.child("lz").exists() ||
-                 mesh.child("z0").exists()) {
+      }
+      const ConfigNode order_node = mesh.child("order");
+      if (order_node.exists()) {
+        const long long order = order_node.integer();
+        if (order != 1 && order != 2) {
+          throw ConfigError("'" + order_node.path() + "' must be 1 or 2, got " +
+                            std::to_string(order));
+        }
+        if (order == 2 && config.mesh_kind != MeshKind::StructuredTet) {
+          throw ConfigError("'" + order_node.path() + "' is 2 but the quadratic element "
+                            "is the 10-node tetrahedron; use \"type\": "
+                            "\"structured_tet\" (or a tetrahedral mesh file) for order 2");
+        }
+        config.mesh_order = static_cast<int>(order);
+      }
+      if (!solid && (mesh.child("nz").exists() || mesh.child("lz").exists() ||
+                     mesh.child("z0").exists())) {
         throw ConfigError("'" + mesh.path() + "' gives nz/lz/z0 for a " + type +
                           " mesh; use \"type\": \"structured_hex\" or "
                           "\"structured_tet\" for a solid mesh");
@@ -555,6 +635,24 @@ Configuration parse_configuration(const json::Value& document, const std::string
     }
   }
 
+  // --- buckling -----------------------------------------------------------
+  {
+    const ConfigNode buckling = root.child("buckling");
+    config.buckling.enabled = buckling.boolean_or("enabled", false);
+    config.buckling.options.num_modes = buckling.integer_or("num_modes", 4);
+    parse_buckling_solver(buckling, config.buckling.options);
+    config.buckling.load_cases = string_list(buckling, "load_cases");
+    config.buckling.analyse_optimised_topology =
+        buckling.boolean_or("analyse_optimised_topology", true);
+    config.buckling.options.linear = config.analysis.linear;
+    if (config.buckling.enabled) {
+      if (config.buckling.options.num_modes < 1) {
+        throw ConfigError("'buckling.num_modes' must be at least 1");
+      }
+      (void)config.buckling_load_cases();  // validates the names
+    }
+  }
+
   // --- topology -----------------------------------------------------------
   {
     const ConfigNode topo = root.child("topology");
@@ -647,6 +745,36 @@ Configuration parse_configuration(const json::Value& document, const std::string
     }
     if (config.topology.enabled) o.stress.validate(o.simp);
 
+    // Aggregated lower bound on the buckling load factors (MMA only).
+    const ConfigNode buckle = topo.child("buckling_constraint");
+    o.buckling.enabled = buckle.boolean_or("enabled", false);
+    o.buckling.min_load_factor = buckle.number_or("min_load_factor", 1.0);
+    o.buckling.num_modes = buckle.integer_or("num_modes", 6);
+    o.buckling.ks_parameter = buckle.number_or("ks_parameter", 40.0);
+    o.buckling.solid_threshold = buckle.number_or("solid_threshold", 0.5);
+    o.buckling.load_cases = string_list(buckle, "load_cases");
+    parse_buckling_solver(buckle, o.buckling.eigen);
+    o.buckling.eigen.linear = config.analysis.linear;
+    if (o.buckling.enabled && o.method != OptimizerMethod::MMA) {
+      throw ConfigError(
+          "'topology.buckling_constraint.enabled' needs 'topology.optimizer.method' = "
+          "\"mma\"; the optimality-criteria update cannot handle a second constraint");
+    }
+    if (o.buckling.enabled && config.topology.filter_type == FilterType::Sensitivity) {
+      throw ConfigError(
+          "'topology.buckling_constraint' needs the density filter (or none): the "
+          "sensitivity filter has no exact chain rule for the load-factor gradient");
+    }
+    if (config.topology.enabled) o.buckling.validate();
+    for (const std::string& name : o.buckling.load_cases) {
+      bool found = false;
+      for (const LoadCaseSpec& spec : config.load_cases) found = found || spec.name == name;
+      if (!found) {
+        throw ConfigError("'topology.buckling_constraint.load_cases' names '" + name +
+                          "', which is not a load case of the deck");
+      }
+    }
+
     int passive_index = 0;
     for (const ConfigNode& region : topo.array("passive_regions")) {
       PassiveRegionSpec spec;
@@ -703,7 +831,9 @@ Mesh build_mesh(const Configuration& config) {
     case MeshKind::StructuredQuad: return make_structured_quad_mesh(config.mesh_spec);
     case MeshKind::StructuredHex: return make_structured_hex_mesh(config.mesh_spec);
     case MeshKind::StructuredTri: return make_structured_tri_mesh(config.mesh_spec);
-    case MeshKind::StructuredTet: return make_structured_tet_mesh(config.mesh_spec);
+    case MeshKind::StructuredTet:
+      return config.mesh_order == 2 ? make_structured_tet10_mesh(config.mesh_spec)
+                                    : make_structured_tet_mesh(config.mesh_spec);
     case MeshKind::File:
       if (config.file_mesh == nullptr) {
         throw ConfigError("the configuration names a mesh file that has not been read");

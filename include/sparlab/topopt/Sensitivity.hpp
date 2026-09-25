@@ -128,6 +128,11 @@ class ComplianceObjective {
   /// hierarchy and statistics), or nullptr before the first evaluation.
   const LinearSolver* solver() const { return solver_.get(); }
 
+  /// The global stiffness matrix \f$K(\tilde\rho)\f$ of the last `evaluate`
+  /// call (full size), e.g. for a buckling eigenproblem on the same design.
+  /// \throws ModelError before the first evaluation.
+  const SparseMatrix& stiffness() const;
+
   const FemModel& model() const { return model_; }
   const Assembler& assembler() const { return assembler_; }
   const DensityFilter& filter() const { return filter_; }

@@ -56,6 +56,7 @@ add_library(sparlab STATIC
   src/elements/Hex8.cpp
   src/elements/Tri3.cpp
   src/elements/Tet4.cpp
+  src/elements/Tet10.cpp
   src/fem/DofManager.cpp
   src/fem/Selector.cpp
   src/fem/BoundaryConditions.cpp
@@ -67,6 +68,7 @@ add_library(sparlab STATIC
   src/fem/StaticAnalysis.cpp
   src/fem/StressRecovery.cpp
   src/fem/ModalAnalysis.cpp
+  src/fem/Buckling.cpp
   src/topopt/SimpInterpolation.cpp
   src/topopt/DensityFilter.cpp
   src/topopt/DesignDomain.cpp
@@ -75,6 +77,7 @@ add_library(sparlab STATIC
   src/topopt/Mma.cpp
   src/topopt/Projection.cpp
   src/topopt/StressConstraint.cpp
+  src/topopt/BucklingConstraint.cpp
   src/topopt/TopologyOptimizer.cpp
   src/io/Json.cpp
   src/io/Config.cpp

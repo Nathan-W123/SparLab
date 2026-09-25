@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 
@@ -136,6 +137,17 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
         "stress constraints need optimizer.method = \"mma\"; the optimality-criteria "
         "update handles the volume constraint only");
   }
+  if (options_.buckling.enabled && options_.method != OptimizerMethod::MMA) {
+    throw ConfigError(
+        "a buckling constraint needs optimizer.method = \"mma\"; the optimality-criteria "
+        "update handles the volume constraint only");
+  }
+  if (options_.buckling.enabled && filter_.type() == FilterType::Sensitivity) {
+    throw ConfigError(
+        "a buckling constraint needs an exact design-to-density map; use filter.type = "
+        "density (or none), not the heuristic sensitivity filter");
+  }
+  options_.buckling.validate();
   if (options_.method == OptimizerMethod::MMA) {
     options_.mma.validate();
     if (!(options_.constraint_tolerance > 0.0)) {
@@ -173,7 +185,8 @@ TopologyOptimizationResult TopologyOptimizer::run() {
 void TopologyOptimizer::finish(TopologyOptimizationResult& result,
                                ComplianceObjective& objective, const Vector& x,
                                int performed, const std::vector<Scalar>& stress_scales,
-                               const StressConstraint* stress) const {
+                               const StressConstraint* stress,
+                               BucklingConstraint* buckling) const {
   result.iterations = performed;
 
   // Final evaluation at the converged design so the reported fields match x.
@@ -216,6 +229,38 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
       result.max_stress_ratio = std::max(result.max_stress_ratio, rec.max_relaxed_ratio);
       result.constraint_violation = std::max(result.constraint_violation, rec.constraint);
       result.stress.push_back(rec);
+    }
+  }
+  if (buckling != nullptr) {
+    result.buckling_constrained = true;
+    result.min_load_factor = std::numeric_limits<Scalar>::infinity();
+    const std::vector<LoadCaseSpec>& specs = model_.load_case_specs();
+    for (std::size_t l : buckling->load_cases()) {
+      const BucklingEvaluation be =
+          buckling->evaluate(objective, eval, l, /*need_gradients=*/false);
+      BucklingConstraintRecord rec;
+      rec.load_case = specs[l].name;
+      rec.load_factors = be.load_factors;
+      rec.solid_energy_fraction = be.solid_energy_fraction;
+      rec.ks = be.ks;
+      rec.constraint = be.constraint;
+      rec.no_positive_load_factor = be.no_positive_load_factor;
+      if (be.load_factors.size() > 0) {
+        result.min_load_factor = std::min(result.min_load_factor, be.load_factors(0));
+        if (be.solid_energy_fraction(0) < 0.5) {
+          std::ostringstream os;
+          os << "the lowest buckling mode of load case '" << rec.load_case << "' keeps only "
+             << be.solid_energy_fraction(0)
+             << " of its strain energy in solid elements (density >= "
+             << options_.buckling.solid_threshold
+             << "): it may be a pseudo mode of near-void material rather than a real "
+                "instability. Check it on the interpreted structure";
+          result.warnings.push_back(os.str());
+          log::warn(os.str());
+        }
+      }
+      result.constraint_violation = std::max(result.constraint_violation, rec.constraint);
+      result.buckling.push_back(rec);
     }
   }
   result.feasible = result.constraint_violation <= options_.constraint_tolerance;
@@ -285,6 +330,15 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
     os << "the volume constraint is violated: final volume " << result.volume
        << " m^3 exceeds the target " << target << " m^3 by a relative "
        << result.volume_constraint_violation;
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
+  if (result.buckling_constrained && !result.feasible) {
+    std::ostringstream os;
+    os << "a constraint is violated at the final design (largest value "
+       << result.constraint_violation << "); the smallest aggregated buckling load factor "
+       << "is " << result.min_load_factor << " against the required "
+       << options_.buckling.min_load_factor;
     result.warnings.push_back(os.str());
     log::warn(os.str());
   }
@@ -434,7 +488,7 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
   }
 
   const int performed = std::min(iteration, options_.max_iterations);
-  finish(result, objective, x, performed, {}, nullptr);
+  finish(result, objective, x, performed, {}, nullptr, nullptr);
 
   result.total_seconds = total_timer.elapsed_seconds();
   log::info("topology optimisation finished: ", result.iterations, " iterations, ",
@@ -465,6 +519,10 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     stress = std::make_unique<StressConstraint>(model_, assembler_, filter_,
                                                 options_.stress);
   }
+  std::unique_ptr<BucklingConstraint> buckling;
+  if (options_.buckling.enabled) {
+    buckling = std::make_unique<BucklingConstraint>(model_, assembler_, options_.buckling);
+  }
 
   // MMA works on the free variables only; passive ones keep their value.
   std::vector<Index> free_ids;
@@ -485,7 +543,9 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
   };
 
   const std::size_t num_cases = model_.load_case_specs().size();
-  const Index m = 1 + (stress ? static_cast<Index>(num_cases) : 0);
+  const Index stress_rows = stress ? static_cast<Index>(num_cases) : 0;
+  const Index buckling_rows = buckling ? static_cast<Index>(buckling->load_cases().size()) : 0;
+  const Index m = 1 + stress_rows + buckling_rows;
   MmaOptimizer mma(nf, m, lower, upper, options_.mma);
   std::vector<Scalar> scales(num_cases, 1.0);
 
@@ -502,6 +562,12 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     log::info("  stress constraint: limit ", options_.stress.limit, " Pa, P = ",
               options_.stress.p_norm, ", q = ", options_.stress.relaxation,
               ", one aggregated constraint per load case");
+  }
+  if (buckling) {
+    log::info("  buckling constraint: lambda >= ", options_.buckling.min_load_factor,
+              " for the lowest ", options_.buckling.num_modes, " modes of ",
+              buckling->load_cases().size(), " load case(s), KS parameter ",
+              options_.buckling.ks_parameter, ", stress interpolation rho^p without E_min");
   }
   if (options_.continuation_steps > 1) {
     log::info("  continuation: penalty ", options_.penalty_start, " -> ",
@@ -563,6 +629,23 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
         max_stress_constraint = std::max(max_stress_constraint, se.constraint);
       }
     }
+    Scalar min_load_factor = std::numeric_limits<Scalar>::infinity();
+    Scalar max_buckling_constraint = -std::numeric_limits<Scalar>::infinity();
+    int buckling_iterations = 0;
+    if (buckling) {
+      for (std::size_t b = 0; b < buckling->load_cases().size(); ++b) {
+        const BucklingEvaluation be = buckling->evaluate(
+            objective, eval, buckling->load_cases()[b], /*need_gradients=*/true);
+        const Index row = 1 + stress_rows + static_cast<Index>(b);
+        fval(row) = be.constraint;
+        dfdx.row(row) = pack(be.dg_dx).transpose();
+        if (be.load_factors.size() > 0) {
+          min_load_factor = std::min(min_load_factor, be.load_factors(0));
+        }
+        max_buckling_constraint = std::max(max_buckling_constraint, be.constraint);
+        buckling_iterations += be.iterations;
+      }
+    }
 
     const MmaStep step = mma.update(pack(x), f0, df0, fval, dfdx);
     Vector x_new = x;
@@ -582,6 +665,10 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
     record.volume_converged = fval(0) <= options_.constraint_tolerance;
     record.max_stress_ratio = max_stress_ratio;
     record.stress_constraint = stress ? max_stress_constraint : 0.0;
+    record.min_load_factor =
+        buckling && std::isfinite(min_load_factor) ? min_load_factor : 0.0;
+    record.buckling_constraint = buckling ? max_buckling_constraint : 0.0;
+    record.buckling_iterations = buckling_iterations;
     record.constraint_violation = fval.maxCoeff();
     record.beta = beta_schedule.beta();
     record.linear_iterations = eval.linear_iterations + objective.adjoint_iterations();
@@ -599,6 +686,7 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
               eval.volume_fraction, ", dx = ", step.max_change, ", p = ", penalty,
               ", grey = ", record.gray_level, ", g_max = ", record.constraint_violation,
               (stress ? ", stress ratio = " : ""), (stress ? max_stress_ratio : 0.0),
+              (buckling ? ", lambda_1 = " : ""), (buckling ? record.min_load_factor : 0.0),
               ", mma iters = ", step.subproblem_iterations, iteration_extras(record));
 
     const bool at_final_penalty =
@@ -645,7 +733,7 @@ TopologyOptimizationResult TopologyOptimizer::run_mma() {
   // Converged runs return the last evaluated iterate; a run that hit the
   // iteration cap returns its last update, which finish() evaluates.
   const int performed = std::min(iteration, options_.max_iterations);
-  finish(result, objective, x, performed, scales, stress.get());
+  finish(result, objective, x, performed, scales, stress.get(), buckling.get());
 
   result.total_seconds = total_timer.elapsed_seconds();
   log::info("topology optimisation finished (MMA): ", result.iterations, " iterations, ",

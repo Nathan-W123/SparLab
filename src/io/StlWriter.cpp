@@ -23,6 +23,16 @@ void emit_quad(TriangleSurface& out, Index p0, Index p1, Index p2, Index p3) {
   out.faces.push_back({p0, p2, p3});
 }
 
+/// A 6-node face (corners c0 c1 c2, then the edge nodes m01 m12 m20) as four
+/// flat triangles with its winding, so a curved Tet10 face is followed at the
+/// resolution of its nodes.
+void emit_tri6(TriangleSurface& out, const std::vector<Index>& f) {
+  out.faces.push_back({f[0], f[3], f[5]});
+  out.faces.push_back({f[3], f[1], f[4]});
+  out.faces.push_back({f[5], f[4], f[2]});
+  out.faces.push_back({f[3], f[4], f[5]});
+}
+
 void write_float(std::ostream& out, float value) {
   out.write(reinterpret_cast<const char*>(&value), sizeof(float));
 }
@@ -81,8 +91,10 @@ TriangleSurface boundary_surface(const Mesh& mesh, Scalar thickness) {
         emit_quad(surface, f.nodes[0], f.nodes[1], f.nodes[2], f.nodes[3]);
       } else if (f.nodes.size() == 3) {
         surface.faces.push_back({f.nodes[0], f.nodes[1], f.nodes[2]});
+      } else if (f.nodes.size() == 6) {
+        emit_tri6(surface, f.nodes);
       } else {
-        throw IoError("expected triangular or quadrilateral boundary faces");
+        throw IoError("expected triangular, 6-node triangular or quadrilateral boundary faces");
       }
     }
     return surface;

@@ -37,12 +37,14 @@ class DisjointSet {
 };
 
 /// Components of an element subset connected through shared faces (edges in
-/// 2-D). A face is identified by its sorted node list; sorting one flat array
-/// of face keys and uniting the owners of equal keys scales to large meshes.
-/// The components themselves do not depend on the order of the unions.
+/// 2-D). A face is identified by its sorted corner nodes; sorting one flat
+/// array of face keys and uniting the owners of equal keys scales to large
+/// meshes. The components themselves do not depend on the order of the
+/// unions.
 std::vector<std::vector<Index>> components_by_face(const Mesh& mesh,
                                                    const std::vector<Index>& subset) {
   const std::vector<std::vector<int>>& local = element_local_faces(mesh.element_type());
+  const std::size_t corners = static_cast<std::size_t>(face_corner_nodes(mesh.element_type()));
   DisjointSet ds(subset.size());
 
   struct Record {
@@ -57,8 +59,8 @@ std::vector<std::vector<Index>> components_by_face(const Mesh& mesh,
     for (const std::vector<int>& face : local) {
       Record& r = records[next++];
       r.key.fill(-1);
-      for (std::size_t a = 0; a < face.size(); ++a) r.key[a] = nodes[face[a]];
-      std::sort(r.key.begin(), r.key.begin() + static_cast<long>(face.size()));
+      for (std::size_t a = 0; a < corners; ++a) r.key[a] = nodes[face[a]];
+      std::sort(r.key.begin(), r.key.begin() + static_cast<long>(corners));
       r.owner = static_cast<Index>(s);
     }
   }

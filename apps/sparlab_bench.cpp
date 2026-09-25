@@ -76,6 +76,7 @@ Mesh build_bench_mesh(ElementType element, const StructuredMeshSpec& spec) {
     case ElementType::Tri3: return make_structured_tri_mesh(spec);
     case ElementType::Hex8: return make_structured_hex_mesh(spec);
     case ElementType::Tet4: return make_structured_tet_mesh(spec);
+    case ElementType::Tet10: return make_structured_tet10_mesh(spec);
   }
   throw ConfigError("unhandled element type");
 }
@@ -162,7 +163,7 @@ int main(int argc, char** argv) {
            {"--repeats <n>", "repetitions per size; the minimum is reported"},
            {"--aspect <a>", "nx / ny ratio of the benchmark plate (default 2)"},
            {"--dim <2|3>", "2 for a plate (default), 3 for a block with nz = ny / 2"},
-           {"--element <type>", "quad|tri (2-D) or hex|tet (3-D); default quad / hex"},
+           {"--element <type>", "quad|tri (2-D) or hex|tet|tet10 (3-D); default quad / hex"},
            {"--solver <type>", "simplicial_ldlt (default), amg_cg, conjugate_gradient "
                                "or auto"},
            {"--tolerance <t>", "relative residual of the iterative solvers (1e-10)"},
@@ -191,8 +192,10 @@ int main(int argc, char** argv) {
       element = ElementType::Hex8;
     } else if (element_name == "tet") {
       element = ElementType::Tet4;
+    } else if (element_name == "tet10") {
+      element = ElementType::Tet10;
     } else {
-      throw ConfigError("--element must be quad, tri, hex or tet");
+      throw ConfigError("--element must be quad, tri, hex, tet or tet10");
     }
     if (element_dimension(element) != dim) {
       throw ConfigError("--element " + element_name + " does not match --dim " +

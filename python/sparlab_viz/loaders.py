@@ -50,8 +50,22 @@ HEX_FACES = np.array([[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
 #: the C++ mesh layer).
 TET_FACES = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]], dtype=int)
 
+#: The four 6-node faces of a Tet10: the Tet4 corners, then the edge nodes of
+#: the face's corner pairs (0, 1), (1, 2), (2, 0) (same table as the C++ mesh
+#: layer).
+TET10_FACES = np.array([[0, 2, 1, 6, 5, 4], [0, 1, 3, 4, 8, 7],
+                        [1, 2, 3, 5, 9, 8], [0, 3, 2, 7, 9, 6]], dtype=int)
+
+#: A 6-node face as four triangles through its edge nodes, with its winding
+#: (the split the STL writer uses), so a curved Tet10 face is drawn at the
+#: resolution of its nodes.
+TRI6_SPLIT = np.array([[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]], dtype=int)
+
 #: Face table of each solid element type.
-SOLID_FACES = {"Hex8": HEX_FACES, "Tet4": TET_FACES}
+SOLID_FACES = {"Hex8": HEX_FACES, "Tet4": TET_FACES, "Tet10": TET10_FACES}
+
+#: Corner nodes per face, which alone identify a face shared by two cells.
+FACE_CORNERS = {"Hex8": 4, "Tet4": 3, "Tet10": 3}
 
 
 @dataclass
@@ -102,17 +116,18 @@ class Mesh:
 
     @property
     def is_simplex(self) -> bool:
-        """True for linear triangles and tetrahedra."""
-        return self.element_type in ("Tri3", "Tet4")
+        """True for triangles and tetrahedra (linear or quadratic)."""
+        return self.element_type in ("Tri3", "Tet4", "Tet10")
 
     def boundary_faces(self, mask: Optional[np.ndarray] = None,
                        return_owners: bool = False):
         """Outward-wound boundary faces of a solid mesh (or of a subset of it).
 
         Returns an (n_faces, k) array of node indices - quads (k = 4) for a
-        Hex8 mesh, triangles (k = 3) for a Tet4 mesh: the faces owned by
-        exactly one element of the subset, wound so the right-hand normal
-        points out of the material. `mask` selects the elements (all when
+        Hex8 mesh, triangles (k = 3) for a Tet4 mesh, and for a Tet10 mesh
+        each 6-node face split into four triangles through its edge nodes:
+        the faces owned by exactly one element of the subset, wound so the
+        right-hand normal points out of the material. `mask` selects the elements (all when
         None). With `return_owners`, also returns the index (into the full
         element list) of the element each face belongs to, which is what maps
         an element field onto the surface.
@@ -127,17 +142,21 @@ class Mesh:
                else np.flatnonzero(np.asarray(mask, bool)))
         elements = self.elements[ids]
         if elements.size == 0:
-            empty = np.empty((0, k), dtype=int)
+            empty = np.empty((0, 3 if k == 6 else k), dtype=int)
             return (empty, np.empty(0, dtype=int)) if return_owners else empty
         faces = elements[:, table].reshape(-1, k)               # (f n, k)
         owners = np.repeat(ids, table.shape[0])
-        keys = np.sort(faces, axis=1)
+        keys = np.sort(faces[:, :FACE_CORNERS[self.element_type]], axis=1)
         _unique, first, counts = np.unique(keys, axis=0, return_index=True,
                                            return_counts=True)
         keep = first[counts == 1]
+        faces, owners = faces[keep], owners[keep]
+        if k == 6:
+            faces = faces[:, TRI6_SPLIT].reshape(-1, 3)
+            owners = np.repeat(owners, TRI6_SPLIT.shape[0])
         if return_owners:
-            return faces[keep], owners[keep]
-        return faces[keep]
+            return faces, owners
+        return faces
 
     def constrained_nodes(self, component: Optional[str] = None) -> np.ndarray:
         """Indices of nodes with a prescribed DOF, optionally for one component."""

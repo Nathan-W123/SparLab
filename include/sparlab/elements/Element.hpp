@@ -1,16 +1,17 @@
 /// \file Element.hpp
 /// \brief Abstract element interface.
 ///
-/// Every element implementation supplies the four kernels the rest of the
-/// library needs: a stiffness matrix, a consistent mass matrix, a
-/// strain-displacement operator at a requested parametric location, and a
-/// consistent nodal load vector for a traction on one boundary face. The
-/// interface is dimension-generic: coordinates, constitutive matrices and the
-/// strain operator are dynamic Eigen matrices sized by `dim()` and
-/// `num_voigt()`, so the assembler, stress recovery and load application are
-/// written once for every topology: the plane Q4 and Tri3 and the solid Hex8
-/// and Tet4. Adding a new topology (Q8, Tet10, ...) means adding one subclass
-/// and one entry to `make_element`; no other component changes.
+/// Every element implementation supplies the kernels the rest of the library
+/// needs: a stiffness matrix, a consistent mass matrix, a strain-displacement
+/// operator at a requested parametric location, its stiffness quadrature
+/// rule, and a consistent nodal load vector for a traction on one boundary
+/// face. The interface is dimension-generic: coordinates, constitutive
+/// matrices and the strain operator are dynamic Eigen matrices sized by
+/// `dim()` and `num_voigt()`, so the assembler, stress recovery, load
+/// application and the geometric stiffness of a buckling analysis are written
+/// once for every topology: the plane Q4 and Tri3 and the solid Hex8, Tet4
+/// and Tet10. Adding a new topology means adding one subclass and one entry
+/// to `make_element`, plus its face table and file-format codes.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -22,16 +23,17 @@
 namespace sparlab {
 
 /// Element-local coordinates on the reference domain: the square / cube
-/// [-1, 1]^dim for Q4 and Hex8, the unit triangle / tetrahedron for Tri3 and
-/// Tet4. `zeta` is ignored by plane elements.
+/// [-1, 1]^dim for Q4 and Hex8, the unit triangle / tetrahedron for Tri3,
+/// Tet4 and Tet10. `zeta` is ignored by plane elements.
 struct NaturalPoint {
   Scalar xi = 0.0;
   Scalar eta = 0.0;
   Scalar zeta = 0.0;
 };
 
-/// Quadrature orders used by an element's kernels. The linear simplices
-/// (Tri3, Tet4) evaluate every kernel in closed form, exactly, and ignore them.
+/// Quadrature orders used by the Q4 and Hex8 kernels. The linear simplices
+/// (Tri3, Tet4) evaluate every kernel in closed form, exactly, and the Tet10
+/// uses fixed simplex rules (Tet10.hpp); all three ignore these orders.
 struct IntegrationOptions {
   int stiffness_points = 2;  ///< points per direction for K_e
   int mass_points = 3;       ///< points per direction for M_e
@@ -42,6 +44,12 @@ struct IntegrationOptions {
 struct StrainOperator {
   Matrix b;           ///< num_voigt x num_dofs operator [1/m]
   Scalar detJ = 0.0;  ///< Jacobian determinant [m^dim]
+};
+
+/// One point of an element's stiffness quadrature rule.
+struct IntegrationPoint {
+  NaturalPoint point;
+  Scalar weight = 0.0;  ///< weight on the reference domain, without det J
 };
 
 /// Abstract continuum element.
@@ -92,6 +100,46 @@ class Element {
   /// by `stiffness`. Needed for stress recovery at Gauss points.
   virtual std::vector<NaturalPoint> stress_evaluation_points(
       const IntegrationOptions& opts) const = 0;
+
+  /// The stiffness quadrature rule itself: the points of
+  /// `stress_evaluation_points` with their reference weights, so that
+  /// \f$\sum_g w_g \det J_g\, f(\xi_g)\f$ integrates \f$f\f$ exactly as
+  /// `stiffness` does.
+  virtual std::vector<IntegrationPoint> integration_rule(
+      const IntegrationOptions& opts) const = 0;
+
+  /// Geometric (initial-stress) stiffness of the element in the stress state
+  /// of the element displacement `ue`:
+  /// \f[
+  ///   K_{G,e} = \int_{\Omega_e} t\, G^T \sigma\, G \,d\Omega \otimes I_{dim},
+  ///   \qquad \sigma = s\,D B u_e ,
+  /// \f]
+  /// where \f$G\f$ holds the shape-function gradients (dim x num_nodes) and
+  /// \f$\sigma\f$ is the stress tensor at each stiffness integration point,
+  /// so \f$\phi^T K_{G,e}\phi = \int t \sum_k \nabla\phi_k^T\sigma\nabla\phi_k\f$
+  /// is the second-order work of the stress on the rotations of a mode
+  /// \f$\phi\f$. \f$K_{G,e}\f$ is linear in \f$u_e\f$ and indefinite. `t` is
+  /// the thickness of a plane element and 1 for a solid.
+  /// \param d constitutive matrix the stress is computed with [Pa].
+  /// \param stress_scale factor \f$s\f$ on the stress (1 for a plain analysis).
+  Matrix geometric_stiffness(const Matrix& coords, const Matrix& d, const Vector& ue,
+                             Scalar stress_scale, Scalar thickness,
+                             const IntegrationOptions& opts) const;
+
+  /// Derivative of \f$\phi_e^T K_{G,e}(u_e)\phi_e\f$ with respect to \f$u_e\f$.
+  /// Because \f$K_{G,e}\f$ is linear in \f$u_e\f$ this is the vector
+  /// \f$g_e\f$ with \f$\phi_e^T K_{G,e}(u_e)\phi_e = g_e^T u_e\f$:
+  /// \f[
+  ///   g_e = s \int_{\Omega_e} t\, B^T D\, \hat\Phi \, d\Omega,
+  ///   \qquad \Phi_{ij} = \sum_k \frac{\partial\phi_k}{\partial x_i}
+  ///   \frac{\partial\phi_k}{\partial x_j},
+  /// \f]
+  /// with \f$\hat\Phi\f$ the Voigt vector of \f$\Phi\f$ with doubled shear
+  /// entries. It is the adjoint load of a buckling-load sensitivity.
+  Vector geometric_stiffness_derivative(const Matrix& coords, const Matrix& d,
+                                        const Vector& phi, Scalar stress_scale,
+                                        Scalar thickness,
+                                        const IntegrationOptions& opts) const;
 
   /// Consistent nodal forces for a constant traction on local face
   /// `local_face` (an edge in 2-D):

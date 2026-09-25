@@ -274,6 +274,11 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
   TripletList triplets;
   triplets.reserve(static_cast<std::size_t>(ne) * edofs * edofs);
 
+  // The corner rows of a quadratic tetrahedron's consistent mass sum to a
+  // negative number, so it is lumped by scaling the diagonal to the element
+  // mass instead (Hinton, Rock and Zienkiewicz 1976).
+  const bool scaled_diagonal = mesh.element_type() == ElementType::Tet10;
+  const int dim = mesh.dim();
   std::vector<Index> gdofs(static_cast<std::size_t>(edofs));
   for (Index e = 0; e < ne; ++e) {
     const Scalar s = scale ? (*scale)(e) : 1.0;
@@ -287,9 +292,25 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
                                 gdofs[static_cast<std::size_t>(j)], s * me(i, j));
         }
       }
+    } else if (scaled_diagonal) {
+      // HRZ: per displacement component, the diagonal scaled so it sums to
+      // the element mass, which conserves the mass and keeps every entry
+      // positive.
+      for (int k = 0; k < dim; ++k) {
+        Scalar total = 0.0;
+        Scalar diagonal = 0.0;
+        for (int a = 0; a < npe; ++a) {
+          diagonal += me(dim * a + k, dim * a + k);
+          for (int b = 0; b < npe; ++b) total += me(dim * a + k, dim * b + k);
+        }
+        for (int a = 0; a < npe; ++a) {
+          const Index row = gdofs[static_cast<std::size_t>(dim * a + k)];
+          triplets.emplace_back(row, row, s * me(dim * a + k, dim * a + k) * total / diagonal);
+        }
+      }
     } else {
-      // Row-sum (Hinton-Rock-Zienkiewicz style) lumping. For the Q4 and Hex8
-      // with a consistent mass matrix the row sums reproduce the element mass
+      // Row-sum lumping. For the Q4, Tri3, Hex8 and Tet4 with a consistent
+      // mass matrix the row sums are positive and reproduce the element mass
       // exactly, so total mass is conserved.
       for (int i = 0; i < edofs; ++i) {
         const Scalar lumped = me.row(i).sum();
@@ -303,6 +324,50 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
   m.setFromTriplets(triplets.begin(), triplets.end());
   m.makeCompressed();
   return m;
+}
+
+SparseMatrix Assembler::assemble_elementwise(
+    const std::function<Matrix(Index)>& element_matrix) const {
+  const Mesh& mesh = model_.mesh();
+  const Index ne = mesh.num_elements();
+  const int npe = mesh.nodes_per_elem();
+  const int edofs = npe * mesh.dim();
+  const auto checked = [&](Index e) {
+    Matrix me = element_matrix(e);
+    if (me.rows() != edofs || me.cols() != edofs) {
+      std::ostringstream os;
+      os << "element-wise assembly received a " << me.rows() << " x " << me.cols()
+         << " matrix for element " << e << ", expected " << edofs << " x " << edofs;
+      throw ModelError(os.str());
+    }
+    return me;
+  };
+  if (use_pattern_) {
+    Matrix buffer;
+    return scatter(
+        [&](Index e) -> const Matrix& {
+          buffer = checked(e);
+          return buffer;
+        },
+        nullptr);
+  }
+  TripletList triplets;
+  triplets.reserve(static_cast<std::size_t>(ne) * edofs * edofs);
+  std::vector<Index> gdofs(static_cast<std::size_t>(edofs));
+  for (Index e = 0; e < ne; ++e) {
+    const Matrix me = checked(e);
+    model_.dofs().element_dofs(mesh.element_nodes(e), npe, gdofs.data());
+    for (int i = 0; i < edofs; ++i) {
+      for (int j = 0; j < edofs; ++j) {
+        triplets.emplace_back(gdofs[static_cast<std::size_t>(i)],
+                              gdofs[static_cast<std::size_t>(j)], me(i, j));
+      }
+    }
+  }
+  SparseMatrix out(model_.dofs().num_dofs(), model_.dofs().num_dofs());
+  out.setFromTriplets(triplets.begin(), triplets.end());
+  out.makeCompressed();
+  return out;
 }
 
 Scalar Assembler::total_mass(const Vector* scale) const {

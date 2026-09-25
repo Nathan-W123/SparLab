@@ -329,6 +329,10 @@ Mesh make_structured_tet_mesh(const StructuredMeshSpec& spec) {
   return split_into_tetrahedra(make_structured_hex_mesh(spec));
 }
 
+Mesh make_structured_tet10_mesh(const StructuredMeshSpec& spec) {
+  return elevate_to_tet10(make_structured_tet_mesh(spec));
+}
+
 Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed) {
   return split_into_triangles(make_perturbed_quad_mesh(spec, perturbation, seed), spec);
@@ -337,6 +341,11 @@ Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation
 Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed) {
   return split_into_tetrahedra(make_perturbed_hex_mesh(spec, perturbation, seed));
+}
+
+Mesh make_perturbed_tet10_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
+                               unsigned int seed) {
+  return elevate_to_tet10(make_perturbed_tet_mesh(spec, perturbation, seed));
 }
 
 }  // namespace sparlab

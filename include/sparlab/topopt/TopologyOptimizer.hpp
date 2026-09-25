@@ -12,8 +12,11 @@
 ///     \f$V/V^* - 1 \le 0\f$ and, when enabled, one aggregated stress
 ///     constraint per load case \f$c_l\, g_{PN,l} - 1 \le 0\f$ (see
 ///     StressConstraint.hpp), each needing one extra adjoint solve with the
-///     factorisation already in hand. The objective is scaled by the initial
-///     compliance so MMA sees O(1) numbers.
+///     factorisation already in hand, and one aggregated buckling constraint
+///     per constrained load case, \f$\mathrm{KS}(\lambda_{req}/\lambda_i) - 1
+///     \le 0\f$ (BucklingConstraint.hpp), which adds a buckling eigensolve and
+///     one adjoint solve per aggregated mode. The objective is scaled by the
+///     initial compliance so MMA sees O(1) numbers.
 ///
 /// **Convergence.** Two independent indicators are tracked and *either* can
 /// declare convergence:
@@ -51,6 +54,7 @@
 #include "sparlab/core/Types.hpp"
 #include "sparlab/fem/Assembler.hpp"
 #include "sparlab/fem/FemModel.hpp"
+#include "sparlab/topopt/BucklingConstraint.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
 #include "sparlab/topopt/Mma.hpp"
@@ -79,6 +83,7 @@ struct TopologyOptimizerOptions {
   OptimalityCriteriaOptions oc;
   MmaOptions mma;
   StressConstraintOptions stress;
+  BucklingConstraintOptions buckling;
   StaticAnalysisOptions analysis;
   OptimizerMethod method = OptimizerMethod::OptimalityCriteria;
 
@@ -129,7 +134,20 @@ struct TopologyIteration {
   // MMA-only records (zero for OC runs).
   Scalar max_stress_ratio = 0.0;      ///< max over cases of max_e sigma_rel / sigma_lim
   Scalar stress_constraint = 0.0;     ///< max over cases of c g_PN - 1
+  Scalar min_load_factor = 0.0;       ///< min over constrained cases of lambda_1
+  Scalar buckling_constraint = 0.0;   ///< max over cases of KS - 1
+  int buckling_iterations = 0;        ///< subspace iterations, all cases
   Scalar constraint_violation = 0.0;  ///< max over all constraints, > 0 = violated
+};
+
+/// Buckling state of one constrained load case at the final design.
+struct BucklingConstraintRecord {
+  std::string load_case;
+  Vector load_factors;              ///< aggregated lambda_i, ascending [-]
+  Vector solid_energy_fraction;     ///< per mode
+  Scalar ks = 0.0;                  ///< KS of lambda_req / lambda_i
+  Scalar constraint = 0.0;          ///< ks - 1
+  bool no_positive_load_factor = false;
 };
 
 /// Stress state of one load case at the final design.
@@ -193,6 +211,9 @@ struct TopologyOptimizationResult {
   bool stress_constrained = false;
   std::vector<StressConstraintRecord> stress;  ///< one per load case when constrained
   Scalar max_stress_ratio = 0.0;               ///< max over cases of max_relaxed_ratio
+  bool buckling_constrained = false;
+  std::vector<BucklingConstraintRecord> buckling;  ///< one per constrained load case
+  Scalar min_load_factor = 0.0;                ///< min over constrained cases of lambda_1
   Scalar constraint_violation = 0.0;           ///< max over all constraints at the end
   bool feasible = true;                        ///< constraint_violation <= tolerance
 };
@@ -214,7 +235,7 @@ class TopologyOptimizer {
   TopologyOptimizationResult run_mma();
   void finish(TopologyOptimizationResult& result, ComplianceObjective& objective,
               const Vector& x, int performed, const std::vector<Scalar>& stress_scales,
-              const StressConstraint* stress) const;
+              const StressConstraint* stress, BucklingConstraint* buckling) const;
 
   const FemModel& model_;
   const Assembler& assembler_;

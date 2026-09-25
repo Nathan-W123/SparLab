@@ -107,6 +107,7 @@ int gmsh_type(ElementType type) {
     case ElementType::Quad4: return 3;
     case ElementType::Tet4: return 4;
     case ElementType::Hex8: return 5;
+    case ElementType::Tet10: return 11;
   }
   return -1;
 }
@@ -1184,9 +1185,11 @@ TEST_CASE("the Abaqus reader handles includes, sets, GENERATE and continuation l
   };
   REQUIRE_THROWS_WITH(read("*NODE\n1, 0, 0\n*ELEMENT\n1, 1\n"), ContainsSubstring("TYPE="));
   REQUIRE_THROWS_WITH(read("1, 0, 0\n"), ContainsSubstring("bad.inp:1"));
-  REQUIRE_THROWS_WITH(read("*NODE\n1, 0, 0\n2, 1, 0\n3, 0, 1\n*ELEMENT, TYPE=C3D10\n"
-                           "1, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1\n"),
-                      ContainsSubstring("first order"));
+  // A 20-node hexahedron is second order but not a tetrahedron; the message
+  // names the one quadratic cell SparLab has.
+  REQUIRE_THROWS_WITH(read("*NODE\n1, 0, 0\n2, 1, 0\n3, 0, 1\n*ELEMENT, TYPE=C3D20\n"
+                           "1, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2\n"),
+                      ContainsSubstring("10-node tetrahedron"));
   REQUIRE_THROWS_WITH(read("*NODE\n1, 0, 0\n2, 1, 0\n3, 0, 1\n*ELEMENT, TYPE=C3D6\n"
                            "1, 1, 2, 3, 1, 2, 3\n"),
                       ContainsSubstring("tetrahedra"));

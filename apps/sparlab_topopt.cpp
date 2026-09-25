@@ -11,7 +11,10 @@
 ///      analyse that body directly;
 ///   6. compare natural frequencies of the full solid domain, an equal-mass
 ///      uniform plate, and the optimised topology;
-///   7. write every artefact plus a summary, including the "before" (design
+///   7. when a buckling check is configured, compare the buckling load
+///      factors of the full solid domain and the interpreted structure - the
+///      part that would be exported;
+///   8. write every artefact plus a summary, including the "before" (design
 ///      domain) and "after" (thresholded structure) geometries as VTK + STL.
 ///
 /// Step 6 uses a property specific to the 2-D idealisation: uniformly scaling
@@ -27,6 +30,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Timer.hpp"
 #include "sparlab/fem/Assembler.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/ModelDiagnostics.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
@@ -50,6 +54,30 @@ struct SubModelBuild {
   bool loads_applied = false;
   std::string note;
 };
+
+/// Buckling check of the listed load cases of a plain (solid) model, with one
+/// factorisation shared by the static solves and the eigensolves.
+std::vector<BucklingResult> check_buckling(const FemModel& model, const Assembler& assembler,
+                                           const Configuration& config,
+                                           const std::vector<std::size_t>& cases) {
+  StaticAnalysis analysis(model, assembler, config.analysis);
+  const std::vector<StaticSolution> solutions = analysis.solve_all();
+  const DofManager& dofs = model.dofs();
+  const FreeSolve solve = [&](const Vector& b) {
+    return dofs.restrict_to_free(analysis.solve_homogeneous(dofs.expand(b)));
+  };
+  std::vector<BucklingResult> out;
+  for (std::size_t l : cases) {
+    const SparseMatrix k_g =
+        assemble_geometric_stiffness(model, assembler, solutions[l].displacement);
+    BucklingResult result = solve_buckling(model, assembler, analysis.stiffness(), k_g,
+                                           config.buckling.options, solve);
+    result.load_case = solutions[l].load_case_name;
+    result.linear_solver = analysis.solver().name();
+    out.push_back(std::move(result));
+  }
+  return out;
+}
 
 SubModelBuild build_solid_submodel(const Configuration& config, Mesh sub_mesh,
                                    bool with_loads) {
@@ -92,7 +120,8 @@ int main(int argc, char** argv) {
         "filter-type",   "max-iterations", "nx",       "ny",           "nz",
         "youngs-modulus", "load-weights", "modes",     "no-vtk",
         "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
-        "solver",        "projection",  "no-projection", "beta-max",   "help"};
+        "solver",        "projection",  "no-projection", "beta-max",   "buckling",
+        "min-load-factor", "no-buckling-constraint", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -113,6 +142,11 @@ int main(int argc, char** argv) {
            {"--stress-limit <Pa>", "enable the aggregated stress constraint at this "
                                    "allowable von Mises stress (switches to MMA)"},
            {"--no-stress", "disable the deck's stress constraint"},
+           {"--buckling <n>", "check n buckling modes of the full solid domain and the "
+                              "interpreted structure"},
+           {"--min-load-factor <l>", "enable the buckling constraint lambda >= l "
+                                     "(switches to MMA)"},
+           {"--no-buckling-constraint", "disable the deck's buckling constraint"},
            {"--solver <type>", "override solver.linear.type (simplicial_ldlt, amg_cg, "
                                "auto, ...)"},
            {"--projection / --no-projection", "switch the Heaviside projection on (with "
@@ -195,10 +229,23 @@ int main(int argc, char** argv) {
       config.topology.optimizer.method = OptimizerMethod::MMA;
     }
     if (cli.has("no-stress")) config.topology.optimizer.stress.enabled = false;
+    if (cli.has("buckling")) {
+      config.buckling.enabled = true;
+      config.buckling.options.num_modes = cli.integer("buckling", 4);
+    }
+    if (cli.has("min-load-factor")) {
+      config.topology.optimizer.buckling.enabled = true;
+      config.topology.optimizer.buckling.min_load_factor = cli.number("min-load-factor", 1.0);
+      config.topology.optimizer.method = OptimizerMethod::MMA;
+      config.topology.optimizer.buckling.validate();
+    }
+    if (cli.has("no-buckling-constraint")) config.topology.optimizer.buckling.enabled = false;
     if (cli.has("solver")) {
       config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
       config.topology.optimizer.analysis.linear.type = config.analysis.linear.type;
       config.modal.options.linear.type = config.analysis.linear.type;
+      config.buckling.options.linear.type = config.analysis.linear.type;
+      config.topology.optimizer.buckling.eigen.linear.type = config.analysis.linear.type;
     }
     if (cli.has("projection") && cli.has("no-projection")) {
       throw ConfigError("--projection and --no-projection contradict each other");
@@ -399,6 +446,43 @@ int main(int argc, char** argv) {
       }
     }
 
+    // ---- buckling check ------------------------------------------------------
+    // The load factors of the full solid domain and of the interpreted
+    // structure - the part the STL describes - for the same load cases. The
+    // SIMP design itself is not checked here: its void material would need
+    // the pseudo-mode treatment of the buckling constraint, and it is not
+    // what would be built.
+    std::vector<BucklingResult> buckling_solid;
+    std::vector<BucklingResult> buckling_topology;
+    json::Value buckling_check = json::Value::make_object();
+    if (config.buckling.enabled) {
+      ScopedTimer t(timings, "buckling_check");
+      const std::vector<std::size_t> cases = config.buckling_load_cases();
+      buckling_solid = check_buckling(model, assembler, config, cases);
+      buckling_check.set("full_solid", buckling_json(buckling_solid, config.buckling.options,
+                                                     "the full solid design domain"));
+      if (config.buckling.analyse_optimised_topology) {
+        if (sub_build != nullptr && sub_build->loads_applied) {
+          buckling_topology = check_buckling(*sub_build->model, *sub_assembler, config, cases);
+          buckling_check.set(
+              "interpreted_structure",
+              buckling_json(buckling_topology, config.buckling.options,
+                            "the density field thresholded at "
+                            "solid_interpretation.threshold, largest face-connected "
+                            "group, full material: the exported structure_after part"));
+        } else {
+          const std::string reason =
+              sub_build == nullptr
+                  ? "the interpreted structure could not be analysed (see "
+                    "interpreted_solid_analysis)"
+                  : "the load cases could not be applied to the interpreted structure";
+          buckling_check.set("interpreted_structure_skipped",
+                             json::Value::make_string(reason));
+          log::warn("skipping the buckling check of the interpreted structure: ", reason);
+        }
+      }
+    }
+
     // ---- output ------------------------------------------------------------
     ResultWriter writer(out_dir, config);
     {
@@ -429,6 +513,10 @@ int main(int argc, char** argv) {
       if (modal_solid) writer.write_modal(model.mesh(), *modal_solid, "solid");
       if (modal_topology) {
         writer.write_modal(interpretation->sub.mesh, *modal_topology, "topology");
+      }
+      if (!buckling_solid.empty()) writer.write_buckling(model.mesh(), buckling_solid, "solid");
+      if (!buckling_topology.empty()) {
+        writer.write_buckling(interpretation->sub.mesh, buckling_topology, "topology");
       }
     }
 
@@ -526,6 +614,7 @@ int main(int argc, char** argv) {
       summary.set("interpreted_solid_analysis", interpreted);
     }
     summary.set("geometry_export", geometry);
+    if (!buckling_check.members().empty()) summary.set("buckling_check", buckling_check);
     writer.write_json("summary.json", summary);
 
     // ---- console report ----------------------------------------------------
@@ -600,6 +689,23 @@ int main(int argc, char** argv) {
     if (modal_topology) {
       std::cout << "  f1 topology: " << app::format(modal_topology->frequencies_hz(0))
                 << " Hz (mass " << app::format(modal_topology->total_mass) << " kg)\n";
+    }
+    if (result.buckling_constrained) {
+      std::cout << "  buckling:    SIMP design lambda_1 " << app::format(result.min_load_factor)
+                << " (required " << app::format(config.topology.optimizer.buckling.min_load_factor)
+                << ")\n";
+    }
+    for (std::size_t i = 0; i < buckling_solid.size(); ++i) {
+      const auto first = [](const BucklingResult& b) {
+        return b.no_positive_load_factor ? std::string("none (stiffening)")
+                                         : app::format(b.load_factors(0));
+      };
+      std::cout << "  lambda_1 '" << buckling_solid[i].load_case << "': full solid "
+                << first(buckling_solid[i]);
+      if (i < buckling_topology.size()) {
+        std::cout << ", interpreted structure " << first(buckling_topology[i]);
+      }
+      std::cout << "\n";
     }
     std::cout << "  geometry:    structure_before.{vtk,stl} and structure_after.{vtk,stl} ("
               << geometry.find("after")->find("num_triangles")->number_value()

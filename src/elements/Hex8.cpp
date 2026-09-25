@@ -260,4 +260,18 @@ Vector Hex8Element::boundary_traction(const Matrix& coords_in, int local_face,
   return fe;
 }
 
+std::vector<IntegrationPoint> Hex8Element::integration_rule(
+    const IntegrationOptions& opts) const {
+  std::vector<IntegrationPoint> rule;
+  for (const auto& gp : gauss_legendre_cube(opts.stiffness_points)) {
+    IntegrationPoint ip;
+    ip.point.xi = gp.xi;
+    ip.point.eta = gp.eta;
+    ip.point.zeta = gp.zeta;
+    ip.weight = gp.weight;
+    rule.push_back(ip);
+  }
+  return rule;
+}
+
 }  // namespace sparlab

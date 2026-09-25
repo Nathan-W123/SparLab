@@ -13,6 +13,8 @@
 ///   <out>/modes.csv                 eigenvalues, frequencies, residuals
 ///   <out>/mode_shapes.csv           M-orthonormal mode shapes
 ///   <out>/mode_<k>.vtk              one file per mode shape
+///   <out>/buckling.csv              buckling load factors per checked load case
+///   <out>/buckling_<lc>_<k>.vtk     buckling mode shapes (max |phi| = 1)
 ///   <out>/history.csv               optimisation iteration history
 ///   <out>/density_final.csv         final design and physical density
 ///   <out>/density_history.csv       density snapshots for the animation
@@ -25,6 +27,7 @@
 
 #include "sparlab/core/Timer.hpp"
 #include "sparlab/core/Types.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/ModelDiagnostics.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
@@ -72,6 +75,13 @@ class ResultWriter {
   /// Eigenvalues, frequencies, residuals and (optionally) mode shapes.
   void write_modal(const Mesh& mesh, const ModalResult& modal,
                    const std::string& tag = "") const;
+
+  /// Buckling load factors of the checked load cases (`buckling<_tag>.csv`)
+  /// and, when mode shapes are written, one VTK file per mode with the shape
+  /// scaled to a largest nodal displacement of 1 (a buckling mode has no
+  /// amplitude of its own).
+  void write_buckling(const Mesh& mesh, const std::vector<BucklingResult>& results,
+                      const std::string& tag = "") const;
 
   /// Optimisation iteration history.
   void write_history(const TopologyOptimizationResult& result) const;
@@ -126,5 +136,11 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
 
 /// Common provenance block: version, build type, timestamp, tolerances.
 json::Value make_provenance(const Configuration& config);
+
+/// Summary block of a set of buckling checks: per load case the load
+/// factors, residuals, solid-energy fractions and solver statistics, with the
+/// method, its tolerances and what a load factor means.
+json::Value buckling_json(const std::vector<BucklingResult>& results,
+                          const BucklingOptions& options, const std::string& what);
 
 }  // namespace sparlab

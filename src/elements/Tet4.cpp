@@ -158,4 +158,14 @@ Vector Tet4Element::boundary_traction(const Matrix& coords, int local_face,
   return fe;
 }
 
+std::vector<IntegrationPoint> Tet4Element::integration_rule(
+    const IntegrationOptions& /*opts*/) const {
+  // One point at the centroid; the reference tetrahedron has volume 1/6 and
+  // det J = 6V, so w det J = V.
+  IntegrationPoint ip;
+  ip.point = reference_centroid();
+  ip.weight = 1.0 / 6.0;
+  return {ip};
+}
+
 }  // namespace sparlab

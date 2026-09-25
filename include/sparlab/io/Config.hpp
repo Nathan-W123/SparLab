@@ -10,12 +10,14 @@
 ///               // or { "type": "structured_hex", "nx","ny","nz", "lx","ly","lz" }
 ///               // or "structured_tri" / "structured_tet" with the same keys
 ///               // or { "type": "file", "path": "part.msh", "scale": 0.001 }
+///               // "order": 2 turns tetrahedra into 10-node Tet10 cells
 ///   "material": { "youngs_modulus":.., "poisson_ratio":.., "density":.. },
 ///   "model":    { "thickness":.., "stress_state": "plane_stress" },
 ///   "boundary_conditions": [ { "fix": ["x","y"], "region": {..} } ],
 ///   "load_cases":          [ { "name":.., "weight":.., "point_loads": [..] } ],
 ///   "solver":   { "linear": {..}, "equilibrium_tolerance":.. },
 ///   "modal":    { "enabled": true, "num_modes":.. },
+///   "buckling": { "enabled": true, "num_modes":.., "load_cases": [..] },
 ///   "topology": { "enabled": true, "volume_fraction":.., "filter": {..} },
 ///   "output":   { "vtk": true, "csv": true }
 /// }
@@ -38,6 +40,7 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/FemModel.hpp"
 #include "sparlab/fem/LinearSolver.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
@@ -88,6 +91,18 @@ struct ModalConfig {
   bool compare_mass_matched_baseline = true;
 };
 
+/// Linear buckling check of the load cases (sparlab_solve), and of the full
+/// solid domain and the interpreted structure after an optimisation
+/// (sparlab_topopt).
+struct BucklingConfig {
+  bool enabled = false;
+  BucklingOptions options;
+  /// Load cases to check, by name; empty checks every case.
+  std::vector<std::string> load_cases;
+  /// Also check the thresholded structure of a topology run.
+  bool analyse_optimised_topology = true;
+};
+
 struct TopologyConfig {
   bool enabled = false;
   Scalar volume_fraction = 0.4;
@@ -118,6 +133,13 @@ class Configuration {
 
   MeshKind mesh_kind = MeshKind::StructuredQuad;
   StructuredMeshSpec mesh_spec;   ///< structured kinds
+  /// Polynomial order of the tetrahedra: 1 (Tet4) or 2 (Tet10). A
+  /// `structured_tet` deck with order 2 splits the grid into Tet10 cells; a
+  /// file of linear tetrahedra with order 2 is elevated to straight-sided
+  /// Tet10 cells (`mesh_elevated`); a file of 10-node tetrahedra is order 2
+  /// by itself.
+  int mesh_order = 1;
+  bool mesh_elevated = false;
   MeshFileConfig mesh_file;       ///< MeshKind::File
   /// The mesh read from `mesh_file` while parsing (shared by copies of the
   /// configuration, which the thinned-plate comparison makes), and what the
@@ -133,6 +155,7 @@ class Configuration {
 
   StaticAnalysisOptions analysis;
   ModalConfig modal;
+  BucklingConfig buckling;
   TopologyConfig topology;
   OutputConfig output;
 
@@ -152,6 +175,9 @@ class Configuration {
 
   /// Filter radius resolved against a concrete mesh [m].
   Scalar resolved_filter_radius(const Mesh& mesh) const;
+
+  /// Indices of the load cases the buckling check covers.
+  std::vector<std::size_t> buckling_load_cases() const;
 
  private:
   std::optional<IsotropicMaterial> material_;

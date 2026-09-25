@@ -1,8 +1,9 @@
-"""Rendering solid (Hex8 and Tet4) meshes: boundary surfaces, feature edges and views.
+"""Rendering solid (Hex8, Tet4 and Tet10) meshes: boundary surfaces, feature edges and views.
 
 A solid mesh is drawn through its boundary faces only - the interior is not
 visible - and a field is shown on that surface: a nodal field averaged over the
-corners of each face (quadrilaterals for Hex8, triangles for Tet4), an element
+corners of each face (quadrilaterals for Hex8, triangles for Tet4, and the four
+triangles a 6-node Tet10 face splits into through its edge nodes), an element
 field taken from the element that owns the face. Faces are flat-shaded from one fixed light direction so the geometry
 can be told apart at all; the colour itself is the data, and the shading factor
 is the same on every figure so two panels remain comparable.

@@ -120,6 +120,9 @@ def _element_value_note(mesh) -> str:
     """How an element's stress value was obtained, for the figure text."""
     if mesh.element_type == "Tet4":
         return "element values are constant over each linear tetrahedron"
+    if mesh.element_type == "Tet10":
+        return ("element values are the average over the four stiffness quadrature "
+                "points of each quadratic tetrahedron")
     return "element values are the average over the 2x2x2 stiffness quadrature points"
 
 

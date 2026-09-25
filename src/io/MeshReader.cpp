@@ -26,7 +26,7 @@ namespace {
 // Element kinds shared by both formats
 // ---------------------------------------------------------------------------
 
-enum class Kind { Point, Line, Tri3, Quad4, Tet4, Hex8, Unsupported };
+enum class Kind { Point, Line, Tri3, Quad4, Tet4, Hex8, Tet10, Unsupported };
 
 struct KindInfo {
   Kind kind = Kind::Unsupported;
@@ -37,8 +37,10 @@ struct KindInfo {
 };
 
 const char* kSecondOrderAdvice =
-    "SparLab's elements are first order; re-export the mesh with linear elements "
-    "(Gmsh: Mesh.ElementOrder = 1; Abaqus/CalculiX: C3D4/C3D8, CPS3/CPS4)";
+    "SparLab's only second-order element is the 10-node tetrahedron; re-export the "
+    "mesh with linear elements (Gmsh: Mesh.ElementOrder = 1; Abaqus/CalculiX: "
+    "C3D4/C3D8, CPS3/CPS4) or, for a solid, with quadratic tetrahedra (Gmsh: "
+    "Mesh.ElementOrder = 2 on a tetrahedral mesh; Abaqus/CalculiX: C3D10)";
 const char* kPrismAdvice =
     "SparLab supports tetrahedra or hexahedra only; re-mesh the volume with "
     "tetrahedra (Gmsh: Mesh.RecombineAll = 0, no Recombine in extrusions)";
@@ -66,7 +68,7 @@ KindInfo gmsh_kind(int code) {
     case 8: return make_kind(Kind::Line, 1, 3, "3-node line");
     case 9: return make_kind(Kind::Unsupported, 2, 6, "6-node triangle", kSecondOrderAdvice);
     case 10: return make_kind(Kind::Unsupported, 2, 9, "9-node quadrilateral", kSecondOrderAdvice);
-    case 11: return make_kind(Kind::Unsupported, 3, 10, "10-node tetrahedron", kSecondOrderAdvice);
+    case 11: return make_kind(Kind::Tet10, 3, 10, "10-node tetrahedron");
     case 12: return make_kind(Kind::Unsupported, 3, 27, "27-node hexahedron", kSecondOrderAdvice);
     case 13: return make_kind(Kind::Unsupported, 3, 18, "18-node prism", kPrismAdvice);
     case 14: return make_kind(Kind::Unsupported, 3, 14, "14-node pyramid", kPrismAdvice);
@@ -135,6 +137,7 @@ KindInfo abaqus_kind(const std::string& type_in) {
     if (f.dim == 3) {
       if (n == 4) return make_kind(Kind::Tet4, 3, 4, type + " (4-node tetrahedron)");
       if (n == 8) return make_kind(Kind::Hex8, 3, 8, type + " (8-node hexahedron)");
+      if (n == 10) return make_kind(Kind::Tet10, 3, 10, type + " (10-node tetrahedron)");
       if (n == 6 || n == 15 || n == 5 || n == 13) {
         return make_kind(Kind::Unsupported, 3, n, type + " (prism / pyramid)", kPrismAdvice);
       }
@@ -285,6 +288,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     case Kind::Quad4: type = ElementType::Quad4; break;
     case Kind::Tet4: type = ElementType::Tet4; break;
     case Kind::Hex8: type = ElementType::Hex8; break;
+    case Kind::Tet10: type = ElementType::Tet10; break;
     default: throw MeshError(src + ": unexpected cell kind");
   }
   const int npe = nodes_per_element(type);
@@ -312,8 +316,11 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     return it->second;
   };
 
-  // Cells, in file order.
-  std::vector<std::array<Index, 8>> cells;
+  // Cells, in file order, in SparLab's node order: a Gmsh 10-node
+  // tetrahedron lists the edge nodes of 2-3 and 1-3 the other way round from
+  // the VTK / Abaqus order the Tet10 uses.
+  const bool gmsh_tet10 = type == ElementType::Tet10 && report.format == "gmsh";
+  std::vector<std::array<Index, 10>> cells;
   std::vector<long long> cell_tags;
   std::vector<char> used(raw.node_tags.size(), 0);
   for (const RawElement& e : raw.elements) {
@@ -324,11 +331,12 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
          << e.nodes.size() << " nodes, expected " << npe;
       throw IoError(os.str());
     }
-    std::array<Index, 8> c{};
+    std::array<Index, 10> c{};
     for (int a = 0; a < npe; ++a) {
       c[static_cast<std::size_t>(a)] = file_index(e.nodes[static_cast<std::size_t>(a)], e.tag);
       used[static_cast<std::size_t>(c[static_cast<std::size_t>(a)])] = 1;
     }
+    if (gmsh_tet10) std::swap(c[8], c[9]);
     cells.push_back(c);
     cell_tags.push_back(e.tag);
   }
@@ -447,7 +455,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
   connectivity.reserve(cells.size() * static_cast<std::size_t>(npe));
   Matrix xe(dim, npe);
   for (std::size_t c = 0; c < cells.size(); ++c) {
-    std::array<Index, 8> n{};
+    std::array<Index, 10> n{};
     for (int a = 0; a < npe; ++a) {
       Index m = file_to_mesh[static_cast<std::size_t>(cells[c][static_cast<std::size_t>(a)])];
       if (options.merge_duplicate_nodes) m = representative[static_cast<std::size_t>(m)];
@@ -472,12 +480,18 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
         std::swap(n[1], n[3]);
         flipped = true;
       }
-    } else if (type == ElementType::Tet4) {
+    } else if (type == ElementType::Tet4 || type == ElementType::Tet10) {
       const Vector3 a = xe.col(1) - xe.col(0);
       const Vector3 b = xe.col(2) - xe.col(0);
       const Vector3 d = xe.col(3) - xe.col(0);
       if (a.dot(b.cross(d)) < 0.0) {
+        // Swapping corners 1 and 2 turns the edges 0-1, 2-0 and 1-3, 2-3
+        // into one another.
         std::swap(n[1], n[2]);
+        if (type == ElementType::Tet10) {
+          std::swap(n[4], n[6]);
+          std::swap(n[8], n[9]);
+        }
         flipped = true;
       }
     } else {
