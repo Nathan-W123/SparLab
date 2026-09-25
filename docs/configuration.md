@@ -36,6 +36,9 @@ reports its line and column.
           "lx": 0.24, "ly": 0.12, "lz": 0.06 }
 
 "mesh": { "type": "file", "path": "../meshes/engine_mount_3d.inp", "scale": 0.001 }
+
+"mesh": { "type": "structured_tet", "nx": 20, "ny": 2, "nz": 2,
+          "lx": 1.0, "ly": 0.05, "lz": 0.05, "order": 2 }
 ```
 
 | Key | Type | Default | Meaning |
@@ -46,6 +49,7 @@ reports its line and column.
 | `lx`, `ly` | number | required for the structured types | domain extents [m], `> 0` |
 | `lz` | number | required for `structured_hex` / `structured_tet` | extent in z [m] |
 | `x0`, `y0`, `z0` | number | `0` | lower corner [m] |
+| `order` | integer | `1` | `2` makes the tetrahedra quadratic (Tet10): on `structured_tet`, and on a `file` mesh of linear tetrahedra, which is elevated with an edge node at every edge midpoint (straight-sided cells, named sets carried over). A file of 10-node tetrahedra is read as Tet10 without it; `order: 1` on such a file, or `2` on any other cell type, is an error |
 
 The mesh type fixes the dimension of the whole deck: a solid mesh has three
 displacement components per node, regions may use `zmin`/`zmax` and
@@ -67,8 +71,11 @@ components, `model.thickness` must be absent (a solid has none) and
 Gmsh MSH 2.2 and 4.1 ASCII and Abaqus / CalculiX `.inp` files are read. The
 cells of the highest dimension in the file become the mesh: linear triangles
 or quadrilaterals give a plane model, linear tetrahedra or hexahedra a solid
-one. A file that mixes cell types, or holds second-order cells, prisms or
-pyramids, is refused with a message saying how to re-export it. Lower
+one; 10-node tetrahedra (Abaqus `C3D10`, Gmsh type 11, whose last two edge
+nodes are swapped into SparLab's order on reading) give a quadratic solid
+whose edge nodes may follow curved surfaces. A file that mixes cell types,
+or holds any other second-order cell, prisms or pyramids, is refused with a
+message saying how to re-export it. Lower
 dimensional elements (the boundary curves and facets a mesher writes for its
 physical groups) only feed the named sets. Each Gmsh physical group becomes a
 node set, and an element set when it holds cells; an Abaqus `*NSET` is a node
@@ -83,8 +90,9 @@ ignored keyword. What was read and done is recorded under `mesh.file` in
 
 The resolution of a file mesh comes from the mesher, so `nx` ... `z0` are
 errors on a `file` mesh, and so are `--nx`/`--ny`/`--nz` on the command line.
-`python/scripts/make_meshes.py` regenerates the two meshes the benchmark
-decks use (`make meshes`, which needs the `gmsh` Python package).
+`python/scripts/make_meshes.py` regenerates the meshes the decks use (`make
+meshes`, which needs the `gmsh` Python package), the quadratic engine mount
+among them.
 
 ## `material`
 
@@ -305,6 +313,37 @@ measured ones; change them to study the solver, not to make a run work.
 | `analyse_optimised_topology` | bool | `true` | also compute *mode shapes* of the thresholded solid interpretation |
 | `compare_mass_matched_baseline` | bool | `true` | topology runs also analyse an equal-mass uniform plate |
 
+## `buckling`
+
+```json
+"buckling": { "enabled": true, "num_modes": 4, "tolerance": 1e-8,
+              "residual_tolerance": 1e-6, "max_iterations": 400,
+              "seed": 20240917, "load_cases": ["axial"],
+              "analyse_optimised_topology": true }
+```
+
+A linear (bifurcation) buckling analysis of each load case's linear static
+state, `(K + lambda K_G(u)) phi = 0` (`docs/formulation.md`, section 7b).
+`sparlab_solve` runs it on the analysed model; `sparlab_topopt` runs it
+after the optimisation on the full solid domain and on the exported part.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | run the buckling analysis |
+| `num_modes` | integer | `4` | lowest positive load factors requested, `>= 1` |
+| `tolerance` | number | `1e-8` | relative change of the requested load factors for convergence |
+| `residual_tolerance` | number | `1e-6` | largest accepted eigenpair residual `||K phi + lambda K_G phi|| / ||K phi||` |
+| `max_iterations` | integer | `400` | subspace-iteration cap |
+| `seed` | integer | `20240917` | seed of the random part of the starting subspace |
+| `load_cases` | array of strings | all | load cases to analyse, by name |
+| `analyse_optimised_topology` | bool | `true` | in a topology run, also analyse the exported part |
+
+A load factor above 1 is a safety factor on the load case; a load case that
+only stretches the structure has no positive load factor and is reported
+as such. The results are `buckling_<solid|topology>.csv` with every mode's
+load factor, residual and energy share in solid material, and, with
+`output.vtk` and `output.mode_shapes`, one VTK file per mode.
+
 ## `topology`
 
 ```json
@@ -431,11 +470,74 @@ sensitivity filter it is a `ConfigError`.
 | `beta_factor` | number | `2` | multiplier per continuation stage, `> 1` |
 | `beta_interval` | integer | `50` | most iterations spent at one `beta` |
 | `advance_on_convergence` | bool | `true` | move to the next `beta` as soon as the design change at the current one falls below `change_tolerance` |
+| `robust` | bool | `false` | robust formulation: objective and constraints on the eroded design (`eta + robust_delta`), volume on the dilated one (`eta - robust_delta`), the blueprint (`eta`) reported and exported (`docs/topology_optimization.md`, section 3c) |
+| `robust_delta` | number | `0.1` | `delta` of the eroded and dilated thresholds; `eta +- delta` must lie in `(0, 1)` |
+| `robust_volume_interval` | integer | `1` | iterations between rescalings of the dilated volume target; use about 20 with OC |
+| `erosion_check` | bool | `false` | without `robust`: evaluate the final design at `eta +- robust_delta` once, to report how much it loses if the part comes out thinner or thicker |
 
 Convergence is only declared at `beta_max`, and the objective-stall history
 restarts at every `beta` step because the objective changes with it. A run
 that stops at the iteration cap before reaching `beta_max` says so in a
 warning.
+
+```json
+"topology": {
+  "optimizer": { "method": "mma", "move_limit": 0.05, "mma": { "max_newton_iterations": 3000 } },
+  "buckling_constraint": { "enabled": true, "min_load_factor": 6.0, "num_modes": 6,
+                           "ks_parameter": 40.0, "solid_threshold": 0.5,
+                           "load_cases": ["axial"] }
+}
+```
+
+**`buckling_constraint`** - the lowest positive buckling load factors of the
+SIMP design at or above a required multiple of each constrained load case,
+aggregated by a KS function (`docs/topology_optimization.md`, section 5d).
+Requires `method: "mma"` and the density filter (or none).
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | add the constraint |
+| `min_load_factor` | number | `1` | required load factor `lambda_req`, `> 0` |
+| `num_modes` | integer | `6` | load factors aggregated per load case, in `[1, 50]` |
+| `ks_parameter` | number | `40` | KS parameter `P`, in `[1, 500]`; the aggregate overestimates the largest ratio by at most `ln(num_modes)/P` |
+| `solid_threshold` | number | `0.5` | density at which an element counts as solid in the pseudo-mode diagnostic |
+| `load_cases` | array of strings | all | load cases to constrain, by name |
+| `tolerance`, `residual_tolerance`, `max_iterations`, `seed` | | as `buckling` | settings of the eigensolve |
+
+The load factors it holds are the SIMP model's; the `buckling` section
+checks the exported part, which is the number to judge.
+
+```json
+"topology": {
+  "overhang": { "filter": true, "build_direction": "+y",
+                "smax_exponent": 40, "smax_reference": 0.5, "smin_epsilon": 1e-4 },
+  "length_scale_check": { "enabled": true, "max_radius_elements": 8, "tolerance": 0.02 }
+}
+```
+
+**`overhang`** - the additive-manufacturing overhang rule
+(`docs/topology_optimization.md`, section 3d). Its presence switches on the
+overhang check of the final design; `filter` also applies the filter during
+the optimisation. Needs a `structured_quad` or `structured_hex` mesh and,
+with the filter, the density filter (or none).
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `build_direction` | string | required | `+x`, `-x`, `+y`, `-y` (and `+z`, `-z` in 3-D): the axis the part grows along, from the plate at the low end (`+`) or the high end (`-`) |
+| `filter` | bool | `false` | apply the overhang filter between the density filter and the projection |
+| `smax_exponent` | number | `40` | `P` of the smooth maximum, in `[2, 200]`, and large enough that `Q = P + ln(n)/ln(xi_0)` stays positive for the supports present |
+| `smax_reference` | number | `0.5` | `xi_0`, the value at which the smooth maximum of equal supports is exact, in `(0, 1)` |
+| `smin_epsilon` | number | `1e-4` | `epsilon` of the smooth minimum, in `(0, 0.1)` |
+
+**`length_scale_check`** - the morphological measurement of the smallest
+member and gap of the final thresholded design. On by default in a robust
+run; the section's presence switches it on otherwise.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | on with `robust` or when the section is present | run the check |
+| `max_radius_elements` | number | `6` | largest probe radius, in cells (probes step by half a cell), `>= 0.5` |
+| `tolerance` | number | `0.02` | share of the solid (void) volume a probe may change and still pass, in `[0, 0.5)`; opening rounds convex corners, so zero is too strict |
 
 **`passive_regions`** - an array of
 
@@ -481,13 +583,21 @@ duplicate a deck. Each corresponds to one deck field:
 --projection             topology.projection.enabled = true (deck or default schedule)
 --no-projection          topology.projection.enabled = false
 --beta-max B             topology.projection.beta_max, and enables the projection
+--buckling N             buckling.enabled = true, buckling.num_modes = N
+--min-load-factor L      topology.buckling_constraint.min_load_factor, and enables the constraint and MMA
+--no-buckling-constraint topology.buckling_constraint.enabled = false
+--robust / --no-robust   topology.projection.robust (--robust also enables the projection)
+--overhang DIR           topology.overhang.build_direction = DIR, filter = true
+--no-overhang-filter     topology.overhang.filter = false (the check stays)
 --tag NAME               appended to the case name in summary.json
 ```
 
-`sparlab_solve` takes `--solver` and `--modes` too. With `--export-calculix`
-it additionally writes one CalculiX input deck per load case
-(`calculix_<case>.inp`: CPS4 / CPE4, CPS3 / CPE3, C3D8 or C3D4 elements, the
-same nodes, supports and nodal loads) into the output directory, which is
-what `scripts/run_cross_validation.sh` feeds to `ccx`.
+`sparlab_solve` takes `--solver`, `--modes` and `--buckling` too. With
+`--export-calculix` it additionally writes one CalculiX input deck per load
+case (`calculix_<case>.inp`: CPS4 / CPE4, CPS3 / CPE3, C3D8, C3D4 or C3D10
+elements, the same nodes, supports and nodal loads, every field within
+CalculiX's 20 characters) into the output directory, which is what
+`scripts/run_cross_validation.sh` feeds to `ccx`, as a static step and, for a
+run with buckling, as a `*BUCKLE` step.
 
 Run any app with `--help` for its full flag list.

@@ -60,13 +60,20 @@ struct OptimalityCriteriaStep {
 ///        `DesignDomain::volume_of(filter.to_physical(x))` and is passed as a
 ///        callable so the update stays independent of the filter type.
 /// \throws ConvergenceError when the bisection cannot bracket the target
-///         volume, which means the bounds make the constraint unreachable.
+///         volume, which means the bounds make the constraint unreachable -
+///         unless `step_toward_unreachable_target` is set.
 /// \param volume_target the volume the bisection meets [m^3]; zero or less
 ///        uses the domain's target (the robust formulation passes the
 ///        rescaled target of its dilated design).
+/// \param step_toward_unreachable_target for a target that moves between
+///        iterations (the robust formulation's): when the move-limited box
+///        cannot reach it, take the box corner nearest to it, warn, and
+///        report `volume_converged = false`; the next iterations close the
+///        gap. A fixed target that the box cannot reach still throws.
 OptimalityCriteriaStep optimality_criteria_update(
     const DesignDomain& domain, const Vector& x, const Vector& dc_dx,
     const Vector& dv_dx, const std::function<Scalar(const Vector&)>& physical_volume_of,
-    const OptimalityCriteriaOptions& options, Scalar volume_target = 0.0);
+    const OptimalityCriteriaOptions& options, Scalar volume_target = 0.0,
+    bool step_toward_unreachable_target = false);
 
 }  // namespace sparlab

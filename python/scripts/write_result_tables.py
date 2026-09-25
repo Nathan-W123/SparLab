@@ -26,11 +26,26 @@ from sparlab_viz.loaders import ResultError, load_json
 
 BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "mbb_beam_projected", "aerospace_bracket",
                    "wing_rib", "l_bracket_stress", "bracket_3d", "bracket_3d_projected",
-                   "lug_bracket_2d", "engine_mount_3d", "bracket_3d_large"]
+                   "lug_bracket_2d", "engine_mount_3d", "bracket_3d_large", "column_buckling",
+                   "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang"]
+#: The buckling-constrained column and its comparison runs (the same deck with
+#: one feature switched off; scripts/run_all_benchmarks.sh).
+BUCKLING_CASES = [("column_buckling_unconstrained", "compliance only"),
+                  ("column_buckling_nonrobust", "lambda >= 6, plain projection"),
+                  ("column_buckling", "lambda >= 6, robust projection")]
+ROBUST_CASES = [("mbb_beam_robust_off", "plain projection, erosion check"),
+                ("mbb_beam_robust", "robust formulation"),
+                ("column_buckling", "robust formulation, buckling constraint")]
+OVERHANG_CASES = [("mbb_beam_overhang_off", "no filter"),
+                  ("mbb_beam_overhang", "overhang filter"),
+                  ("mbb_beam_overhang_down", "overhang filter"),
+                  ("bracket_3d_overhang_off", "no filter"),
+                  ("bracket_3d_overhang", "overhang filter")]
 ANALYSIS_CASES = ["cantilever_analysis", "block_3d_analysis"]
 #: Runs on meshes read from files (Gmsh / Abaqus-CalculiX input).
 REAL_GEOMETRY_CASES = ["lug_bracket_2d", "engine_mount_3d"]
-ELEMENT_LABELS = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4"}
+ELEMENT_LABELS = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4",
+                  "Tet10": "Tet10"}
 #: The unconstrained run of the stress-constrained deck (sparlab_topopt
 #: --no-stress) that the stress table sets beside it.
 STRESS_REFERENCE = {"l_bracket_stress": "l_bracket_unconstrained"}
@@ -562,6 +577,180 @@ def real_geometry_table(results_dir: str) -> Optional[str]:
     )
 
 
+def _first_factor(block) -> Optional[float]:
+    if not block:
+        return None
+    for entry in block.get("load_cases", []):
+        factors = entry.get("load_factors") or []
+        if factors:
+            return float(factors[0])
+    return None
+
+
+def buckling_table(results_dir: str) -> Optional[str]:
+    """The buckling-constrained column beside its comparison runs."""
+    rows, frames = [], []
+    for case, label in BUCKLING_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        result = doc.get("optimization_result", {})
+        check = doc.get("buckling_check", {})
+        simp = result.get("buckling") or {}
+        simp_cases = simp.get("load_cases") or [{}]
+        fraction = (simp_cases[0].get("solid_energy_fraction") or [None])[0]
+        record = {
+            "case": case, "run": label,
+            "compliance_J": result.get("compliance_J"),
+            "simp_lambda_1": simp.get("min_load_factor"),
+            "simp_mode_1_solid_energy_fraction": fraction,
+            "part_lambda_1": _first_factor(check.get("interpreted_structure")),
+            "full_solid_lambda_1": _first_factor(check.get("full_solid")),
+            "iterations": result.get("iterations"),
+            "stop_reason": result.get("stop_reason"),
+            "linear_solves": result.get("linear_solves"),
+            "runtime_s": result.get("total_seconds"),
+        }
+        frames.append(record)
+        rows.append([case, label, _fmt(record["compliance_J"], 6),
+                     _fmt(record["simp_lambda_1"], 5), _fmt(fraction, 3),
+                     _fmt(record["part_lambda_1"], 5), _fmt(record["full_solid_lambda_1"], 5),
+                     f"{record['iterations']}, {record['stop_reason']}",
+                     _fmt(record["linear_solves"])])
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "buckling.csv"), index=False)
+    return _markdown_table(
+        ["case", "run", "compliance [J]", "SIMP lambda_1", "mode 1 energy in solid",
+         "exported part lambda_1", "full solid lambda_1", "iterations, stop",
+         "linear solves"], rows)
+
+
+def robust_table(results_dir: str) -> Optional[str]:
+    """Eroded / blueprint / dilated designs and the measured length scales."""
+    rows, frames = [], []
+    for case, label in ROBUST_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        result = doc.get("optimization_result", {})
+        block = result.get("robust") or result.get("erosion_check")
+        if not block:
+            continue
+        designs = {d["design"].split(" ")[0]: d for d in block["designs"]}
+        cell = float(doc.get("mesh", {}).get("mean_element_size_m") or 1.0)
+        scale = doc.get("manufacturing_checks", {}).get("length_scale") or {}
+        record = {"case": case, "run": label}
+        for key in ("eroded", "intermediate", "dilated"):
+            record[f"{key}_compliance_J"] = designs[key]["compliance_J"]
+            record[f"{key}_volume_fraction"] = designs[key]["volume_fraction"]
+        record["solid_min_size_cells"] = (scale.get("solid_min_size_m", float("nan")) / cell
+                                          if scale else None)
+        record["void_min_size_cells"] = (scale.get("void_min_size_m", float("nan")) / cell
+                                         if scale else None)
+        frames.append(record)
+        blueprint = record["intermediate_compliance_J"]
+        rows.append([
+            case, label,
+            f"{_fmt(record['eroded_compliance_J'], 6)} "
+            f"({100.0 * (record['eroded_compliance_J'] / blueprint - 1.0):+.1f} %)",
+            _fmt(blueprint, 6),
+            f"{_fmt(record['dilated_compliance_J'], 6)} "
+            f"({100.0 * (record['dilated_compliance_J'] / blueprint - 1.0):+.1f} %)",
+            f"{_fmt(record['eroded_volume_fraction'], 4)} / "
+            f"{_fmt(record['intermediate_volume_fraction'], 4)} / "
+            f"{_fmt(record['dilated_volume_fraction'], 4)}",
+            _fmt(record["solid_min_size_cells"], 3), _fmt(record["void_min_size_cells"], 3),
+        ])
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "robust.csv"), index=False)
+    return _markdown_table(
+        ["case", "run", "eroded compliance [J]", "blueprint [J]", "dilated [J]",
+         "volume fractions e / b / d", "smallest member [cells]", "narrowest gap [cells]"],
+        rows)
+
+
+def overhang_table(results_dir: str) -> Optional[str]:
+    """Overhang-filtered designs beside the unfiltered runs of the same decks."""
+    rows, frames = [], []
+    for case, label in OVERHANG_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        result = doc.get("optimization_result", {})
+        block = doc.get("manufacturing_checks", {}).get("overhang")
+        if not block:
+            continue
+        interp = doc.get("solid_interpretation", {})
+        record = {
+            "case": case, "run": label,
+            "build_direction": block.get("build_direction"),
+            "compliance_J": result.get("compliance_J"),
+            "unsupported_elements": block.get("unsupported_elements"),
+            "solid_elements": block.get("solid_elements"),
+            "unsupported_fraction": block.get("unsupported_fraction"),
+            "connected_groups": interp.get("connected_groups_above_threshold"),
+            "iterations": result.get("iterations"),
+            "stop_reason": result.get("stop_reason"),
+        }
+        frames.append(record)
+        rows.append([case, label, str(record["build_direction"]),
+                     _fmt(record["compliance_J"], 6),
+                     f"{record['unsupported_elements']} of {record['solid_elements']}",
+                     f"{100.0 * float(record['unsupported_fraction']):.2f} %",
+                     _fmt(record["connected_groups"]),
+                     f"{record['iterations']}, {record['stop_reason']}"])
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "overhang.csv"), index=False)
+    return _markdown_table(
+        ["case", "run", "build", "compliance [J]", "unsupported / solid elements",
+         "unsupported volume", "groups at 0.5", "iterations, stop"], rows)
+
+
+def tet10_study_table(results_dir: str) -> Optional[str]:
+    path = os.path.join(results_dir, "tet10_part_study", "tet10_part_study.csv")
+    if not os.path.isfile(path):
+        return None
+    table = pd.read_csv(path)
+    table.to_csv(os.path.join(_OUTPUT, "tet10_part_study.csv"), index=False)
+    rows = []
+    for _, r in table.sort_values(["variant", "size_mm"], ascending=[True, False]).iterrows():
+        rows.append([r["variant"], _fmt(r["size_mm"]), _fmt(int(r["num_elements"])),
+                     _fmt(int(r["num_dofs"])), _fmt(r["compliance_vertical_J"], 6),
+                     f"{100.0 * r['rel_diff_vertical_vs_finest_tet10']:+.2f} %",
+                     _fmt(r["compliance_lateral_J"], 6),
+                     f"{100.0 * r['rel_diff_lateral_vs_finest_tet10']:+.2f} %",
+                     f"{r['volume_error']:+.1e}", _fmt(r["wall_seconds"], 3)])
+    return _markdown_table(
+        ["elements", "size [mm]", "cells", "DOFs", "vertical C [J]", "vs finest Tet10",
+         "lateral C [J]", "vs finest Tet10", "volume error", "solve [s]"], rows)
+
+
+def tet10_verification_table(results_dir: str) -> Optional[str]:
+    rows = []
+    for name, stem, column in (
+            ("cantilever tip vs Timoshenko", "mesh_convergence_tet10",
+             "rel_error_timoshenko[-]"),
+            ("column buckling vs Euler-Engesser", "buckling_euler", "rel_error_engesser[-]")):
+        path = os.path.join(results_dir, "verification", f"{stem}.csv")
+        if not os.path.isfile(path):
+            continue
+        table = pd.read_csv(path)
+        for _, r in table.iterrows():
+            grid = " x ".join(str(int(r[k])) for k in ("nx", "ny", "nz")
+                              if k in r and int(r[k]) > 0)
+            rows.append([name, str(r["element"]), grid, _fmt(int(r["num_dofs"])),
+                         f"{100.0 * float(r[column]):.4g} %"])
+    if not rows:
+        return None
+    return _markdown_table(["study", "element", "grid", "DOFs", "error"], rows)
+
+
 _OUTPUT = "docs/results"
 
 
@@ -592,16 +781,25 @@ def main(argv=None) -> int:
          "preconditioner setup or factorisation. A one-level hierarchy is the "
          "direct coarse solve (below the coarse-grid size) and converges in one "
          "iteration."),
+        ("Quadratic tetrahedra and linear buckling against theory",
+         tet10_verification_table(args.results),
+         "From `results/verification/mesh_convergence_tet10.csv` and "
+         "`buckling_euler.csv`: the error of the tip deflection of a solid "
+         "cantilever against Timoshenko beam theory, and of the first buckling load "
+         "factor of a clamped column against Euler with Engesser's shear correction, "
+         "on the same grids for every element."),
         ("Cross-validation against independent codes", cross_validation_table(args.results),
          "Generated from `results/cross_validation/summary.json` by "
          "`python/scripts/cross_validate.py`: node-by-node comparison of the "
          "nodal displacements with scikit-fem (same element formulations) and "
-         "CalculiX (C3D8 and C3D4 are the same elements; CPS4 and CPS3 are plane "
-         "elements CalculiX expands into a layer of solids, which matches plane "
-         "stress only at nu = 0, so those rows at nu != 0 are INFO: recorded, not "
-         "judged). CalculiX results are read from its .frd output, which carries "
-         "six significant digits, so differences below 5e-6 relative are its "
-         "rounding."),
+         "CalculiX (C3D8, C3D4 and C3D10 are the same elements; CPS4 and CPS3 are "
+         "plane elements CalculiX expands into a layer of solids, which matches "
+         "plane stress only at nu = 0, so those rows at nu != 0 are INFO: recorded, "
+         "not judged). CalculiX results are read from its .frd output, which "
+         "carries six significant digits, so differences below 5e-6 relative are "
+         "its rounding. The `buckling` rows compare load factors mode by mode: "
+         "scikit-fem assembles the geometric stiffness of the same discrete "
+         "problem, CalculiX runs *BUCKLE with its own stress-stiffness evaluation."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
@@ -609,6 +807,34 @@ def main(argv=None) -> int:
          "the same mass; it is a plane-stress quantity and is n/a for the solid "
          "cases. The L-bracket's plate would fill its passive void quadrant, so "
          "its gain is not a fair comparison (`docs/benchmarks.md`, section 5)."),
+        ("Linear buckling: the constrained column", buckling_table(args.results),
+         "`SIMP lambda_1` is the lowest load factor of the SIMP model the "
+         "constraint acts on (the eroded design in a robust run), `mode 1 energy "
+         "in solid` the share of that mode's strain energy in elements at density "
+         ">= 0.5, and `exported part lambda_1` the lowest load factor of the "
+         "thresholded part re-analysed as solid material - the number that says "
+         "whether the part meets the requirement of 6."),
+        ("Robust formulation and erosion check", robust_table(args.results),
+         "Eroded (eta + 0.1 for the MBB beam, + 0.05 for the column), blueprint "
+         "(eta = 0.5) and dilated (eta - delta) designs of the final filtered "
+         "field. The robust runs minimised the eroded compliance; the plain run "
+         "was evaluated at the same thresholds once at the end "
+         "(`projection.erosion_check`). Member and gap sizes are measured on the "
+         "thresholded blueprint by morphological opening and closing, to half a "
+         "cell."),
+        ("Overhang filter", overhang_table(args.results),
+         "A solid element (density >= 0.5) off the build plate is unsupported when "
+         "nothing solid lies directly or diagonally below it (3 elements in 2-D, a "
+         "cross of 5 in 3-D): a 45-degree overhang limit on these square cells. "
+         "The unfiltered rows are the same decks run with `--no-overhang-filter`."),
+        ("Tet4 against Tet10 on the engine mount", tet10_study_table(args.results),
+         "From `results/tet10_part_study` (`python/scripts/tet10_part_study.py`): "
+         "the engine mount meshed by Gmsh at each size, solved on linear "
+         "tetrahedra, on the same mesh elevated to straight-sided Tet10, and on "
+         "curved Tet10 cells. Loads are uniform tractions on the pin hole with 12 "
+         "kN (vertical) and 5 kN (lateral) resultants on the exact cylinder. The "
+         "reference is the finest curved Tet10 run, itself a lower bound on the "
+         "exact compliance."),
         ("Heaviside projection", projection_table(args.results),
          "Every projected run and, where one exists, the unprojected run of the "
          "same problem. `grey` is 4 mean(rho (1 - rho)) of the physical density; "

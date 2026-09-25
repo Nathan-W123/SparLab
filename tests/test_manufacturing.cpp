@@ -200,6 +200,49 @@ TEST_CASE("the overhang filter's adjoint recursion matches central differences",
   }
 }
 
+TEST_CASE("the overhang filter stays finite on near-void densities",
+          "[manufacturing][overhang]") {
+  // Densities of 1e-8 raised to P = 40 underflow a direct sum of powers, and
+  // the derivative's sum^(1/Q - 1) then overflows: an MBB run met exactly
+  // this in its void region. Mixed with larger values, the scaled evaluation
+  // must also match the textbook formula wherever that one is representable.
+  for (const char* direction : {"+y", "-y"}) {
+    const Mesh mesh = make_structured_quad_mesh(box_spec(8, 6, 1, 0.8, 0.6, 1.0));
+    const OverhangFilter am(mesh, build(direction, 2));
+    const Index n = mesh.num_elements();
+    // Near void from the plate up (a solid first layer would lift the next
+    // layer to about sqrt(eps)/2 through the smooth minimum), so the supports
+    // of most elements are all 1e-8: a direct sum of three 1e-320 terms. One
+    // column of random density keeps the filter's other branches busy, and
+    // zeros and 1e-300 are scattered through the void.
+    const Vector r = random_density(n, 41u);
+    Vector x = Vector::Constant(n, 1.0e-8);
+    for (Index e = 5; e < n; e += 8) x(e) = r(e);
+    for (Index e = 1; e < n; e += 5) x(e) = 0.0;
+    for (Index e = 3; e < n; e += 7) x(e) = 1.0e-300;
+    const Vector xi = am.apply(x);
+    const Vector g = am.pull_back(x, Vector::Ones(n));
+    INFO("built " << direction);
+    REQUIRE(xi.allFinite());
+    REQUIRE(g.allFinite());
+    REQUIRE(xi.minCoeff() >= 0.0);
+    REQUIRE(xi.maxCoeff() <= 1.0 + 1.0e-12);
+  }
+  // Where nothing underflows, the scaled smooth maximum is the plain one:
+  // two supports at 0.5 and one at 0.3 (Q from n = 3) above an element at 1.
+  const Mesh mesh = make_structured_quad_mesh(box_spec(3, 2, 1, 0.3, 0.2, 1.0));
+  const OverhangFilter am(mesh, build("+y", 2));
+  Vector x(6);
+  x << 0.5, 0.5, 0.3, 1.0, 1.0, 1.0;
+  const Scalar p = 40.0;
+  const Scalar q = p + std::log(3.0) / std::log(0.5);
+  const Scalar smax = std::pow(2.0 * std::pow(0.5, p) + std::pow(0.3, p), 1.0 / q);
+  const Scalar eps = 1.0e-4;
+  const Scalar expected =
+      0.5 * (1.0 + smax - std::sqrt((1.0 - smax) * (1.0 - smax) + eps) + std::sqrt(eps));
+  REQUIRE(am.apply(x)(4) == Approx(expected).epsilon(1e-13));
+}
+
 TEST_CASE("robust projection: eroded <= blueprint <= dilated, and exact gradients",
           "[manufacturing][robust][sensitivity]") {
   const Mesh mesh = make_structured_quad_mesh(box_spec(12, 6, 1, 0.6, 0.3, 1.0));
@@ -303,12 +346,44 @@ TEST_CASE("robust and overhang-filtered optimisations report their designs",
     REQUIRE(result.printable_density.size() == mesh.num_elements());
     REQUIRE(result.history.back().dilated_volume_fraction > result.history.back().volume_fraction);
   }
-  // The robust formulation needs the projection; the overhang filter needs a
-  // structured grid and the density filter.
+  // The erosion check of a non-robust projected run: the same three
+  // thresholds, evaluated once at the end, with the design itself untouched.
+  {
+    TopologyOptimizerOptions options;
+    options.max_iterations = 40;
+    options.change_tolerance = 1.0e-3;
+    options.projection.enabled = true;
+    options.projection.beta_start = 2.0;
+    options.projection.beta_max = 8.0;
+    options.projection.beta_interval = 10;
+    options.projection.erosion_check = true;
+    options.projection.robust_delta = 0.15;
+    options.history_stride = 0;
+    TopologyOptimizer optimizer(model, assembler, filter, domain, options);
+    const TopologyOptimizationResult result = optimizer.run();
+    REQUIRE_FALSE(result.robust);
+    REQUIRE(result.erosion_checked);
+    const RobustRecord& rr = result.robust_record;
+    REQUIRE(rr.eta_eroded == Approx(0.65));
+    REQUIRE(rr.eta_dilated == Approx(0.35));
+    REQUIRE(rr.compliance_intermediate == Approx(result.compliance));
+    REQUIRE(rr.compliance_eroded > rr.compliance_intermediate);
+    REQUIRE(rr.compliance_intermediate > rr.compliance_dilated);
+    REQUIRE(rr.volume_fraction_eroded < result.volume_fraction);
+    REQUIRE(rr.eroded_density.size() == mesh.num_elements());
+    // Evaluating the variants leaves the projection where the run ended.
+    REQUIRE(result.projection_eta == Approx(0.5));
+  }
+  // The robust formulation and the erosion check need the projection; the
+  // overhang filter needs a structured grid and the density filter.
   TopologyOptimizerOptions bad;
   bad.projection.robust = true;
   REQUIRE_THROWS_WITH(TopologyOptimizer(model, assembler, filter, domain, bad),
                       ContainsSubstring("projection"));
+  TopologyOptimizerOptions bad_check;
+  bad_check.projection.erosion_check = true;
+  REQUIRE_THROWS_WITH(TopologyOptimizer(model, assembler, filter, domain, bad_check),
+                      ContainsSubstring("erosion_check"));
   const DensityFilter heuristic(model.mesh(), FilterType::Sensitivity, 0.03);
   TopologyOptimizerOptions heuristic_options;
   heuristic_options.overhang = build("+y", 2);

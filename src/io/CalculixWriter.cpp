@@ -19,6 +19,20 @@ std::string sanitise(const std::string& name) {
   return out.empty() ? "unnamed" : out;
 }
 
+/// CalculiX reads at most 20 characters per data field and rejects a longer
+/// one ("1.4408030432795649e-18" is 22): the most significant digits of `v`
+/// that fit - 14 for a two-digit exponent, 13 at the least for any double.
+std::string field(Scalar v) {
+  for (int digits = 17; digits >= 6; --digits) {
+    std::ostringstream os;
+    os << std::setprecision(digits) << v;
+    if (os.str().size() <= 20) return os.str();
+  }
+  std::ostringstream os;
+  os << std::scientific << std::setprecision(12) << v;
+  return os.str();
+}
+
 }  // namespace
 
 std::string calculix_element_type(const FemModel& model) {
@@ -51,7 +65,6 @@ std::vector<std::string> write_calculix_decks(const FemModel& model, const std::
     const std::string path = stem + "_" + sanitise(specs[l].name) + ".inp";
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out) throw IoError("cannot open '" + path + "' for writing");
-    out << std::setprecision(17);
 
     out << "*HEADING\n";
     out << "SparLab cross-validation export: " << case_name << " / " << specs[l].name
@@ -60,7 +73,8 @@ std::vector<std::string> write_calculix_decks(const FemModel& model, const std::
     out << "*NODE, NSET=NALL\n";
     for (Index n = 0; n < mesh.num_nodes(); ++n) {
       const Vector3 x = mesh.node(n);
-      out << n + 1 << ", " << x.x() << ", " << x.y() << ", " << x.z() << "\n";
+      out << n + 1 << ", " << field(x.x()) << ", " << field(x.y()) << ", " << field(x.z())
+          << "\n";
     }
 
     out << "*ELEMENT, TYPE=" << element << ", ELSET=EALL\n";
@@ -72,10 +86,10 @@ std::vector<std::string> write_calculix_decks(const FemModel& model, const std::
     }
 
     out << "*MATERIAL, NAME=MAT\n*ELASTIC\n"
-        << model.material().youngs_modulus() << ", " << model.material().poisson_ratio()
-        << "\n";
+        << field(model.material().youngs_modulus()) << ", "
+        << field(model.material().poisson_ratio()) << "\n";
     out << "*SOLID SECTION, ELSET=EALL, MATERIAL=MAT\n";
-    if (dim == 2) out << model.thickness() << "\n";
+    if (dim == 2) out << field(model.thickness()) << "\n";
 
     out << "*STEP\n*STATIC\n";
     out << "*BOUNDARY\n";
@@ -83,13 +97,13 @@ std::vector<std::string> write_calculix_decks(const FemModel& model, const std::
       const Index node = d / dim;
       const int component = static_cast<int>(d % dim) + 1;
       out << node + 1 << ", " << component << ", " << component << ", "
-          << model.dofs().prescribed_value(d) << "\n";
+          << field(model.dofs().prescribed_value(d)) << "\n";
     }
     out << "*CLOAD\n";
     for (Index n = 0; n < mesh.num_nodes(); ++n) {
       for (int k = 0; k < dim; ++k) {
         const Scalar f = loads[l](n * dim + k);
-        if (f != 0.0) out << n + 1 << ", " << k + 1 << ", " << f << "\n";
+        if (f != 0.0) out << n + 1 << ", " << k + 1 << ", " << field(f) << "\n";
       }
     }
     out << "*NODE FILE\nU\n*EL FILE\nS\n*END STEP\n";

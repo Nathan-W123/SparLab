@@ -726,9 +726,11 @@ int main(int argc, char** argv) {
       }
       std::cout << "\n";
     }
-    if (result.robust) {
+    if (result.robust || result.erosion_checked) {
       const RobustRecord& rr = result.robust_record;
-      std::cout << "  robust:      compliance eroded " << app::format(rr.compliance_eroded)
+      std::cout << (result.robust ? "  robust:      compliance eroded "
+                                  : "  erosion:     compliance eroded ")
+                << app::format(rr.compliance_eroded)
                 << " J, blueprint " << app::format(rr.compliance_intermediate)
                 << " J, dilated " << app::format(rr.compliance_dilated)
                 << " J; volume fractions " << app::format(rr.volume_fraction_eroded) << " / "

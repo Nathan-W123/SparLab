@@ -834,6 +834,67 @@ TEST_CASE("C3D10 decks from SparLab's CalculiX writer read back node for node",
   std::remove(decks.front().c_str());
 }
 
+TEST_CASE("CalculiX decks keep every data field within CalculiX's 20 characters",
+          "[tet10][io][abaqus][cross-validation]") {
+  // A face traction on Tet10 cells leaves round-off corner loads such as
+  // 1.4408030432795649e-18 (22 characters at 17 digits), which CalculiX
+  // refuses to read. The writer trims the digits until a field fits.
+  ensure_directory(kTmp);
+  FemModel model(make_structured_tet10_mesh(box_spec(4, 2, 2, 1.0, 0.05, 0.05)),
+                 default_material(), 1.0, StressState::ThreeDimensional, IntegrationOptions());
+  DisplacementConstraint root;
+  Selector base;
+  base.kind = SelectorKind::Box;
+  base.xmax = 0.0;
+  root.region.members.push_back(base);
+  root.fix_x = root.fix_y = root.fix_z = true;
+  model.constraints().push_back(root);
+  LoadCaseSpec load;
+  load.name = "axial";
+  TractionLoadSpec end;
+  Selector face;
+  face.kind = SelectorKind::Box;
+  face.xmin = 1.0;
+  end.region.members.push_back(face);
+  end.traction = Vector3(-400.0, 0.0, 0.0);
+  load.tractions.push_back(end);
+  model.load_case_specs().push_back(load);
+  model.finalize();
+  const std::vector<std::string> decks =
+      write_calculix_decks(model, std::string(kTmp) + "/ccx_fields", "fields");
+  std::ifstream in(decks.front());
+  std::string line;
+  std::size_t fields = 0;
+  std::size_t longest = 0;
+  bool in_loads = false;
+  Scalar total = 0.0;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line[0] == '*') {
+      in_loads = line.rfind("*CLOAD", 0) == 0;
+      continue;
+    }
+    if (line.rfind("SparLab", 0) == 0) continue;  // the heading's text line
+    std::stringstream row(line);
+    std::string item;
+    std::vector<std::string> items;
+    while (std::getline(row, item, ',')) {
+      const std::size_t first = item.find_first_not_of(' ');
+      items.push_back(first == std::string::npos ? "" : item.substr(first));
+    }
+    for (const std::string& f : items) {
+      longest = std::max(longest, f.size());
+      ++fields;
+    }
+    if (in_loads) total += std::stod(items.at(2));
+  }
+  INFO("longest field " << longest << " characters");
+  REQUIRE(fields > 0);
+  REQUIRE(longest <= 20);
+  // Trimmed, the loads still add up to the applied resultant.
+  REQUIRE(total == Approx(-400.0 * 0.05 * 0.05).epsilon(1e-13));
+  std::remove(decks.front().c_str());
+}
+
 TEST_CASE("mesh.order builds Tet10 decks and refuses what it cannot mean",
           "[tet10][io][config]") {
   const std::string dir = std::string(kTmp) + "/deck";

@@ -30,15 +30,16 @@ relative.
 
 | Capability | Detail |
 |------------|--------|
-| **Finite elements** | Plane stress, plane strain and 3-D solids; bilinear quadrilaterals (Q4), linear triangles (Tri3), trilinear hexahedra (Hex8) and linear tetrahedra (Tet4); Gauss-Legendre quadrature, sparse assembly into a cached pattern, exact Dirichlet partitioning |
-| **Meshes** | Structured Q4 / Tri3 / Hex8 / Tet4 generators, and **Gmsh (MSH 2.2, 4.1) and Abaqus / CalculiX `.inp` readers**: named groups as supports, loads and passive regions, orientation repair, unit scaling, duplicate-node and quality checks |
+| **Finite elements** | Plane stress, plane strain and 3-D solids; bilinear quadrilaterals (Q4), linear triangles (Tri3), trilinear hexahedra (Hex8), linear tetrahedra (Tet4) and **isoparametric quadratic tetrahedra (Tet10)** with curved edges; Gauss-Legendre and collapsed-Gauss quadrature, sparse assembly into a cached pattern, exact Dirichlet partitioning |
+| **Meshes** | Structured Q4 / Tri3 / Hex8 / Tet4 / Tet10 generators, `mesh.order: 2` elevation of any tetrahedral mesh, and **Gmsh (MSH 2.2, 4.1) and Abaqus / CalculiX `.inp` readers** (C3D10 and Gmsh second-order tetrahedra included): named groups as supports, loads and passive regions, orientation repair, unit scaling, duplicate-node and quality checks |
 | **Linear solvers** | Sparse Cholesky (LDL^T), **smoothed-aggregation algebraic multigrid** preconditioned CG (bitwise identical on any number of threads), Jacobi CG, and an automatic choice by problem size |
 | **Loads** | Point loads and consistently integrated edge / face tractions, multiple load cases with weights |
 | **Recovery** | Displacements, exact support reactions, element and nodal strain/stress, von Mises, principal stresses, element strain energy, compliance |
 | **Modal analysis** | Consistent or lumped mass, generalised eigenproblem by shift-invert subspace iteration, validity screening for negative and rigid-body eigenvalues |
-| **Topology optimisation** | SIMP with penalty continuation, density and sensitivity filters, a **Heaviside projection** with `beta` continuation, analytical sensitivities, optimality criteria *or* the method of moving asymptotes, an aggregated von Mises **stress constraint** with adjoint sensitivities, passive solid/void regions, multi-load-case objective |
+| **Linear buckling** | `(K + lambda K_G) phi = 0` of each load case by subspace iteration, with the buckling spectral transformation and an inertia-placed shift when reversed-load modes crowd the spectrum; a check of the analysed model, the full design domain and the **exported part** |
+| **Topology optimisation** | SIMP with penalty continuation, density and sensitivity filters, a **Heaviside projection** with `beta` continuation, the **robust (eroded / blueprint / dilated) formulation** for a minimum length scale, an **additive-manufacturing overhang filter**, analytical sensitivities, optimality criteria *or* the method of moving asymptotes, aggregated **stress** and **buckling** constraints with adjoint sensitivities, passive solid/void regions, multi-load-case objective, length-scale, erosion and overhang checks of the result |
 | **Geometry** | The structure before and after optimisation as VTK and watertight binary STL, with closure, manifoldness and volume checks |
-| **Verification** | Patch tests on all four elements, rigid-body modes, positive definiteness, reaction equilibrium, agreement of seven linear solvers, multigrid iteration counts under refinement, finite-difference gradient checks (compliance and stress, 2-D and 3-D, through the projection), mass conservation, beam and rod theory, mesh convergence - and node-by-node **cross-validation against CalculiX and scikit-fem**, including the two parts meshed in Gmsh |
+| **Verification** | Patch tests on all five elements (the Tet10's quadratic one included), rigid-body modes, positive definiteness, reaction equilibrium, agreement of seven linear solvers, multigrid iteration counts under refinement, finite-difference gradient checks (compliance, stress, buckling and the overhang filter, 2-D and 3-D, through the projection), mass conservation, beam, rod and Euler-Engesser column theory, mesh convergence - and **cross-validation against CalculiX and scikit-fem**, node by node for displacements and mode by mode for buckling load factors, including the parts meshed in Gmsh |
 | **Diagnostics** | Pre-solve detection of rigid-body under-constraint and floating regions, singular-matrix reporting with the likely modelling cause, explicit non-convergence and infeasibility reporting |
 | **Output** | `summary.json`, CSV tables, legacy VTK for ParaView, CalculiX decks, STL, publication-quality figures and animations |
 
@@ -48,7 +49,7 @@ relative.
 # 1. Dependencies (Debian/Ubuntu; see scripts/setup_deps.sh for other platforms)
 ./scripts/setup_deps.sh
 
-# 2. Build and test          (~2 min build, ~25 s tests)
+# 2. Build and test          (~2 min build, ~40 s tests)
 make build
 make test
 
@@ -56,7 +57,7 @@ make test
 make benchmark CASE=cantilever_analysis
 make benchmark CASE=block_3d_analysis
 
-# 4. Verification studies    (~80 s, exits non-zero if any tolerance is missed)
+# 4. Verification studies    (~2 min, exits non-zero if any tolerance is missed)
 make verify
 
 # 5. Cross-validation         (needs scikit-fem; CalculiX's ccx if installed)
@@ -72,8 +73,9 @@ compiler has it. Catch2 is used for the tests
 and is fetched automatically if the system package is absent. The Python
 layer needs `numpy`, `pandas`, `matplotlib` and `pillow`; the cross-validation
 additionally needs `scikit-fem` and, for the CalculiX half, `ccx` on the path.
-The two mesh files the real-geometry decks read are committed; regenerating
-them needs the `gmsh` Python package.
+The mesh files the real-geometry decks read are committed; regenerating
+them, and the Tet4 / Tet10 study that meshes the engine mount afresh, needs
+the `gmsh` Python package.
 
 Every target is a thin wrapper over a script or a binary, so anything can also
 be typed by hand:
@@ -85,6 +87,9 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -
 ./build/bin/sparlab_topopt --config configs/benchmarks/l_bracket_stress.json    --output results/z --stress-limit 9.4e6
 ./build/bin/sparlab_topopt --config configs/benchmarks/engine_mount_3d.json     --output results/w
 ./build/bin/sparlab_topopt --config configs/benchmarks/mbb_beam_projected.json  --output results/v
+./build/bin/sparlab_topopt --config configs/benchmarks/column_buckling.json     --output results/u
+./build/bin/sparlab_topopt --config configs/benchmarks/mbb_beam_overhang.json   --output results/t --overhang -y
+./build/bin/sparlab_solve  --config configs/verification/engine_mount_tet10_analysis.json --output results/s --buckling 4
 ./build/bin/sparlab_verify --study all --output results/verification
 ./build/bin/sparlab_bench  --dim 3 --sizes 8,16,32,64 --solver amg_cg --output results/benchmark
 python3 python/scripts/cross_validate.py --case results/x --output results/cross_validation
@@ -100,11 +105,12 @@ Run any executable with `--help` for its full flag list.
 | Run all tests | `make test` |
 | Run the verification / validation studies | `make verify` |
 | Cross-validate against CalculiX and scikit-fem | `make cross-validation` |
+| Tet4 against Tet10 on the engine mount (needs `gmsh`) | `make tet10-study` |
 | Solve one benchmark | `make benchmark CASE=aerospace_bracket` |
 | Run all benchmarks (2-D and 3-D) | `make benchmarks` |
 | Run the aerospace design study | `make study` |
 | Runtime scaling benchmarks (direct vs multigrid vs Jacobi; Q4, Hex8, Tet4) | `make scaling` |
-| Regenerate the two Gmsh meshes (needs the `gmsh` package) | `make meshes` |
+| Regenerate the Gmsh meshes (needs the `gmsh` package) | `make meshes` |
 | Regenerate all figures and animations | `make figures` |
 | Refresh the committed result tables | `make results` |
 | Everything, in order | `make all` |
@@ -136,6 +142,11 @@ All numbers below are read from the `summary.json` of the run named beside them.
 | Tri3 / Tet4 cantilever deflection vs Timoshenko | validation | relative difference, finest mesh (the worse of the two) | `1.66e-02` | `0.03` |
 | **Multigrid CG vs Cholesky**, Hex8 and Tet4 to 47 775 DOFs | verification | max relative displacement difference; iterations `14 -> 16` and `16 -> 20` under refinement | `4.37e-12` | `1e-8` |
 | **Sensitivity through the Heaviside projection**, `beta` = 2, 8, 32 | verification | worst scaled-entry or directional gradient error, best step | `9.65e-08` | `1e-5` |
+| **Quadratic patch test** (pure bending), distorted Tet10 meshes | verification | max relative error in `u` and stress; Hex8 and Tet4 cannot pass | `1.22e-14` | `1e-9` |
+| Tet10 cantilever deflection vs Timoshenko | validation | relative difference, finest mesh (Hex8 3.0 %, Tet4 11 %) | `6.36e-06` | `0.01` |
+| **Column buckling vs Euler-Engesser**, Q4 and Tet10 | validation | relative difference of `lambda_1`, finest mesh | `6.64e-03` | `0.01` |
+| Buckling-constraint sensitivity vs central differences | verification | max scaled gradient error, best step | `1.72e-06` | `1e-5` |
+| Sensitivity through the overhang filter | verification | worst scaled-entry or directional gradient error, best step | `2.81e-06` | `1e-5` |
 
 `make verify` exits non-zero if any tolerance is missed, so it is a usable
 numerical regression gate. Full detail, including what is *not* covered, in
@@ -159,12 +170,18 @@ by node (`make cross-validation`):
 | Solid block, 7 680 Tet4, two load cases | scikit-fem `ElementTetP1` / CalculiX `C3D4` | `<= 9.46e-12` / `<= 3.64e-06` | `1e-7` / `1e-5` |
 | **Gmsh lug bracket**, 20 336 Tri3, `nu = 0` | scikit-fem / CalculiX `CPS3` | `<= 6.09e-13` / `<= 4.29e-06` | `1e-7` / `1e-5` |
 | **Gmsh engine mount**, 39 936 Tet4, solved by multigrid CG | scikit-fem / CalculiX `C3D4` | `<= 1.48e-12` / `<= 1.98e-06` | `1e-7` / `1e-5` |
+| **Gmsh engine mount**, 13 918 curved Tet10 | scikit-fem `ElementTetP2` / CalculiX `C3D10` | `<= 1.54e-12` / `<= 1.65e-06` | `1e-7` / `1e-5` |
+| Axial columns, Hex8 / Tet4 / Tet10: **buckling load factors**, 4 modes | scikit-fem (own `K_G`) / CalculiX `*BUCKLE` | `<= 8.41e-10` / `<= 8.26e-05` | `1e-7` / `1e-4` |
 
 scikit-fem implements the same element formulations independently, so its
-differences are linear-solver round-off. CalculiX's `C3D8` and `C3D4` are the
-same elements as the Hex8 and Tet4, and the `2e-06` to `4e-06` differences
-are within the six significant digits of its `.frd` result file - as close as
-that format lets one see. Its plane elements are a layer of solid elements
+differences are linear-solver round-off. CalculiX's `C3D8`, `C3D4` and
+`C3D10` are the same elements as the Hex8, Tet4 and Tet10, and the `1e-06` to
+`4e-06` displacement differences are within the six significant digits of
+its `.frd` result file - as close as that format lets one see. For buckling,
+scikit-fem assembles its own geometric stiffness and agrees to `1e-9`;
+CalculiX's `*BUCKLE` agrees to `6e-6` on `C3D4` and sits `4e-5` to `8e-5`
+high on `C3D8` and `C3D10`, for a reason not identified, which is recorded
+rather than explained away. Its plane elements are a layer of solid elements
 internally, which matches plane stress only at `nu = 0`: the lug bracket at
 its real `nu = 0.33` differs from CalculiX by `1.1e-03`, and is therefore
 recorded as a comparison between idealisations rather than judged
@@ -185,13 +202,20 @@ recorded as a comparison between idealisations rather than judged
 | Solid bracket, 356k DOFs | 110 592 Hex8 | OC + projection | multigrid CG | 0.30 | 171 | 0.170987 | - | - | 0.000862 | 1339.9 |
 | Lug bracket, Gmsh mesh | 20 336 Tri3 | OC + projection | Cholesky | 0.35 | 211 | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
 | Engine mount, Abaqus mesh | 39 936 Tet4 | OC + projection | multigrid CG | 0.25 | 265 | 0.443669 | - | - | 0.0484 | 278.5 |
+| Column, buckling-constrained (`lambda >= 6`) | 3 200 Q4 | MMA + robust projection | Cholesky | 0.25 | 375 | 186.636 | 155.286 | 0.832 | 0.0426 | 156.7 |
+| MBB beam, robust | 10 800 Q4 | OC + robust projection | Cholesky | 0.50 | 236 | 195.485 | 260.601 | **1.333** | 0.0253 | 35.2 |
+| MBB beam, overhang filter | 10 800 Q4 | MMA + projection + AM filter | Cholesky | 0.50 | 211 | 193.255 | 259.526 | **1.343** | 0.0166 | 26.4 |
+| Solid bracket, overhang filter | 4 096 Hex8 | MMA + projection + AM filter | multigrid CG | 0.30 | 177 | 0.188922 | - | - | 0.00967 | 100.3 |
 
-Every OC run meets the volume constraint at its returned design to between
-`1.1e-11` and `9.6e-11` relative. Without the projection it holds at every
-recorded iteration too; with it, the starting design and the first design
-after each `beta` step are analysed before an update puts them back on the
-target. MMA treats the volume as an explicit constraint and meets it at
-`-2.0e-4`, on the feasible side. The optimisation times come from one
+Every OC run but the robust one meets the volume constraint at its returned
+design to between `1.1e-11` and `9.6e-11` relative. Without the projection it
+holds at every recorded iteration too; with it, the starting design and the
+first design after each `beta` step are analysed before an update puts them
+back on the target. The robust OC run holds the *dilated* design to a
+rescaled target (met to `9.6e-11`); its blueprint follows only through the
+ratio of the two volumes, and ends 0.41 % under the volume fraction. MMA
+treats the volume as an explicit constraint and meets it between `-2.0e-4`
+and `-2.8e-6`, on the feasible side. The optimisation times come from one
 4-core machine: the direct solver runs on one core and the multigrid solver
 on four.
 
@@ -210,6 +234,16 @@ objective, the rib comes out level with the plate rather than 10.6 % short of
 it (1.006 after correcting for the 1.3 % mass thresholding adds) - the reported
 objective is the pessimistic one, for the reason the design study takes apart.
 See [`docs/benchmarks.md`](docs/benchmarks.md).
+
+The column's gain below 1 is real too, and it is the plane model talking.
+The equal-mass plate is 2.5 mm thick instead of 10 mm; in plane it buckles at
+`lambda_1 = 37.4` (a quarter of the solid's 149.65, since `K` scales with the
+thickness and `K_G` does not), so in this idealisation it beats the
+constrained design on both counts. Out of its plane - which a plane model
+cannot see - a 2.5 mm plate 1 m tall buckles at about 130 N by Euler's
+formula, and the optimised column's 10 mm members are not safe out of plane
+either: the benchmark is an in-plane stability problem, a web braced out of
+its plane ([section 12](docs/benchmarks.md#12-a-column-with-a-buckling-constraint)).
 
 ### Stress constraint: what it buys
 
@@ -254,6 +288,74 @@ buys is a number that means what it says. At a sharp projection the design
 change never settles, so the projected decks stop on the compliance
 instead: a spread below 0.1 % over 10 iterations
 ([details](docs/benchmarks.md)).
+
+### Buckling constraint: what it buys
+
+![The column with and without the buckling constraint](docs/figures/column_buckling_comparison.png)
+
+A 0.5 m x 1 m aluminium plate, 10 mm thick, clamped at its base and loaded
+by 100 kN of axial compression on a pad at the top, with a quarter of its
+material. The same deck three ways:
+
+| | Compliance only | `lambda >= 6`, plain projection | `lambda >= 6`, robust projection |
+|---|---:|---:|---:|
+| Compliance | 112.182 J | 159.209 J | 186.636 J |
+| Lowest load factor, SIMP model | - | 6.0005 | 6.0020 (eroded design) |
+| Lowest load factor, **exported part** | **2.86** | **3.65** | **5.81** |
+
+The compliance optimum is a single strut that buckles at 2.86 times its
+load. With the constraint, the SIMP model the optimiser sees meets
+`lambda >= 6` - but with a plain projection its bracing is grey, and the
+exported part, thresholded and re-analysed as solid aluminium, buckles at
+3.65. Acting on the eroded design, the robust formulation denies the
+optimiser members that erosion removes, and the part reaches 5.81, 3 %
+short of the requirement. The part's value is the one to judge; both are
+reported ([details](docs/benchmarks.md)).
+
+### Robust formulation and overhang filter: what they buy
+
+| | MBB beam, plain projection | MBB beam, robust |
+|---|---:|---:|
+| Compliance as drawn | 189.654 J | 195.485 J |
+| Compliance if the part comes out thinner (eroded, `eta = 0.6`) | 231.398 J (**+22.0 %**) | 204.051 J (**+4.4 %**) |
+| Smallest member / narrowest gap | 3 / 5 cells | 4 / 6 cells |
+
+The robust design pays 3 % as drawn and loses a fifth as much stiffness to
+the erosion, because none of its members is thin enough to vanish
+([figure](docs/figures/mbb_beam_robust_comparison.png)).
+
+![The MBB beam built without and with the overhang filter](docs/figures/mbb_beam_overhang_comparison.png)
+
+| | Unsupported solid elements | Compliance |
+|---|---:|---:|
+| MBB beam, no filter (built +y) | 132 of 5 420 (2.4 %) | 186.441 J |
+| MBB beam, overhang filter, built +y / -y | **0** / **0** | 193.255 J (+3.7 %) / 206.731 J (+10.9 %) |
+| Solid bracket, no filter (built +y) | 78 of 1 234 (6.3 %) | 0.180861 J |
+| Solid bracket, overhang filter | **0** | 0.188922 J (+4.5 %) |
+
+With the filter no solid element lacks support directly or diagonally below
+it - a 45-degree overhang limit - so the designs are printable under that
+rule, and only under that rule ([details](docs/benchmarks.md)).
+
+### Quadratic tetrahedra: what they buy
+
+![Tet4 against Tet10 on the engine mount](docs/figures/tet10_part_study.png)
+
+The engine mount meshed from CAD by Gmsh at 8 to 1.5 mm, solved on linear
+tetrahedra, on the same meshes elevated to Tet10, and on curved Tet10 cells:
+
+| Mesh | DOFs | Compliance, vertical load | vs finest Tet10 |
+|------|-----:|--------------------------:|----------------:|
+| Tet4, 4 mm (the benchmark's mesh) | 25 920 | 0.332694 J | **-18.9 %** |
+| Tet4, 1.5 mm | 357 087 | 0.391839 J | -4.4 % |
+| Tet10 curved, 6 mm | 61 812 | 0.400594 J | -2.3 % |
+| Tet10 curved, 3 mm | 388 488 | 0.410003 J | reference |
+
+A part meshed with linear tetrahedra reads a fifth too stiff on the mesh the
+benchmark uses, and still 4.4 % at 14 times the unknowns; the curved Tet10 is
+closer at 6 mm than the Tet4 at 1.5 mm with 5.8 times fewer unknowns. The
+finest run is itself a lower bound, so no extrapolated exact value is
+claimed ([details](docs/benchmarks.md)).
 
 ### Real geometry
 
@@ -392,13 +494,17 @@ aggregates and starts every solve from the previous design's answer
 | ![Stress-constrained vs unconstrained L-bracket](docs/figures/l_bracket_stress_stress_comparison.png) | ![Solid bracket stress on the surface](docs/figures/bracket_3d_stress_down_limit.png) |
 | The same L-bracket with and without the stress constraint, on one colour scale with the limit marked | Von Mises, principal and normal stress on the surface of the optimised solid bracket |
 | ![Cross-validation](docs/figures/cross_validation.png) | ![Solid bracket mode shapes](docs/figures/bracket_3d_modes_topology.png) |
-| Nodal displacements against CalculiX and scikit-fem on seven problems, with each tolerance and the `.frd` rounding floor | Mode shapes of the interpreted solid structure |
+| Nodal displacements against CalculiX and scikit-fem on eleven problems, with each tolerance and the `.frd` rounding floor | Mode shapes of the interpreted solid structure |
 | ![Gmsh lug bracket](docs/figures/lug_bracket_2d_topology.png) | ![Engine mount from an Abaqus file](docs/figures/engine_mount_3d_topology.png) |
 | A lug bracket meshed in Gmsh (20 336 triangles), optimised with the Heaviside projection | An engine mount read from an Abaqus / CalculiX file (39 936 tetrahedra), solved with multigrid CG |
 | ![Projection comparison](docs/figures/mbb_beam_projection.png) | ![Solver scaling](docs/figures/solver_scaling.png) |
 | The MBB beam with and without the projection, and the distribution of its densities | Cholesky, multigrid CG and Jacobi CG: time and storage against problem size on Q4, Hex8 and Tet4 |
 | ![356 475-DOF solid bracket](docs/figures/bracket_3d_large_topology.png) | ![Multigrid verification](docs/figures/verify_multigrid.png) |
 | The solid bracket at 356 475 DOFs, optimised with multigrid CG | Multigrid iterations under refinement against Jacobi CG, and agreement with Cholesky |
+| ![Column buckling convergence](docs/figures/column_buckling_history.png) | ![Buckling verification](docs/figures/verify_buckling_euler.png) |
+| Compliance, the SIMP model's lowest load factor and `beta` through the buckling-constrained run | The first buckling load of a clamped column against Euler-Engesser on Q4, Hex8, Tet4 and Tet10 |
+| ![Solid bracket, overhang filter](docs/figures/bracket_3d_overhang_comparison.png) | ![Tet10 convergence](docs/figures/verify_mesh_convergence_tet10.png) |
+| The solid bracket built standing up, without and with the overhang filter, unsupported faces in red | Cantilever tip error of Hex8, Tet4 and Tet10 on the same grids |
 
 Further figures in [`docs/figures/`](docs/figures/): deformed shapes,
 displacement and stress fields, reaction and equilibrium checks, mode shapes,
@@ -429,7 +535,21 @@ isoparametric mapping `x = sum_a N_a x_a`, Jacobian `J_ij = dx_i/dxi_j`, and
 ```
 
 with `D` the plane-stress, plane-strain or full 3-D isotropic matrix and `B`
-`3 x 8` or `6 x 24`.
+`3 x 8` or `6 x 24`. The Tet10 uses `N_i = L_i (2 L_i - 1)` at the corners
+and `4 L_a L_b` on the edges in barycentric coordinates, isoparametric (so
+its edges may curve with the CAD surface), a 4-point stiffness rule, and
+Hinton-Rock-Zienkiewicz lumping where a row-sum lump would be indefinite.
+
+**Linear buckling.** For a load case with displacement `u`,
+
+```
+  (K_ff + lambda K_G,ff(u)) phi = 0 ,     phi^T K_G phi = int sigma_ij(u) phi_k,i phi_k,j
+```
+
+solved for the smallest positive `lambda` by subspace iteration on
+`K^-1 (-K_G)`, switching to the spectral transformation
+`(K + sigma K_G)^-1 K` with `sigma` placed by the inertia of an `LDL^T`
+factorisation when reversed-load modes crowd the spectrum.
 
 **Boundary conditions by partitioning, not penalty.** The reduced system is
 `K_ff u_f = f_f - K_fp u_p` and the reactions come from the full residual
@@ -489,9 +609,23 @@ maximum, and the gradient from one adjoint solve per load case,
 `K lambda = d sigma_PN / d u`, on the cached factorisation - verified against
 central differences in 2-D and 3-D.
 
+**Buckling constraint.** `KS_P(lambda_req / lambda_i) - 1 <= 0` over the
+lowest positive load factors, with the stress in `K_G` interpolated as
+`rho^p` without the `E_min` floor (against pseudo modes in void) and each
+`d lambda_i / d rho` from one adjoint solve that carries the stress's
+dependence on the design.
+
+**Robust formulation and overhang filter.** The filtered field projected at
+`eta + delta`, `eta` and `eta - delta`: the objective and constraints on the
+eroded design, the volume on the dilated one, the blueprint exported. The
+overhang filter `xi_e = smin(rho_tilde_e, smax_{s below e} xi_s)`, layer by
+layer from the plate, sits between the density filter and the projection,
+with its gradient from an adjoint recursion from the top layer down.
+
 See [`docs/topology_optimization.md`](docs/topology_optimization.md) for the
-filters, continuation, convergence criteria, MMA, the stress constraint and
-the diagnostics.
+filters, the projection and its robust form, the overhang filter,
+continuation, convergence criteria, MMA, the stress and buckling constraints
+and the diagnostics.
 
 ## Conventions
 
@@ -503,7 +637,10 @@ Right-handed axes, with a plane model in the x-y plane. Structured node
 numbering `node(i,j,k) = k(nx+1)(ny+1) + j(nx+1) + i` and element numbering
 `elem(i,j,k) = k·nx·ny + j·nx + i`, x fastest. Q4 nodes counter-clockwise
 from the lower-left corner; Hex8 nodes in the VTK order (bottom face, then
-top). `dim` translational DOFs per node, `dof(n,c) = dim·n + c`. Forces and
+top); Tet10 corners then the edge nodes of `(0 1) (1 2) (2 0) (0 3) (1 3)
+(2 3)`, as VTK and C3D10. A buckling load factor multiplies its load case;
+modes are `phi^T K phi = 1`. A build direction `+y` grows the part along
+`+y` from a plate at low `y`. `dim` translational DOFs per node, `dof(n,c) = dim·n + c`. Forces and
 displacements positive along `+x`/`+y`/`+z`; tensile stress positive;
 tractions given as a global stress vector, not a normal pressure. Voigt
 ordering `{sxx, syy, sxy}` in the plane and `{sxx, syy, szz, sxy, syz, szx}`
@@ -524,15 +661,17 @@ Full table, including every tolerance and its default, in
   MeshReader            SimpInterpolation        StressRecovery  ModelDiagnostics
   CsvWriter VtkWriter   DensityFilter Projection LinearSolver    Multigrid
   StlWriter             Sensitivity  StressConstraint   Assembler  FemModel
-  CalculixWriter        OptimalityCriteria  Mma  DofManager  Selector
-  ResultWriter          TopologyOptimizer        BoundaryConditions
+  CalculixWriter        BucklingConstraint       Buckling
+  ResultWriter          OverhangFilter LengthScale  DofManager  Selector
+                        OptimalityCriteria  Mma  BoundaryConditions
+                        TopologyOptimizer
                                                          |
                                      +-------------------+-------------------+
                                      |                   |                   |
                                  elements/          material/             mesh/
                                  Element (abc)      IsotropicMaterial     Mesh
                                  Quad4 Tri3                               Structured
-                                 Hex8  Tet4                               SubMesh
+                                 Hex8  Tet4  Tet10                        SubMesh
                                  Quadrature              |
                                      +---------+---------+-------------------+
                                                |
@@ -541,7 +680,8 @@ Full table, including every tolerance and its default, in
   python/sparlab_viz/   loaders -> style -> fields / solid -> plots / plots3d / studies
                         (reads only what io/ writes; never recomputes physics)
   python/scripts/cross_validate.py   drives CalculiX and scikit-fem on the exported decks
-  python/scripts/make_meshes.py      generates the two Gmsh meshes (committed)
+  python/scripts/make_meshes.py      generates the Gmsh meshes (committed)
+  python/scripts/tet10_part_study.py meshes, solves and compares Tet4 and Tet10
 ```
 
 No cycles, no upward dependencies, and one dimension-generic core: the mesh
@@ -607,12 +747,15 @@ stress-constraint blocks, is documented in
 [`docs/configuration.md`](docs/configuration.md).
 
 Shipped decks: [`configs/benchmarks/`](configs/benchmarks/) (the four plane
-compliance cases and the MBB beam's projected variant, the stress-constrained
-L-bracket, the solid bracket with its projected and its 356 475-DOF variants,
-and the Gmsh lug bracket and engine mount), [`configs/meshes/`](configs/meshes/) (the two meshes, with how they
-were generated), [`configs/studies/`](configs/studies/) (the design-study
-baseline), [`configs/verification/`](configs/verification/) (the static +
-modal decks the cross-validation uses, on all four element types).
+compliance cases and the MBB beam's projected, robust and overhang-filtered
+variants, the stress-constrained L-bracket, the buckling-constrained column,
+the solid bracket with its projected, overhang-filtered and 356 475-DOF
+variants, and the Gmsh lug bracket and engine mount),
+[`configs/meshes/`](configs/meshes/) (the lug bracket, and the engine mount
+in linear and in curved quadratic tetrahedra, with how they were generated),
+[`configs/studies/`](configs/studies/) (the design-study baseline),
+[`configs/verification/`](configs/verification/) (the static, modal and
+buckling decks the cross-validation uses, on all five element types).
 
 ## Output
 
@@ -655,11 +798,17 @@ Things this project deliberately does, because the opposite is easy and wrong:
   9-29 % stiffer. With the Heaviside projection the two agree to within 2 %,
   and 4.5 % on the engine mount. The modal analysis of an "optimised
   structure" runs on the same sub-mesh;
-* **no manufacturability is claimed.** A filter radius is a minimum length
-  scale, not a manufacturing constraint. No draw direction, tool access, wall
-  thickness, overhang angle or fillet is modelled, and the exported STL is
+* **no manufacturability is claimed beyond what is modelled.** The overhang
+  filter models one additive-manufacturing rule and the robust formulation
+  one uniform manufacturing error; "0 unsupported elements" means printable
+  under that rule, nothing more. No draw direction, tool access, support
+  removal, residual stress or fillet is modelled, and the exported STL is
   the voxel boundary of the thresholded cells - closed and outward, checked
   and reported as such, but a staircase, not a part;
+* **a buckling constraint is judged on the part.** The constraint holds the
+  load factors of the SIMP model; every run with a `buckling` section
+  re-analyses the exported part and reports its load factor beside them - on
+  the column 3.65 and 5.81 against a SIMP 6.00, printed as such;
 * **a stress constraint is not a stress substantiation.** It bounds the
   relaxed, aggregated stress of the density model. Every constrained run
   therefore re-solves its thresholded structure with full material and
@@ -691,16 +840,18 @@ Things this project deliberately does, because the opposite is easy and wrong:
 ## Assumptions and limitations
 
 The short version: plane or solid continuum only (no plates, shells or
-beams), linear and small-strain, static plus undamped free vibration, no body
-forces, linear elements only (Q4, Tri3, Hex8, Tet4) and one cell type per
-mesh, attachment features are *representations* and not joint models, load
-cases are illustrative and not flight loads, the objective is weighted
-compliance and not a load envelope, the constraints are the volume and an
-aggregated relaxed stress (no frequency or displacement constraints), the
-projection sharpens a design but guarantees no minimum member size, one
-machine and no distributed memory, no manufacturability modelling,
-cross-validation of displacements on seven problems, no comparison against
-experiment.
+beams), linear and small-strain, static, undamped free vibration and linear
+(bifurcation) buckling - no imperfections or post-buckling - no body forces,
+linear elements plus the quadratic tetrahedron (no Q8, Tri6 or Hex20) and one
+cell type per mesh, attachment features are *representations* and not joint
+models, load cases are illustrative and not flight loads, the objective is
+weighted compliance and not a load envelope, the constraints are the volume,
+an aggregated relaxed stress and an aggregated SIMP buckling load (no
+frequency or displacement constraints), the robust formulation's length
+scale is measured rather than stated, the overhang rule needs a structured
+grid, one machine and no distributed memory, cross-validation of
+displacements on eleven problems and of buckling load factors on three, no
+comparison against experiment.
 
 The long version, with what it would take to lift each item, is in
 [`docs/limitations.md`](docs/limitations.md). It is worth reading before
@@ -710,13 +861,13 @@ treating any number here as a design answer.
 
 | Document | Contents |
 |----------|----------|
-| [`docs/formulation.md`](docs/formulation.md) | continuum problem in 2-D and 3-D, Q4, Tri3, Hex8 and Tet4 elements, quadrature, assembly, the linear solvers and the multigrid construction, stress recovery, modal algorithm, what the cross-validation exports |
-| [`docs/topology_optimization.md`](docs/topology_optimization.md) | SIMP, filters, the Heaviside projection, sensitivity derivation, optimality criteria, MMA, the aggregated stress constraint and its adjoint, passive regions, continuation, convergence, diagnostics |
+| [`docs/formulation.md`](docs/formulation.md) | continuum problem in 2-D and 3-D, Q4, Tri3, Hex8, Tet4 and Tet10 elements, quadrature, assembly, the linear solvers and the multigrid construction, stress recovery, modal algorithm, linear buckling, what the cross-validation exports |
+| [`docs/topology_optimization.md`](docs/topology_optimization.md) | SIMP, filters, the Heaviside projection, the robust formulation and length-scale check, the overhang filter, sensitivity derivation, optimality criteria, MMA, the aggregated stress and buckling constraints and their adjoints, passive regions, continuation, convergence, diagnostics |
 | [`docs/conventions.md`](docs/conventions.md) | units, coordinates and numbering in both dimensions, element face tables, mesh-file numbering, signs, Voigt ordering, energy definitions, tolerances, determinism |
 | [`docs/architecture.md`](docs/architecture.md) | layering, the dimension-generic core, component responsibilities, design decisions, extension points |
-| [`docs/configuration.md`](docs/configuration.md) | complete input-deck reference (structured and file meshes, solvers and multigrid, projection, MMA, stress constraint) and the command-line overrides |
-| [`docs/verification.md`](docs/verification.md) | every verification and validation check in 2-D and 3-D, the simplices, the mesh readers, the multigrid solver, the projection, the MMA and stress-constraint tests, the cross-validation against CalculiX and scikit-fem, with measured values and what is not covered |
-| [`docs/benchmarks.md`](docs/benchmarks.md) | the benchmark cases in detail, the projection comparison, the two parts read from mesh files, the 356 475-DOF solid, convergence behaviour, runtime and solver scaling |
+| [`docs/configuration.md`](docs/configuration.md) | complete input-deck reference (structured and file meshes, mesh order, solvers and multigrid, buckling, projection and the robust formulation, overhang, MMA, stress and buckling constraints) and the command-line overrides |
+| [`docs/verification.md`](docs/verification.md) | every verification and validation check in 2-D and 3-D, the simplices and the quadratic tetrahedron, the mesh readers, the multigrid solver, the projection, buckling, the robust and overhang options, the MMA and constraint tests, the cross-validation against CalculiX and scikit-fem, with measured values and what is not covered |
+| [`docs/benchmarks.md`](docs/benchmarks.md) | the benchmark cases in detail, the projection comparison, the two parts read from mesh files, the 356 475-DOF solid, Tet4 against Tet10, the buckling-constrained column, the robust and overhang comparisons, convergence behaviour, runtime and solver scaling |
 | [`docs/aerospace_study.md`](docs/aerospace_study.md) | the parametric design study: mass-stiffness trade, load weighting, mesh dependence, penalty, filter radius, material stiffness |
 | [`docs/limitations.md`](docs/limitations.md) | assumptions and scope boundaries |
 | [`docs/results/README.md`](docs/results/README.md) | machine-generated result tables |
@@ -731,12 +882,15 @@ treating any number here as a design answer.
   mistake;
 * **verification** runs all the studies, plane and solid, and fails the build
   if any documented tolerance is missed, uploading the summary either way;
-* **benchmark** runs the static+modal analyses on all four element types
-  and both Gmsh parts, the scikit-fem half of the cross-validation on all
-  seven problems (which fails the build on a disagreement), reduced topology
-  optimisations covering OC, MMA with the stress constraint, the Hex8 path,
-  the projection with and without, the multigrid solver and the two parts
-  read from mesh files, small direct / multigrid / Jacobi scaling runs, and
+* **benchmark** runs the static, modal and buckling analyses on all five
+  element types and both Gmsh parts, the scikit-fem half of the
+  cross-validation on all eleven problems - displacements, and the buckling
+  load factors of the three columns - (which fails the build on a
+  disagreement), reduced topology optimisations covering OC, MMA with the
+  stress constraint, the Hex8 path, the projection with and without, the
+  multigrid solver, the two parts read from mesh files, the buckling
+  constraint, the robust formulation and the overhang filter with their
+  comparison runs, small direct / multigrid / Jacobi scaling runs, and
   regenerates the figures and tables - so a break in the whole pipeline, not
   just the library, is caught.
 

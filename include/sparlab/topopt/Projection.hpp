@@ -50,7 +50,11 @@
 /// and buckling the worst of the three - and the volume constraint on the
 /// dilated one, with its target rescaled every `robust_volume_interval`
 /// iterations to \f$V^*\,V_d/V_i\f$ so that the blueprint meets the volume
-/// fraction. A member thinner than the erosion vanishes from the eroded
+/// fraction. With OC, rescaling at every iteration locked the MBB beam into a
+/// period-2 cycle at beta = 32 that no stopping rule accepts; rescaling every
+/// 20 iterations left a cycle small enough for the objective-stall test
+/// (docs/benchmarks.md, section 13). A member thinner than the erosion
+/// vanishes from the eroded
 /// design, so the optimiser gains nothing from it: the blueprint's members
 /// and gaps keep a minimum size set by the filter radius and
 /// \f$\Delta\eta\f$, which LengthScale.hpp measures after the run. The
@@ -75,6 +79,10 @@ struct ProjectionOptions {
   bool robust = false;
   Scalar robust_delta = 0.1;       ///< Delta eta: thresholds eta +- robust_delta
   int robust_volume_interval = 1;  ///< iterations between dilated-target updates
+  /// Without the robust formulation: evaluate the final design's eroded and
+  /// dilated variants (thresholds eta +- robust_delta) once, to show how the
+  /// part would perform if it came out uniformly thinner or thicker.
+  bool erosion_check = false;
 
   Scalar eroded_eta() const { return eta + robust_delta; }
   Scalar dilated_eta() const { return eta - robust_delta; }

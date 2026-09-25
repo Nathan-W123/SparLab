@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 174 cases, 10 345 assertions
+make test              # the Catch2 suite: 201 cases, 11 966 assertions
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -41,6 +41,11 @@ All numbers in this document come from `results/verification/summary.json`,
 | Mesh convergence, Tri3 and Tet4 cantilevers | verification + validation | larger of the two finest-mesh errors vs Timoshenko | `1.66e-02` | `0.03` | PASS |
 | Multigrid CG vs Cholesky, Hex8 and Tet4 | verification | max relative displacement difference vs LDL^T; iteration growth under refinement at most `1.6x` | `4.37e-12` | `1e-8` | PASS |
 | Sensitivity through the Heaviside projection, Q4 and Tet4 | verification | worst over `beta = 2, 8, 32` of the best scaled-entry or directional error | `9.65e-08` | `1e-5` | PASS |
+| Quadratic patch test (pure bending), distorted Tet10 meshes | verification | max relative error in `u` and element stress | `1.22e-14` | `1e-9` | PASS |
+| Mesh convergence, Tet10 cantilever | verification + validation | relative tip-deflection error vs Timoshenko, finest mesh | `6.36e-06` | `0.01` | PASS |
+| Linear buckling of a clamped column, Q4 and Tet10 | verification + validation | larger finest-mesh error of `lambda_1` vs Euler-Engesser | `6.64e-03` | `0.01` | PASS |
+| Buckling-constraint sensitivity, Q4 and Hex8 | verification | worst case of the best-step max scaled error (KS aggregate and `lambda_1`) | `1.72e-06` | `1e-5` | PASS |
+| Sensitivity through the overhang filter, Q4 and Hex8 | verification | worst over `beta = 0, 4, 16` of the best scaled-entry or directional error | `2.81e-06` | `1e-5` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -51,6 +56,8 @@ Supporting measurements from the same runs:
 | Mass conservation, `sum(M)/dim` vs `rho V` | `<= 4.84e-14` relative (Q4), `<= 4.89e-14` (Hex8) |
 | Axial mode vs fixed-free rod theory | `4.02e-06` relative |
 | Elements excluded from the FD check at active bounds | 6 of 72 (Q4), 2 of 36 (Hex8) |
+| Tet10 cantilever error vs Timoshenko, coarsest to finest grid | `6.1e-04 -> 4.7e-05 -> 6.4e-06`; Hex8 3.0 % and Tet4 11 % on the finest grid |
+| Column `lambda_1` error vs Euler-Engesser, finest mesh | Q4 0.66 %, Tet10 0.29 % (Richardson limit of the Tet10 errors 0.21 %), Hex8 11.1 %, Tet4 39.7 % |
 
 And from the cross-validation against two independent codes (section 14):
 
@@ -72,6 +79,22 @@ And from the cross-validation against two independent codes (section 14):
 | Gmsh lug bracket, `nu = 0.33` | CalculiX, `CPS3` | `5.63e-04` / `1.14e-03` | - | INFO |
 | Gmsh engine mount, 39 936 Tet4, two load cases | scikit-fem, `ElementTetP1` | `1.48e-12` / `5.28e-13` | `1e-7` | PASS |
 | Gmsh engine mount, 39 936 Tet4, two load cases | CalculiX, `C3D4` | `1.71e-06` / `1.98e-06` | `1e-5` | PASS |
+| Gmsh engine mount, 13 918 curved Tet10, two load cases | scikit-fem, `ElementTetP2` on `MeshTet2` | `1.54e-12` / `1.12e-12` | `1e-7` | PASS |
+| Gmsh engine mount, 13 918 curved Tet10, two load cases | CalculiX, `C3D10` | `1.48e-06` / `1.65e-06` | `1e-5` | PASS |
+| Axial column: 640 Hex8 / 480 Tet4 / 480 Tet10 | scikit-fem | `2.63e-11` / `6.35e-12` / `5.77e-11` | `1e-7` | PASS |
+| Axial column: 640 Hex8 / 480 Tet4 / 480 Tet10 | CalculiX, `C3D8` / `C3D4` / `C3D10` | `1.05e-06` / `1.95e-06` / `2.46e-06` | `1e-5` | PASS |
+
+And the linear buckling load factors of the same three columns, four modes
+each (section 20):
+
+| Column | Reference | Max relative load-factor difference | Tolerance | Result |
+|--------|-----------|------------------------------------:|----------:|--------|
+| 640 Hex8 | scikit-fem: `K_G` of its own static solution, dense eigensolve | `7.22e-10` | `1e-7` | PASS |
+| 640 Hex8 | CalculiX `*BUCKLE`, `C3D8` | `8.26e-05` | `1e-4` | PASS |
+| 480 Tet4 | scikit-fem | `7.29e-11` | `1e-7` | PASS |
+| 480 Tet4 | CalculiX `*BUCKLE`, `C3D4` | `6.43e-06` | `1e-4` | PASS |
+| 480 Tet10 | scikit-fem | `8.41e-10` | `1e-7` | PASS |
+| 480 Tet10 | CalculiX `*BUCKLE`, `C3D10` | `6.70e-05` | `1e-4` | PASS |
 
 The two `INFO` rows are not a disagreement between codes but between
 idealisations: CalculiX expands its plane elements into a layer of solid
@@ -528,19 +551,28 @@ solved by two independent codes and the nodal displacements compared node by
 node (`python/scripts/cross_validate.py`, `make cross-validation`):
 
 * **scikit-fem 12.0.2** rebuilds the problem with `ElementQuad1`,
-  `ElementTriP1`, `ElementHex1` or `ElementTetP1`, the same Lame constants
-  (`lambda* = 2 lambda G/(lambda+2G)` for plane stress) and the same
-  integration order. It is the *same element formulation* in an independent
-  implementation, so the only expected difference is linear-solver round-off
-  - and that is what is measured, from `7.5e-14` to `1.5e-10` relative over
-  the seven problems;
-* **CalculiX 2.21** (`ccx`) runs the exported `.inp` decks. `C3D8` and `C3D4`
-  are the same trilinear hexahedron and linear tetrahedron as SparLab's; the
-  differences, `1.7e-06` to `3.6e-06`, are within the six-significant-digit
-  rounding of its `.frd` result file (floor `5e-6`), i.e. as close as the
-  file format allows one to see - including the 39 936-tetrahedron engine
-  mount read from a Gmsh file, which SparLab solves with the multigrid
-  solver.
+  `ElementTriP1`, `ElementHex1`, `ElementTetP1` or, for quadratic
+  tetrahedra, `ElementTetP2` on an isoparametric `MeshTet2` built from all
+  ten nodes of every cell (so curved cells stay curved), with the same Lame
+  constants (`lambda* = 2 lambda G/(lambda+2G)` for plane stress) and the
+  same integration order - the 4-point rule for the Tet10. It is the *same
+  element formulation* in an independent implementation, so the only
+  expected difference is linear-solver round-off - and that is what is
+  measured, from `7.5e-14` to `1.5e-10` relative over the eleven problems.
+  scikit-fem's Tet10 node order is checked against SparLab's cell by cell
+  before anything is solved;
+* **CalculiX 2.21** (`ccx`) runs the exported `.inp` decks. `C3D8`, `C3D4`
+  and `C3D10` are the same trilinear hexahedron and linear and quadratic
+  tetrahedra as SparLab's; the differences, `1.0e-06` to `3.6e-06`, are
+  within the six-significant-digit rounding of its `.frd` result file (floor
+  `5e-6`), i.e. as close as the file format allows one to see - including
+  the 39 936-tetrahedron engine mount read from a Gmsh file, which SparLab
+  solves with the multigrid solver, and the same part on 13 918 curved
+  quadratic tetrahedra. Exporting the quadratic part found a writer bug:
+  CalculiX reads at most 20 characters per field, and a round-off corner
+  load written with 17 digits (`1.4408030432795649e-18`) is 22; the writer
+  now trims digits until a field fits (a test checks every field of a Tet10
+  deck).
 * **CalculiX's plane elements are a different idealisation.** `CPS4` and
   `CPS3` are expanded internally into a layer of solid elements with the
   plane-stress condition imposed on it. That reproduces plane stress only
@@ -552,10 +584,34 @@ node (`python/scripts/cross_validate.py`, `make cross-validation`):
   informational (`passed: null`, `INFO` in the tables), and scikit-fem - the
   same plane element - is the verification for it.
 
-Tolerances are `1e-7` for scikit-fem and `1e-5` for CalculiX, both recorded
+**Buckling load factors.** Where the run computed them (the three column
+decks, `sparlab_solve` with a `buckling` section), the lowest four load
+factors are compared as well:
+
+* scikit-fem assembles the geometric stiffness `int sigma_ij phi_k,i
+  phi_k,j` of *its own* static solution at the same quadrature points and
+  solves the pencil `(-K_G) phi = mu K phi` densely - an independent
+  implementation of the same discrete problem. The load factors agree to
+  `7e-11` to `8e-10`;
+* CalculiX runs the exported deck as a `*BUCKLE` step (same mesh, supports
+  and nodal loads, which define the load pattern) and prints the factors to
+  seven digits. For `C3D4`, whose stress is constant in an element, it
+  agrees to `5e-7` to `6.4e-6`; for `C3D8` and `C3D10`, whose stress varies
+  within an element, its factors lie `3.6e-5` to `8.3e-5` *above* SparLab's
+  and scikit-fem's, consistently across modes, while its static solution of
+  the same deck agrees to `1e-6`. Averaging the stress over each element or
+  smoothing it through the nodes moves SparLab's value down, not up, so
+  neither explains the gap; which detail of CalculiX's stress stiffness does
+  has not been identified. The tolerance, `1e-4`, records the measured size;
+  it does not explain it, and the verification of the geometric stiffness
+  rests on the scikit-fem comparison and the Euler-Engesser study
+  (section 20).
+
+Tolerances are `1e-7` for scikit-fem (displacements and load factors) and
+`1e-5` for CalculiX displacements, `1e-4` for its load factors, all recorded
 in the summary with the `.frd` floor. The comparison exits non-zero if any
-judged pair exceeds its tolerance; CI runs the scikit-fem half on all seven
-problems on every push.
+judged pair exceeds its tolerance; CI runs the scikit-fem half, displacements
+and load factors, on every push.
 
 ## 15. The linear simplices (Tri3, Tet4)
 
@@ -675,8 +731,8 @@ iteration; the growth limit is judged over the multi-level meshes only
 `results/verification/multigrid_scaling.csv` and the larger comparison in
 `docs/benchmarks.md`: for one solve at these sizes Jacobi CG is about as fast
 as multigrid, because its cheap iterations cost about what the multigrid
-setup does; the direct solver is 45 times slower at 47 775 Hex8 DOFs
-(40.9 s against 0.90 s).
+setup does; the direct solver is 51 times slower at 47 775 Hex8 DOFs
+(42.2 s against 0.83 s).
 
 ## 18. The Heaviside projection
 
@@ -714,14 +770,158 @@ Judging each entry against
 error, and the directional derivative along the full gradient, which no
 entry can hide in, agrees to `1e-9`.
 
+## 19. The quadratic tetrahedron (Tet10)
+
+`tests/test_tet10.cpp` and `sparlab_verify --study patch-test-quadratic`,
+`--study mesh-convergence-tet10`.
+
+* **Element identities.** The ten shape functions partition unity, are 1 at
+  their own node and 0 at the other nine, and their natural gradients match
+  central differences; the collapsed Gauss rules integrate every monomial up
+  to their stated degree exactly on the reference tetrahedron; the element
+  volume from `det J` equals the corner tetrahedron's for a straight-sided
+  cell and the exact volume of a cell with a curved edge whose volume is
+  known in closed form. The stiffness matrix is symmetric, positive
+  semi-definite with exactly six zero eigenvalues (the rigid-body modes),
+  and the consistent mass sums to `rho V` per direction; the HRZ lumped mass
+  is positive with the corner / edge split `1/36`, `4/27`.
+* **Quadratic patch test** (the study). Pure bending `u_x = -k x z, u_y = nu
+  k y z, u_z = k/2 (x^2 + nu (z^2 - y^2))` prescribed on the boundary nodes of
+  a 3 x 3 x 3 box, interior nodes solved: on undistorted and randomly
+  distorted Tet10 meshes (edge nodes at the midpoints of the distorted
+  edges) the displacements and the linear element stresses are reproduced to
+  `1.22e-14` relative. The linear elements cannot pass it: their smallest
+  error on the distorted meshes is `1.9e-3` (Hex8) and `6.2e-3` (Tet4). On
+  the undistorted grid the linear elements do hit the nodal values exactly -
+  nodal superconvergence of a symmetric grid, not a passed patch test, as
+  the Tet4's element stresses (25 % off) show - so the study judges them on
+  the distorted meshes only.
+* **Mesh convergence** (the study). The solid cantilever of section 11 under
+  a consistent tip traction, on the same grids for all three elements: the
+  Tet10 error against Timoshenko falls from `6.1e-4` on the coarsest grid
+  (10 x 2 x 1 cells) to `6.4e-6`, where the Hex8 is at 3.0 % and the Tet4 at
+  11 % - the locking the quadratic element removes.
+* **Meshes and files.** Tet4 meshes elevate to Tet10 with shared edge nodes
+  and their named sets; boundary faces are keyed by their corners; C3D10
+  Abaqus/CalculiX decks and Gmsh type-11 cells (whose last two edge nodes
+  are swapped on reading) round-trip node for node; a cell folded by a
+  badly curved edge is refused with its minimum Jacobian named; the VTK
+  writer emits quadratic tetrahedra (type 24) and the STL writer splits
+  every 6-node face into four triangles.
+
+The engine mount on curved Tet10 cells is cross-validated in section 14,
+and the Tet4-against-Tet10 comparison on it is `docs/benchmarks.md`,
+section 11.
+
+## 20. Linear buckling
+
+`tests/test_buckling.cpp` and `sparlab_verify --study buckling-euler`,
+`--study sensitivity-buckling`.
+
+* **Geometric stiffness.** On distorted Q4, Tri3, Hex8, Tet4 and Tet10 cells the element
+  `K_G` is symmetric and annihilates rigid translations; a uniform uniaxial
+  stress `s0` contracted with a linear transverse mode gives `s0` times the
+  element measure; and `phi^T K_G(u) phi = g(phi)^T u`, the identity the
+  constraint's adjoint rests on.
+* **Eigensolver.** On a column with more than 400 free DOFs the subspace
+  iteration agrees with a dense generalised eigensolve of the same matrices
+  to `1e-8`; its modes satisfy `phi^T K phi = 1`, residuals below `1e-6` and
+  zeros at the supports; halving the load doubles the load factors; a warm
+  start from the converged subspace takes fewer iterations. A pure tension
+  is reported as having no positive load factor. Under a large tension plus
+  a small transverse load the pencil is crowded with negative
+  (reversed-load) eigenvalues: the solver switches to the spectral
+  transformation with a shift in `(0, lambda_1)` and still matches the
+  dense solve to `1e-7`. The Q4 column converges on Engesser's value from
+  above under refinement, its second mode near 9 times the first; on one
+  20 x 2 x 2 solid mesh the Tet10 is within 1 % while the Hex8 and the Tet4
+  lock (43 % and 155 % high), and the square section's two lowest modes are
+  equal on the Hex8 and Tet10 meshes.
+* **Euler-Engesser** (the study). A 1 m steel column, clamped, under a unit
+  axial tip traction, so `lambda_1` is the critical load in newtons, against
+  `P = pi^2 E I / (4 L^2)` with Engesser's shear correction:
+
+  | Element | Finest mesh | DOFs | Error of `lambda_1` |
+  |---------|-------------|-----:|--------------------:|
+  | Q4 (plane stress, 50 x 20 mm section) | 160 x 16 | 5 474 | 0.66 % |
+  | Hex8 (50 mm square section) | 40 x 4 x 4 | 3 075 | 11.1 % |
+  | Tet4 | 40 x 4 x 4 cells | 3 075 | 39.7 % |
+  | Tet10 | 40 x 4 x 4 cells | 19 683 | 0.29 % |
+
+  Every value converges from above, as a displacement-based element must.
+  The Tet10 meshes halve `h` exactly, and Richardson extrapolation of their
+  three errors (order 1.96) puts the limit at 0.21 %: the gap between the
+  solid model and the beam formula, not a discretisation error.
+* **Constraint gradient** (the study). The KS-aggregated constraint and
+  `lambda_1` against central differences through the density filter and the
+  projection, on a 16 x 8 Q4 mesh at `beta = 0` and 4 and a 5 x 2 x 2 Hex8
+  mesh: worst best-step scaled error `1.72e-6`. The test suite repeats the
+  check on about 25 variables per case, at load factors separated enough
+  for the simple-eigenvalue formula to hold.
+* **Cross-validation**: load factors against scikit-fem and CalculiX,
+  section 14.
+
+## 21. Robust formulation, overhang filter and the manufacturing checks
+
+`tests/test_manufacturing.cpp` and `sparlab_verify --study
+sensitivity-overhang`.
+
+* **Overhang filter.** The supports of an element are the three cells below
+  it (two at the domain edge) and none on the first layer; solid material
+  passes through up to the smooth minimum's offset of `sqrt(epsilon)/2`; a
+  bar floating over void is removed, with everything it would have carried;
+  a 45-degree staircase is self-supporting built +y and -y; passive elements
+  keep their density and support what rests on them. The filter's adjoint
+  recursion matches central differences on Q4 and Hex8 meshes in four build
+  directions (worst `1.04e-6`), and the study repeats it through the
+  projection at `beta = 0, 4, 16` (worst `2.81e-6`). Near-void densities (`1e-8`, `1e-300`, 0) keep the output and
+  the gradient finite: an MBB run met exactly this - a direct sum of
+  `1e-320` terms whose derivative overflowed - and the smooth maximum is now
+  evaluated relative to the largest support. Where nothing underflows, the
+  result equals the textbook formula to `1e-13`.
+* **Overhang check.** On the floating bar it counts the bar's six elements,
+  not the row resting on it, and reports the lowest unsupported layer; on
+  the staircase it counts none. The figure script's independent count must
+  equal the run's.
+* **Robust projection.** At every density the eroded design is below the
+  blueprint and the blueprint below the dilated design; the compliance
+  gradient of the eroded design and the volume gradient of the dilated one
+  match central differences through the overhang filter; a robust run
+  reports the eroded, blueprint and dilated designs with thinner parts
+  softer; the erosion check of a non-robust run evaluates the same three
+  thresholds without touching the returned design.
+* **Optimality criteria with a moving target.** A target outside the
+  move-limited box is an error when it is fixed and the nearest reachable
+  volume when it moves (the robust formulation's), reported as such.
+* **Length-scale check.** The opening removes a one-cell bar and keeps a
+  six-cell one; the closing fills a one-cell gap and leaves the open field;
+  the scan measures the bar and the gap at one cell. Opening also rounds
+  convex corners - three cells per corner of a square block at a two-cell
+  probe - which is why a probe passes while it removes at most a tolerance
+  of the volume (the test's square blocks measure one cell at a 1 %
+  tolerance and three cells at 5 %).
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
 
 * **no comparison against experiment**;
-* the cross-validation covers linear static displacements on seven
-  problems, two of them read from mesh files. Stresses, natural frequencies
-  and the optimised designs are not compared with another code;
+* the cross-validation covers linear static displacements on eleven
+  problems, three of them read from mesh files, and linear buckling load
+  factors on three. Stresses, natural frequencies and the optimised designs
+  are not compared with another code, and CalculiX's `*BUCKLE` factors for
+  `C3D8` and `C3D10` differ from SparLab's by up to `8.3e-5` for a reason
+  not identified (section 14);
+* linear buckling is bifurcation of the perfect geometry: no geometric
+  nonlinearity, imperfection sensitivity or post-buckling path is computed
+  or verified, and the plane models only buckle in their plane;
+* the overhang filter and check are verified for the 3- and 5-element
+  stencils of structured square and cubic grids; the robust formulation for
+  uniform erosion and dilation only. Neither is a process simulation;
+* on a curved Tet10 cell the 4-point stiffness rule is not exact (the
+  integrand is rational); the same rule in scikit-fem and CalculiX
+  reproduces SparLab's answer, which verifies the implementation, not the
+  rule;
 * plane strain is unit-tested but no verification *study* runs in it;
 * the sensitivity checks run on 72- and 36-element meshes (they need two
   extra solves per element per step); the gradients are not FD-verified at

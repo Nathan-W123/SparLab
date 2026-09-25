@@ -617,6 +617,23 @@ TEST_CASE("optimality criteria validates its inputs",
   REQUIRE_THROWS_AS(
       optimality_criteria_update(domain, x, nan_gradient, dv, volume_of, ok),
       SolverError);
+
+  // A target the move-limited box cannot reach (every variable at 0.5, move
+  // limit 0.2: volumes between 30 % and 70 % of the domain). Fixed, it is an
+  // error; a moving target (the robust formulation's) gets the nearest corner.
+  const Scalar domain_volume = domain.element_volumes().sum();
+  for (const Scalar fraction : {0.1, 0.9}) {
+    INFO("target fraction " << fraction);
+    const Scalar target = fraction * domain_volume;
+    REQUIRE_THROWS_AS(optimality_criteria_update(domain, x, dc, dv, volume_of, ok, target),
+                      ConvergenceError);
+    const OptimalityCriteriaStep step =
+        optimality_criteria_update(domain, x, dc, dv, volume_of, ok, target, true);
+    REQUIRE_FALSE(step.volume_converged);
+    const Scalar reached = fraction < 0.5 ? 0.3 : 0.7;
+    REQUIRE(step.achieved_volume == Approx(reached * domain_volume));
+    REQUIRE(step.max_change == Approx(ok.move_limit));
+  }
 }
 
 TEST_CASE("the objective-stall measure is the spread over its window", "[topopt]") {

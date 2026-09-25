@@ -636,11 +636,14 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
     ax.set_ylabel("compliance [J]")
     ax.set_ylim(bottom=0.0)
     st.limit_ticks(ax, x=8, y=5)
+    robust = bool(result.get("robust"))
     st.title(
         ax, f"{case.name}: optimisation history",
         f"stopped by '{result.get('stop_reason', 'unknown')}' after "
         f"{result.get('iterations', len(iterations))} iterations; final compliance "
-        f"{st.format_si(result.get('compliance_J', float('nan')))} J",
+        f"{st.format_si(result.get('compliance_J', float('nan')))} J"
+        + (" (the blueprint's; the curve is the eroded design's, the robust objective)"
+           if robust else ""),
     )
     # One series, so the title names it and no legend box is needed.
 
@@ -667,8 +670,13 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
         ax.set_ylabel("relative distance [-]")
         st.title(
             ax, f"volume constraint, target fraction {target:g}",
-            f"met to {abs(violation):.1e} relative at the returned iterate; an "
-            "explicit MMA constraint, so iterates may sit on either side of the target",
+            (f"blueprint volume against the target: {abs(violation):.1e} relative at "
+             "the returned iterate. The explicit MMA constraint holds the dilated "
+             "design to a target rescaled from the blueprint's, so the blueprint "
+             "lags by the rescaling" if robust else
+             f"met to {abs(violation):.1e} relative at the returned iterate; an "
+             "explicit MMA constraint, so iterates may sit on either side of the "
+             "target"),
         )
         st.legend(ax, loc="upper right")
     elif target:
@@ -694,6 +702,12 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
         ax.set_ylabel("relative distance [-]")
         subtitle = (f"met to {abs(violation):.1e} relative at the final iterate, "
                     "which is the multiplier bisection tolerance, not a drift")
+        if robust:
+            subtitle = (f"blueprint volume against the target: {abs(violation):.1e} "
+                        "relative at the final iterate. The bisection holds the dilated "
+                        "design to a target rescaled from the blueprint's every "
+                        f"{setup.get('projection', {}).get('robust_volume_interval', 1)} "
+                        "iteration(s), so the blueprint lags by the rescaling")
         off_target = magnitude > 10.0 * (tolerance or 1.0e-10)
         if off_target.any():
             subtitle += "; " + _off_target_reason(history, iterations, off_target)
@@ -795,8 +809,12 @@ def plot_convergence_history(case: CaseResults, path: str) -> str:
 
     if method == "mma":
         why = ("MMA minimises a convex approximation with moving asymptotes and a "
-               "move limit, and a stress constraint's p-norm scale changes between "
-               "iterations")
+               "move limit")
+        if stress_constrained:
+            why += ", and a stress constraint's p-norm scale changes between iterations"
+        if "min_load_factor[-]" in history:
+            why += (", and the buckling constraint trades compliance for stability "
+                    "whenever it is active")
     else:
         why = ("optimality criteria is a fixed-point update with a move limit, and "
                "each continuation step raises the SIMP penalty, which raises "

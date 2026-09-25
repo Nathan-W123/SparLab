@@ -24,6 +24,12 @@ repository root::
 
 ``--fine`` additionally writes ``engine_mount_3d_fine.inp`` at half the 3-D
 element size (several hundred thousand tetrahedra; not committed).
+``--tet10`` additionally writes ``engine_mount_3d_tet10.inp``: the same part
+meshed with quadratic tetrahedra (C3D10) at ``--size-tet10`` (6 mm), their
+edge nodes placed on the curved hole surfaces by Gmsh.
+
+``engine_mount_3d(path, size, order)`` is also what
+``tet10_part_study.py`` calls to mesh the part at several sizes and orders.
 """
 
 from __future__ import annotations
@@ -40,13 +46,14 @@ except ImportError:  # pragma: no cover - reported to the user
     sys.exit("make_meshes.py needs the gmsh Python package: pip install gmsh")
 
 
-def _options(size: float, dim: int) -> dict:
+def _options(size: float, dim: int, order: int = 1, curvature: float = 12) -> dict:
     opts = {
         "General.NumThreads": 1,
-        "Mesh.ElementOrder": 1,
+        "Mesh.ElementOrder": order,
         "Mesh.MeshSizeMin": 0.3 * size,
         "Mesh.MeshSizeMax": size,
-        "Mesh.MeshSizeFromCurvature": 12,
+        # Elements per full circle along curved edges: the size on the holes.
+        "Mesh.MeshSizeFromCurvature": curvature,
         "Mesh.Algorithm": 6,  # Frontal-Delaunay (2-D)
         "Mesh.Algorithm3D": 1,  # Delaunay (3-D)
         "Mesh.Optimize": 1,
@@ -56,6 +63,11 @@ def _options(size: float, dim: int) -> dict:
     }
     if dim == 2:
         opts["Mesh.MshFileVersion"] = 4.1
+    if order == 2:
+        # Edge nodes on the CAD geometry (curved cells along the holes); the
+        # high-order optimiser untangles any cell the curving inverts.
+        opts["Mesh.SecondOrderLinear"] = 0
+        opts["Mesh.HighOrderOptimize"] = 2
     return opts
 
 
@@ -118,7 +130,7 @@ def lug_bracket_2d(path: Path, size: float) -> dict:
     return _summary(path, opts, groups, 2)
 
 
-def engine_mount_3d(path: Path, size: float) -> dict:
+def engine_mount_3d(path: Path, size: float, order: int = 1, curvature: float = 12) -> dict:
     gmsh.model.add("engine_mount_3d")
     occ = gmsh.model.occ
     base = occ.addBox(0, 0, 0, 160, 60, 12)
@@ -174,7 +186,7 @@ def engine_mount_3d(path: Path, size: float) -> dict:
     for name, (dim, tags) in groups.items():
         gmsh.model.setPhysicalName(dim, gmsh.model.addPhysicalGroup(dim, tags), name)
 
-    opts = _options(size, 3)
+    opts = _options(size, 3, order, curvature)
     _apply(opts)
     gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)
     gmsh.model.mesh.generate(3)
@@ -211,6 +223,12 @@ def main() -> int:
     parser.add_argument("--size-3d", type=float, default=4.0, help="3-D element size [mm]")
     parser.add_argument("--fine", action="store_true",
                         help="also write engine_mount_3d_fine.inp at half the 3-D size")
+    parser.add_argument("--tet10", action="store_true",
+                        help="also write engine_mount_3d_tet10.inp (quadratic tetrahedra)")
+    parser.add_argument("--size-tet10", type=float, default=6.0,
+                        help="element size of the quadratic mesh [mm]")
+    parser.add_argument("--only-tet10", action="store_true",
+                        help="write only engine_mount_3d_tet10.inp")
     args = parser.parse_args()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -219,12 +237,17 @@ def main() -> int:
     gmsh.option.setNumber("General.Terminal", 0)
     records = []
     try:
-        records.append(lug_bracket_2d(out / "lug_bracket_2d.msh", args.size_2d))
-        gmsh.clear()
-        records.append(engine_mount_3d(out / "engine_mount_3d.inp", args.size_3d))
-        if args.fine:
+        if not args.only_tet10:
+            records.append(lug_bracket_2d(out / "lug_bracket_2d.msh", args.size_2d))
+            gmsh.clear()
+            records.append(engine_mount_3d(out / "engine_mount_3d.inp", args.size_3d))
+        if args.fine and not args.only_tet10:
             gmsh.clear()
             records.append(engine_mount_3d(out / "engine_mount_3d_fine.inp", 0.5 * args.size_3d))
+        if args.tet10 or args.only_tet10:
+            gmsh.clear()
+            records.append(engine_mount_3d(out / "engine_mount_3d_tet10.inp", args.size_tet10,
+                                           order=2))
     finally:
         gmsh.finalize()
     for rec in records:

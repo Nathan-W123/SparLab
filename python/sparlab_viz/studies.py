@@ -324,8 +324,9 @@ SOLVER_NAMES = {
     "amg": "multigrid-preconditioned CG",
     "jacobi": "Jacobi-preconditioned CG",
 }
-ELEMENT_MARKERS = {"Quad4": "o", "Tri3": "v", "Hex8": "s", "Tet4": "^"}
-ELEMENT_NAMES = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4"}
+ELEMENT_MARKERS = {"Quad4": "o", "Tri3": "v", "Hex8": "s", "Tet4": "^", "Tet10": "D"}
+ELEMENT_NAMES = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4",
+                 "Tet10": "Tet10"}
 ELEMENT_DOMAINS = {"Quad4": "Q4 plate", "Hex8": "Hex8 block", "Tet4": "Tet4 block"}
 
 #: sparlab_bench file stem per (element, solver), as scripts/run_scaling.sh
@@ -1546,4 +1547,198 @@ def plot_study_topologies(study_dir: str, table: pd.DataFrame, arm: str, path: s
     fig.suptitle(title_text, x=0.01, ha="left", fontsize=11, fontweight="bold",
                  color=st.INK_PRIMARY)
     st.annotate_note(fig, subtitle)
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Quadratic tetrahedra and linear buckling
+# ---------------------------------------------------------------------------
+#: Fixed categorical slot per element for the Tet10 and buckling figures, so
+#: an element keeps its colour from one figure to the next.
+ELEMENT_SLOTS = {"Hex8": 0, "Tet4": 1, "Tet10": 2, "Quad4": 3}
+
+
+def plot_tet10_convergence(directory: str, path: str) -> str:
+    """Cantilever tip error of Hex8, Tet4 and Tet10 on the same grids."""
+    table = load_csv(os.path.join(directory, "mesh_convergence_tet10.csv"))
+    summary = load_json(os.path.join(directory, "summary.json")).get(
+        "mesh_convergence_tet10", {})
+    fig, ax = st.figure(7.4, 4.4)
+    for element in ("Hex8", "Tet4", "Tet10"):
+        sub = table[table["element"] == element].sort_values("num_dofs")
+        if sub.empty:
+            continue
+        ax.plot(sub["num_dofs"], sub["rel_error_timoshenko[-]"],
+                ELEMENT_MARKERS[element] + "-", color=st.series_color(ELEMENT_SLOTS[element]),
+                label=element)
+        last = sub.iloc[-1]
+        ax.annotate(f"{100.0 * float(last['rel_error_timoshenko[-]']):.2g} %",
+                    (float(last["num_dofs"]), float(last["rel_error_timoshenko[-]"])),
+                    xytext=(6, 0), textcoords="offset points", va="center", fontsize=8,
+                    color=st.INK_SECONDARY)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("number of degrees of freedom")
+    ax.set_ylabel("relative error vs Timoshenko [-]")
+    st.title(ax, "Tip deflection error: linear against quadratic elements",
+             "solid cantilever 1 x 0.1 x 0.05 m, nu = 0, clamped root, tip traction with "
+             "a 1 kN resultant; grids 10 x 2 x 1, 20 x 4 x 2, 40 x 8 x 4, each cell one "
+             "Hex8 or six Kuhn tetrahedra")
+    st.legend(ax, loc="lower left")
+    st.annotate_note(
+        fig,
+        "The quadratic tetrahedron contains the linear-stress field of pure bending, so "
+        "it does not lock: on the coarsest grid it is already within "
+        f"{100.0 * float(summary.get('Tet10', {}).get('records', [{}])[0].get('relative_error_vs_timoshenko', float('nan'))):.2g} % "
+        "of beam theory. The error is measured against Timoshenko beam theory, so it "
+        "also holds the modelling gap between a beam and solid elasticity.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_buckling_verification(directory: str, path: str) -> str:
+    """Critical load of a clamped column against Euler-Engesser."""
+    table = load_csv(os.path.join(directory, "buckling_euler.csv"))
+    fig, ax = st.figure(7.4, 4.4)
+    for element in ("Quad4", "Hex8", "Tet4", "Tet10"):
+        sub = table[table["element"] == element].sort_values("num_dofs")
+        if sub.empty:
+            continue
+        label = "Q4 (plane stress)" if element == "Quad4" else element
+        ax.plot(sub["num_dofs"], sub["rel_error_engesser[-]"],
+                ELEMENT_MARKERS[element] + "-", color=st.series_color(ELEMENT_SLOTS[element]),
+                label=label)
+        last = sub.iloc[-1]
+        ax.annotate(f"{100.0 * float(last['rel_error_engesser[-]']):.2g} %",
+                    (float(last["num_dofs"]), float(last["rel_error_engesser[-]"])),
+                    xytext=(6, 0), textcoords="offset points", va="center", fontsize=8,
+                    color=st.INK_SECONDARY)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("number of degrees of freedom")
+    ax.set_ylabel("(lambda_1 - P_Engesser) / P_Engesser [-]")
+    # The Tet10 meshes halve h exactly, so Richardson extrapolation of the
+    # three errors separates the discretisation error from the modelling gap.
+    gap_text = ""
+    tet10 = table[table["element"] == "Tet10"].sort_values("num_dofs")
+    if len(tet10) >= 3:
+        e1, e2, e3 = tet10["rel_error_engesser[-]"].to_numpy()[-3:]
+        if (e1 - e2) * (e2 - e3) > 0 and e2 != e3:
+            ratio = (e1 - e2) / (e2 - e3)
+            if ratio > 1.0:
+                order = np.log2(ratio)
+                limit = e3 - (e2 - e3) / (ratio - 1.0)
+                gap_text = (f" Richardson extrapolation of the Tet10 errors (order "
+                            f"{order:.2f} in h) puts their limit at {100.0 * limit:.2f} %: the "
+                            "gap between the solid model and the beam formula, not a "
+                            "discretisation error.")
+    st.title(ax, "Linear buckling of a clamped column: first load factor vs mesh",
+             "1 m steel column, 50 mm square section (3-D) or 50 x 20 mm (plane stress), "
+             "unit axial tip traction, so lambda_1 is the critical load in newtons; "
+             "reference Euler P = pi^2 E I / (4 L^2) with Engesser's shear correction")
+    st.legend(ax, loc="lower left")
+    st.annotate_note(
+        fig,
+        "Every point lies above the reference: a displacement-based element is too "
+        "stiff, and its buckling load converges from above. The linear Hex8 and Tet4 "
+        "lock in bending and converge slowly; the Q4 and the quadratic Tet10 reach "
+        "the 1 % tolerance of sparlab_verify's buckling-euler study." + gap_text,
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_tet10_part_study(directory: str, path: str) -> str:
+    """Compliance of the engine mount against DOFs, per element and geometry."""
+    table = load_csv(os.path.join(directory, "tet10_part_study.csv"))
+    summary = load_json(os.path.join(directory, "summary.json"))
+    variants = [("Tet4", "^", 1), ("Tet10 (straight)", "d", 2), ("Tet10 (curved)", "D", 3)]
+    fig, axes = st.figure(7.4, 6.6, nrows=2, ncols=1, sharex=True)
+    for ax, case, label in zip(axes, ("vertical", "lateral"),
+                               ("vertical pin load, 12 kN", "lateral pin load, 5 kN")):
+        key = f"compliance_{case}_J"
+        for variant, marker, slot in variants:
+            sub = table[table["variant"] == variant].sort_values("num_dofs")
+            if sub.empty:
+                continue
+            ax.plot(sub["num_dofs"], sub[key], marker + "-", color=st.series_color(slot - 1),
+                    label=variant)
+            for _, row in sub.iterrows():
+                ax.annotate(f"{row['size_mm']:g}", (row["num_dofs"], row[key]),
+                            xytext=(0, 6 if variant == "Tet10 (curved)" else -11),
+                            textcoords="offset points", ha="center", fontsize=7,
+                            color=st.INK_MUTED)
+        ref = summary["references"][case]
+        ax.axhline(ref["finest_tet10_curved_J"], color=st.INK_MUTED, linewidth=0.9,
+                   linestyle="--")
+        ax.set_xscale("log")
+        ax.set_ylabel("compliance f.u [J]")
+        st.title(ax, f"Engine mount, {label}",
+                 f"dashed: the finest curved Tet10 run ({ref['finest_size_mm']:g} mm), itself "
+                 "a lower bound; numbers at the points are the element size in mm")
+        st.legend(ax, loc="lower right")
+    axes[-1].set_xlabel("number of degrees of freedom")
+    st.annotate_note(
+        fig,
+        "Each mesh comes from the same CAD model through Gmsh with the curvature "
+        "refinement scaled with the element size. A displacement-based solution is "
+        "too stiff, so its compliance lies below the exact value and rises towards it. "
+        "The straight-sided Tet10 meshes are the linear meshes with an edge node at "
+        "every edge midpoint: the same faceted holes as the Tet4 mesh, a slightly "
+        "different part from the curved one.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_buckling_cross_validation(directory: str, path: str) -> str:
+    """Buckling load factors against scikit-fem and CalculiX *BUCKLE."""
+    summary = load_json(os.path.join(directory, "summary.json"))
+    codes = [("scikit-fem buckling", "scikit-fem (same K_G, dense eigensolve)"),
+             ("calculix buckling", "CalculiX *BUCKLE")]
+    rows = []
+    for case in summary.get("cases", []):
+        for load_case in case.get("load_cases", []):
+            if any(code in load_case["codes"] for code, _ in codes):
+                rows.append((case["case"], case.get("element_type", ""),
+                             load_case["load_case"], load_case["codes"]))
+    if not rows:
+        raise ValueError("cross-validation summary has no buckling comparisons")
+    fig, ax = st.figure(7.4, 0.5 * len(rows) + 3.3)
+    y = np.arange(len(rows))[::-1]
+    for slot, (code, label) in enumerate(codes):
+        xs, ys = [], []
+        for position, (*_rest, results) in zip(y, rows):
+            entry = results.get(code)
+            if entry is not None:
+                xs.append(entry["max_rel_diff"])
+                ys.append(position)
+        if xs:
+            ax.plot(xs, ys, "o", color=st.series_color(slot), markersize=7, label=label)
+    tolerances = summary.get("tolerances", {})
+    for slot, key, label in ((0, "skfem_buckling", "scikit-fem tolerance"),
+                             (1, "calculix_buckling", "CalculiX tolerance")):
+        value = tolerances.get(key)
+        if value:
+            ax.axvline(value, color=st.series_color(slot), linewidth=1.0, linestyle="--",
+                       label=f"{label} {value:g}")
+    ax.set_xscale("log")
+    ax.set_xlim(1.0e-12, 1.0e-2)
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{c} ({e}), '{l}'" for c, e, l, _r in rows], fontsize=8.0)
+    ax.set_ylim(-0.7, len(rows) - 0.3)
+    ax.set_xlabel("max over the reported modes of |lambda_ref - lambda| / lambda [-]")
+    st.title(ax, "Cross-validation: linear buckling load factors",
+             "scikit-fem assembles the geometric stiffness from its own static solution at "
+             "the same quadrature points (the same discrete problem); CalculiX runs "
+             "*BUCKLE on the exported deck with its own stress-stiffness evaluation")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, fontsize=8,
+              frameon=False)
+    st.annotate_note(
+        fig,
+        "Where an element's stress varies inside it (C3D8, C3D10), CalculiX's factors "
+        "lie a few 1e-5 above SparLab's and scikit-fem's, which agree to about 1e-9; "
+        "for C3D4, whose stress is constant in an element, the gap is several times "
+        "smaller. Which detail of CalculiX's stress stiffness accounts for it has not "
+        "been identified; the tolerance records the measured size, it does not "
+        "explain it.",
+    )
     return st.save_figure(fig, path)

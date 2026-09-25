@@ -11,15 +11,27 @@ plane strain, and three-dimensional solids on hexahedral or tetrahedral
 meshes. There are no
 plate, shell or beam elements, so a thin-walled part is either a plane
 load-path study or a solid mesh with enough elements through the wall to
-resolve its bending - which the solid element needs several of (below). No
-model here sees buckling: plate buckling in particular can govern a thin
-lightened web, and neither the plane nor the solid linear analysis can see
-it.
+resolve its bending - which the solid element needs several of (below).
+Buckling is seen only as far as the continuum model allows: the linear
+buckling analysis finds the in-plane buckling of a plane model's struts and
+every mode of a solid mesh fine enough to bend, but a plane model cannot
+buckle out of its plane, so plate buckling of a thin lightened web - which
+can govern it - stays invisible to the 2-D decks.
 
 **Linear, small strain, small displacement.** One factorisation, one solve, no
 load stepping. Geometric non-linearity, plasticity, contact, creep and thermal
 strain are all absent. The deformation figures are exaggerated by a stated
 factor purely for visibility; the analysis behind them is linear.
+
+**Buckling is linear bifurcation.** The buckling check is the eigenvalue
+problem `(K + lambda K_G(u)) phi = 0` of the linear static state: the
+bifurcation load of the perfect geometry, which is an upper bound on the
+collapse load of a real part with its imperfections, residual stresses and
+plasticity. No imperfection sensitivity, no post-buckling path, no follower
+loads, no knock-down factor. A load factor of 6 is not a safety factor of 6
+against collapse; for a shell-like or imperfection-sensitive structure the
+difference can be large, and a non-linear analysis would be needed to know
+it.
 
 **Static and undamped free vibration only.** No transient response, no damping,
 no forced response, no fatigue. A natural frequency here is the undamped
@@ -30,24 +42,34 @@ forces. Self-weight and inertia relief are not implemented; the wing-rib deck's
 "fuel inertia" case is a *representative edge pressure*, not a body-force
 calculation.
 
-**Linear elements only.** The four-node quadrilateral, the three-node
-triangle, the eight-node hexahedron and the four-node tetrahedron. All four
-are stiff in bending and need several elements through a bending depth; the
-constant-strain simplices are much stiffer than the bilinear and trilinear
-elements. The mesh-convergence studies quantify it: the coarsest solid
-cantilever is 16 % too stiff on Hex8 and 50 % on Tet4, and on the same nodes
-the Tet4 error is about five times the Hex8 error. A tetrahedral mesh of a
-bending-dominated part therefore needs to be fine, and its compliance reads
-low until it is. Quadratic elements (Q8, Tri6, Hex20, Tet10), enhanced
-assumed strain or B-bar would do better per DOF; `docs/architecture.md` says
-what adding one involves.
+**Linear elements, and one quadratic element.** The four-node
+quadrilateral, the three-node triangle, the eight-node hexahedron and the
+four-node tetrahedron are stiff in bending and need several elements through
+a bending depth; the constant-strain simplices are much stiffer than the
+bilinear and trilinear elements. The mesh-convergence studies quantify it:
+the coarsest solid cantilever is 16 % too stiff on Hex8 and 50 % on Tet4. The
+ten-node tetrahedron removes most of this for solids: on a 10 x 2 x 1-cell
+cantilever, where the Hex8 is 33 % and the Tet4 66 % too stiff, it is within
+0.06 % of beam theory, and on the engine mount meshed from CAD the Tet4 compliance
+is 19 % below the finest Tet10 run on the benchmark's own mesh
+(`docs/benchmarks.md`, section 11). There is no quadratic plane element
+(Q8, Tri6) and no Hex20, so a 2-D model or a hexahedral mesh still needs
+refinement to bend. On a Tet10 cell with curved edges the 4-point stiffness
+rule is not exact - the integrand is rational - as in every code that uses
+C3D10; the study's curved and straight-sided meshes of the same cells agree
+to 0.13 % at 3 mm. Enhanced assumed strain or B-bar would help the linear
+elements per DOF; `docs/architecture.md` says what adding an element
+involves.
 
-**Meshes: one linear cell type, straight-sided.** The structured generators
-make boxes of quadrilaterals, triangles, hexahedra or tetrahedra. Real
-geometry comes in through Gmsh (MSH 2.2 / 4.1, ASCII) and Abaqus / CalculiX
-`.inp` files, with these limits: one cell type per mesh (a quad-dominant or
-a hex-dominant mesh with prisms is refused, with the re-export that fixes
-it); linear cells only, so a curved boundary is a polygon of cell edges;
+**Meshes: one cell type per mesh.** The structured generators make boxes of
+quadrilaterals, triangles, hexahedra or tetrahedra, linear or (tetrahedra,
+`mesh.order: 2`) quadratic. Real geometry comes in through Gmsh (MSH 2.2 /
+4.1, ASCII) and Abaqus / CalculiX `.inp` files, with these limits: one cell
+type per mesh (a quad-dominant or a hex-dominant mesh with prisms is
+refused, with the re-export that fixes it); the only second-order cell is
+the ten-node tetrahedron (C3D10, Gmsh type 11), whose edge nodes may follow
+a curved surface - every other boundary is a polygon of cell edges, and
+elevating a Tet4 mesh keeps its facets;
 Abaqus parts must be flat (no instances with translations, one part);
 supports, loads and materials in the file are ignored in favour of the deck;
 and SparLab does not mesh - the two committed parts come from
@@ -114,12 +136,19 @@ disconnected groups they formed and how much material was discarded as islands.
 The modal comparison of an "optimised structure" is run on that explicitly
 extracted sub-mesh.
 
-**Nothing here is a manufacturability claim.** The filter radius imposes a
-minimum *length scale*, which is not the same as a manufacturing constraint. The
-code models no draw direction, no milling-tool access, no minimum wall
-thickness in the third dimension, no overhang angle for additive manufacture, no
-support-structure cost, no fillet radii, and no machining setup. The designs
-should be read as load-path guidance for a designer, not as parts.
+**Manufacturability: two rules modelled, nothing more.** The overhang
+filter models one additive-manufacturing rule - no material without support
+directly or diagonally below it, a 45-degree limit on square or cubic cells -
+and the robust formulation models one uniform manufacturing error, the whole
+part coming out thinner or thicker by the erosion. A design that passes the
+overhang check is printable *under that rule*: support removal, residual
+stress and distortion, surface finish, anisotropic material, a minimum wall
+and the build plate's own limits are not modelled. Nothing models a draw
+direction, milling-tool access, fillet radii or a machining setup. The
+filter radius and the robust formulation impose a minimum *length scale*,
+which is a geometric property, not a process. Without these options the
+designs are load-path guidance for a designer, not parts; with them they
+are still not certified parts.
 
 **The optimum is local.** SIMP with `p > 1` is non-convex; a different starting
 design, penalty schedule or mesh can converge to a different local optimum. The
@@ -127,29 +156,76 @@ design study shows exactly that: the mesh-refinement arm with the filter radius
 fixed in cells produces visibly different topologies at different resolutions.
 Continuation reduces the dependence but does not remove it.
 
-**The projection sharpens the design; it does not give it a length scale.**
-A density filter alone leaves an intermediate band about one radius wide at
-every material boundary (the MBB benchmark settles at a grey level of 0.28,
-the solid bracket at 0.34). The Heaviside projection removes most of it - the
-projected solid bracket ends at 0.013 - and with it the gap between the
-objective and the thresholded structure. What it does not do is guarantee a
-minimum member size: a single projection at `eta = 0.5` lets features
-thinner than the filter radius survive, and the robust formulation that does
-guarantee one (eroded, intermediate and dilated designs optimised together)
-is not implemented. At a large `beta` the optimisation also becomes
+**The projection sharpens the design; alone it does not give it a length
+scale.** A density filter alone leaves an intermediate band about one radius
+wide at every material boundary (the MBB benchmark settles at a grey level
+of 0.28, the solid bracket at 0.34). The Heaviside projection removes most
+of it - the projected solid bracket ends at 0.013 - and with it the gap
+between the objective and the thresholded structure. A single projection at
+`eta = 0.5` does not secure a minimum member size: features thinner than the
+filter radius survive, and on the projected MBB beam two diagonals vanish
+under a 0.1 erosion and cost 22 % of the stiffness. The robust formulation
+(`topology.projection.robust`) is the tool for one, and the length-scale
+check measures what a design delivers. The size follows from the filter
+radius and `robust_delta`; it is not a stated number the solver enforces.
+At `robust_delta = 0.1` the MBB's smallest member grew only from 3 to 4
+cells, and at 0.05 the robust column still has members about one cell
+thick. At a large `beta` the optimisation also becomes
 strongly non-convex: single elements at the solid-void interface flip by the
 full move limit while the compliance stands still, which is why the
 projected decks stop on the objective-stall criterion rather than on the
 design change. The `beta` schedule is a further setting the result depends
 on, and it is recorded with every run.
 
-**Two constraint types.** Optimality criteria handles the volume constraint
-alone; MMA handles the volume plus one aggregated stress constraint per load
-case. Per-mode frequency constraints, displacement bounds, multiple volume
-budgets on separate regions and manufacturing constraints are not written -
-`docs/architecture.md` says what each would take, and `StressConstraint` is
-the template - and the OC path remains the default because it converges with
-no tuning where MMA needs a move limit chosen per problem.
+**Three constraint types.** Optimality criteria handles the volume
+constraint alone (of the dilated design in a robust run); MMA handles the
+volume plus one aggregated stress constraint and one aggregated buckling
+constraint per load case. Per-mode frequency constraints, displacement
+bounds and multiple volume budgets on separate regions are not written -
+`docs/architecture.md` says what each would take, and `StressConstraint` and
+`BucklingConstraint` are the templates - and the OC path remains the default
+because it converges with no tuning where MMA needs a move limit chosen per
+problem.
+
+**The buckling constraint acts on the SIMP model, not on the part.** The
+constrained load factors are those of the density field, in which
+intermediate densities keep `rho^p` of their stress stiffness. The exported
+part - thresholded, full material, grey members gone - can buckle earlier:
+on the column benchmark the constraint holds `lambda >= 6` on the SIMP model
+while the part buckles at 3.65 with a plain projection and 5.81 with the
+robust formulation. The buckling check of the exported part is therefore
+the number to judge, and a design should be re-run with a margin when it
+falls short. The KS aggregate overestimates the largest ratio by at most
+`ln(m)/P` and is conservative; the sensitivity formula holds for simple
+eigenvalues, and at a repeated eigenvalue only the aggregate stays
+differentiable. Void material can still produce pseudo modes; the
+energy-fraction diagnostic names them but does not remove them. The cost is
+one eigensolve and one adjoint per aggregated mode every iteration - 242
+linear solves per iteration on the column against one without the
+constraint - and the benchmark needed a move limit of 0.05 and 3000 Newton
+iterations for MMA's subproblem.
+
+**The overhang filter needs a structured grid, and OC struggles with it.**
+The supports of an element are grid cells of the layer below, so the filter
+and its check run only on `structured_quad` and `structured_hex` meshes,
+with the build direction along a grid axis; the overhang angle is
+`atan(layer thickness / cell width)`, 45 degrees on square cells. A
+45-degree staircase touches its supports along an edge, which the
+interpretation's face connectivity does not count as a joint, so a filtered
+3-D design can leave small islands (0.7 % of the bracket's material). With
+OC, the filtered MBB and bracket runs locked into period-2 cycles at the
+final `beta`; both overhang decks use MMA.
+
+**The robust formulation needs care with OC.** Each iteration projects the
+filtered field twice more, for the dilated and the blueprint designs,
+without an extra solve: only the eroded design is analysed. The dilated
+design's volume target is rescaled from the blueprint's, so the blueprint
+meets the volume fraction only as closely as the ratio of the two volumes
+holds between rescalings. On the robust MBB, which rescales every 20
+iterations, interface elements flip at `beta = 32`, the blueprint's fraction
+alternates between about 0.498 and 0.502, and the returned design is 0.41 %
+below it. Rescaled at every iteration, OC locked into a period-2 cycle at
+`beta = 32` that met no stopping criterion.
 
 **The stress constraint bounds a relaxed aggregate, not a part's stress.**
 The constrained quantity is `rho^q sigma_vm` at each element centre,
@@ -273,23 +349,28 @@ values, which are what the CSV tables and the reported peaks use, are unaffected
 ## Verification and validation
 
 **Verification is strong; validation is narrow.** The implementation is
-verified against exact answers on all four element types. The patch tests
-pass to 4e-15 (Q4), 2e-15 (Hex8) and 9e-15 (Tri3 and Tet4). The sparse and
+verified against exact answers on all five element types. The patch tests
+pass to 4e-15 (Q4), 2e-15 (Hex8) and 9e-15 (Tri3 and Tet4), and the Tet10
+passes the quadratic (pure-bending) patch test to 1.2e-14. The sparse and
 dense solvers agree to 9e-12, and multigrid CG agrees with Cholesky to
 4e-12. The compliance gradient matches central differences to 2e-8 on Q4
-and Hex8, and to 1e-7 through the Heaviside projection on Q4 and Tet4.
-Mass is conserved to 5e-14. Linear static displacements are
-cross-validated node by node against two independent codes on seven
-problems with twelve load cases, covering all four element types and both
-mesh-file formats. scikit-fem agrees to solver round-off, 1.5e-10 or
-better. CalculiX agrees to the rounding of its own result file, 4.3e-6 or
-better, wherever the two codes solve the same discrete problem; its
-plane-stress comparisons at `nu != 0` are recorded but not judged.
-Validation against independent theory covers exactly three references:
-Euler-Bernoulli and Timoshenko cantilever deflection, Euler-Bernoulli
-bending frequencies, and fixed-free rod axial frequencies. Stresses,
-frequencies and optimised designs are not compared with another code, and
-there is **no comparison against experiment**.
+and Hex8, and to 1e-7 through the Heaviside projection on Q4 and Tet4; the
+buckling constraint's gradient to 1.7e-6 and the overhang filter's to
+2.8e-6. Mass is conserved to 5e-14. Linear static displacements are
+cross-validated node by node against two independent codes on eleven
+problems with seventeen load cases, covering all five element types and
+both mesh-file formats, and buckling load factors on three columns.
+scikit-fem agrees to solver round-off, 1.5e-10 or better, displacements and
+load factors alike. CalculiX's displacements agree to the rounding of its
+own result file, 4.3e-6 or better, wherever the two codes solve the same
+discrete problem; its plane-stress comparisons at `nu != 0` are recorded but
+not judged; its buckling factors differ by up to 8.3e-5 for a reason not
+identified. Validation against independent theory covers exactly four
+references: Euler-Bernoulli and Timoshenko cantilever deflection,
+Euler-Bernoulli bending frequencies, fixed-free rod axial frequencies, and
+the Euler-Engesser buckling load of a clamped column. Stresses, frequencies
+and optimised designs are not compared with another code, and there is
+**no comparison against experiment**.
 
 **The MBB compliance is not compared to a published number.** SparLab reports
 what it computes (218.8 J with the density filter, 203.2 J with the sensitivity

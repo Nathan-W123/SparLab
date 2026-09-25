@@ -271,6 +271,51 @@ constant-strain state exactly (the patch test) but converge on a bending
 problem more slowly per unknown than the bilinear and trilinear elements,
 which the simplex mesh-convergence study measures (`docs/verification.md`).
 
+### The quadratic tetrahedron
+
+A part meshed from CAD is almost always a tetrahedral mesh, and on linear
+tetrahedra it reads too stiff: the Tet4 above cannot bend. The ten-node
+tetrahedron (`elements/Tet10.cpp`) adds a node on every edge. With the
+barycentric coordinates `L_0 = 1 - xi - eta - zeta, L_1 = xi, L_2 = eta,
+L_3 = zeta` of the reference cell,
+
+```
+  corners 0..3:     N_i  = L_i (2 L_i - 1)
+  edge nodes 4..9:  N_ab = 4 L_a L_b     on the edges 0-1, 1-2, 2-0, 0-3, 1-3, 2-3
+```
+
+which is the VTK, Abaqus/CalculiX (C3D10) and scikit-fem node order; Gmsh
+numbers the last two edge nodes the other way round and its reader swaps
+them. The map `x(xi) = sum_a N_a x_a` is isoparametric, so an edge node may
+sit off the straight edge on a curved CAD surface, as a Gmsh
+`Mesh.ElementOrder = 2` mesh places it. On a straight-sided cell `grad N`
+is linear, so the strain varies linearly and any quadratic displacement
+field - pure bending among them - is reproduced exactly (the quadratic
+patch test, `docs/verification.md`).
+
+| Integral | Rule | Exact for |
+|----------|------|-----------|
+| stiffness `int B^T D B` and geometric stiffness | symmetric 4-point rule (degree 2), the rule of C3D10 | straight-sided cells |
+| consistent mass `int rho N^T N` | 64-point collapsed Gauss (degree 5) | straight-sided cells |
+| volume `int det J` | 27-point collapsed Gauss | any cell: `det J` is a cubic |
+| face traction on a 6-node face | 16-point collapsed Gauss on `N^T t |x_,r x x_,s|` | flat faces: `S t / 3` on each edge node, nothing on the corners |
+
+On a curved cell `B^T D B` is rational and the 4-point rule approximates it,
+as every code using C3D10 does. The consistent mass matrix of the quadratic
+tetrahedron has negative row sums at the corners, so a row-sum lumped mass
+would be indefinite; lumping uses Hinton-Rock-Zienkiewicz scaling of the
+diagonal instead, which on a straight cell gives each corner `m/36` and each
+edge node `4m/27`. Element quality is the Tet4 measure of the corner
+tetrahedron times the Jacobian ratio `min det J / max det J` over the ten
+nodes (1 for a straight cell, falling as curved edges distort it); a cell
+whose map folds at an integration point raises `MeshError`.
+
+Two ways to a Tet10 mesh: read one (Abaqus/CalculiX `C3D10`, Gmsh element
+type 11), or set `mesh.order: 2` on a tetrahedral deck, which elevates the
+Tet4 mesh by putting a node at every edge midpoint (straight-sided cells;
+the faceted geometry of the linear mesh stays). Boundary faces keep their
+corner nodes as the key, so node sets and faces carry over.
+
 ## 3. Assembly
 
 `fem/Assembler.cpp` builds a triplet list and compresses it to CSC:
@@ -526,6 +571,66 @@ computed frequencies must sit slightly *below* theory, and the gap must grow
 with mode number. Both behaviours are asserted in the test suite, which is
 stronger than asserting agreement.
 
+## 7b. Linear buckling
+
+`fem/Buckling.cpp`. A load case `f` gives the linear displacement `K u = f`
+and with it the stress `sigma = D B u`. Linear (bifurcation) buckling asks
+for which multiple `lambda` of that stress state the stiffness loses
+definiteness:
+
+```
+  (K_ff + lambda K_G,ff(u)) phi = 0 ,
+  K_G,e(u_e) = int_e t G^T S(sigma) G dOmega ,   S = blockdiag(sigma, ..., sigma)
+```
+
+with `G` the matrix of shape-function gradients (so that `phi^T K_G phi =
+int sigma_ij phi_k,i phi_k,j`), integrated with the element's stiffness
+rule. The structure is predicted to buckle at the load `lambda f`: `lambda
+> 1` is a safety factor on the load case, `lambda < 1` means it buckles
+before reaching it. A load that only stretches the structure has no
+positive `lambda` and is reported so (the reversed load may buckle it at a
+negative `lambda`). Assumptions: linear elasticity up to buckling, the
+pre-buckling state is the linear solution scaled, loads keep their
+direction, and the geometry is perfect - `lambda` is the bifurcation load
+of the ideal structure, an upper bound on the collapse load of a real one.
+
+**Algorithm.** `mu = 1/lambda` solves the symmetric-definite pencil
+`(-K_G) phi = mu K phi`, and the smallest positive load factors are its
+largest eigenvalues. Subspace iteration on `X <- K^-1 (-K_G) X` with a
+Rayleigh-Ritz projection onto `q = min(n, max(2m, m + 8))` vectors reuses
+the factorisation of `K_ff` the static solve made. `-K_G` is indefinite,
+so load factors of the reversed load converge alongside; when more of them
+than the spare slots outrank the wanted ones - a structure mostly in
+tension, or SIMP void in tension - the iteration switches to the buckling
+spectral transformation (Grimes, Lewis and Simon 1994)
+
+```
+  X <- (K + sigma K_G)^-1 K X ,     nu = lambda / (lambda - sigma)
+```
+
+which maps every negative `lambda` into `(0, 1)` and the wanted ones above
+1. For `0 < sigma < lambda_1` the shifted matrix is positive definite, and
+by Sylvester's law of inertia the negative pivots of its `LDL^T`
+factorisation count the load factors below `sigma`; that count places
+`sigma`. Convergence needs both the relative change of the requested load
+factors and every residual `||K phi + lambda K_G phi|| / ||K phi||` below
+their tolerances (`1e-8`, `1e-6` by default). Systems with at most 400 free
+DOFs use a dense generalised eigensolve. Modes are normalised to `phi^T K
+phi = 1` and each carries the fraction of its strain energy in elements at
+density `>= 0.5` (1 for a plain analysis), so a mode localised in void
+material is visible.
+
+Where it runs: `sparlab_solve --buckling n` (or a `buckling` deck section)
+checks the analysed model; in a topology run the same section checks the
+full solid domain and the exported part - the density thresholded at 0.5,
+largest face-connected group, full material - after the optimisation. The
+buckling constraint on the SIMP design is in `docs/topology_optimization.md`
+(section 5d).
+
+**Plane models.** A plane-stress model buckles only in its plane: a strut
+of a 2-D design can buckle sideways within the plane, but a thin plate
+cannot buckle out of it, which needs shell or solid elements.
+
 ## 8. Topology optimisation
 
 See `docs/topology_optimization.md` for the SIMP interpolation, the filters, the
@@ -536,10 +641,15 @@ aggregated stress constraint with its adjoint.
 
 The discrete problem a deck defines is exported verbatim - the same nodes,
 connectivity, supports and consistent nodal loads - to CalculiX (`*.inp`,
-elements CPS4/CPE4, CPS3/CPE3, C3D8, C3D4) and rebuilt in scikit-fem
-(`ElementQuad1`, `ElementTriP1`, `ElementHex1`, `ElementTetP1` with the same
-Lame constants, `lambda* = 2 lambda G / (lambda + 2G)` for plane stress), and
-the three nodal displacement fields are compared node by node. CalculiX's
+elements CPS4/CPE4, CPS3/CPE3, C3D8, C3D4, C3D10) and rebuilt in scikit-fem
+(`ElementQuad1`, `ElementTriP1`, `ElementHex1`, `ElementTetP1`, and
+`ElementTetP2` on an isoparametric `MeshTet2` with the 4-point rule, with the
+same Lame constants, `lambda* = 2 lambda G / (lambda + 2G)` for plane
+stress), and the three nodal displacement fields are compared node by node.
+Where the run computed buckling load factors, scikit-fem assembles the
+geometric stiffness of its own static solution at the same quadrature
+points and solves the pencil densely, and CalculiX runs the exported deck
+as a `*BUCKLE` step; the load factors are compared mode by mode. CalculiX's
 plane elements are not plane elements internally: it expands them into a
 layer of solid elements, which reproduces plane stress only for `nu = 0`, so
 a plane comparison at `nu != 0` compares two idealisations and is recorded

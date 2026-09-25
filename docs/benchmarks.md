@@ -7,7 +7,7 @@ is refreshed by `make results`; this document adds the interpretation.
 Reproduce all of it with:
 
 ```bash
-make benchmarks     # all eleven decks, two analysis decks and the unconstrained L-bracket, about an hour
+make benchmarks     # all fifteen decks, two analysis decks and seven comparison runs, a little over an hour
 make figures        # every figure and the animations
 make results        # refresh the generated tables
 ```
@@ -35,25 +35,40 @@ part.
 | `lug_bracket_2d` | 20 336 Tri3 | 20 834 | OC + projection (`beta` 32) | Cholesky | 0.35 | 211 | objective stall | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
 | `engine_mount_3d` | 39 936 Tet4 | 25 920 | OC + projection (`beta` 16) | multigrid CG | 0.25 | 265 | objective stall | 0.443669 | n/a (solid) | - | 0.0484 | 278.5 |
 | `bracket_3d_large` | 110 592 Hex8 | 356 475 | OC + projection (`beta` 16) | multigrid CG | 0.30 | 171 | objective stall | 0.170987 | n/a (solid) | - | 0.000862 | 1339.9 |
+| `column_buckling` | 3 200 Q4 | 6 642 | MMA + buckling + robust projection (`beta` 16) | Cholesky | 0.25 | 375 | objective stall | 186.636 | 155.286 | 0.832 | 0.0426 | 156.7 |
+| `mbb_beam_robust` | 10 800 Q4 | 22 082 | OC + robust projection (`beta` 32) | Cholesky | 0.50 | 236 | objective stall | 195.485 | 260.601 | **1.333** | 0.0253 | 35.2 |
+| `mbb_beam_overhang` | 10 800 Q4 | 22 082 | MMA + projection (`beta` 32) + overhang filter | Cholesky | 0.50 | 211 | objective stall | 193.255 | 259.526 | **1.343** | 0.0166 | 26.4 |
+| `bracket_3d_overhang` | 4 096 Hex8 | 15 147 | MMA + projection (`beta` 16) + overhang filter | multigrid CG | 0.30 | 177 | objective stall | 0.188922 | n/a (solid) | - | 0.00967 | 100.3 |
+
+A robust run's compliance, grey level and volume are its blueprint's
+(`eta` = 0.5); the optimiser minimised the eroded design's compliance
+(section 13).
 
 "Stiffness gain" is the compliance of an equal-mass *uniform* plate divided by
 the optimised compliance, so above 1 means the optimisation paid off. The
 wing rib's value below 1 is real and is explained in its own section - it is the
-most interesting result in the set. The L-bracket's baseline plate would fill
+most interesting result in the set. The column's is real too, and says
+something about the plane model rather than the optimiser (section 12). The
+equal-mass plate is taken at the achieved volume fraction, which is why the
+robust MBB's differs from the plain one's. The L-bracket's baseline plate would fill
 the passive void quadrant, so the ratio is not a fair one there and is not
 quoted; a solid has no thickness to thin, so the solid cases have no such
 baseline at all (section 6). A projected run's gain is higher than its
 unprojected twin's because its objective describes the thresholded part
 rather than a grey field (section 7), not because the part is stiffer.
 
-**Volume constraint.** Every OC run meets it at the returned design to the
-multiplier-bisection tolerance: the relative violations lie between `1.1e-11`
-and `9.6e-11` in magnitude. Without the projection it also holds at every
-recorded iteration. With it, two kinds of iterate are analysed before an
-update has put them on the target: the starting design seen through the
-first projection, off by up to 16 % (the lug bracket), and the first design
-after each `beta` step, off by up to 1.8 % (the projected solid bracket).
-The MMA run meets it at `-2.0e-4`, on the feasible side (section 5).
+**Volume constraint.** Every OC run but the robust one meets it at the
+returned design to the multiplier-bisection tolerance: the relative
+violations lie between `1.1e-11` and `9.6e-11` in magnitude. Without the
+projection it also holds at every recorded iteration. With it, two kinds of
+iterate are analysed before an update has put them on the target: the
+starting design seen through the first projection, off by up to 16 % (the
+lug bracket), and the first design after each `beta` step, off by up to
+1.8 % (the projected solid bracket). The robust run constrains the *dilated*
+design, which meets its rescaled target to `9.6e-11`; the blueprint follows
+only through the ratio of the two volumes and ends 0.41 % under the fraction
+(section 13). The MMA runs meet it between `-2.0e-4` (section 5) and
+`-2.8e-6`, on the feasible side.
 
 ## The equal-mass baseline
 
@@ -581,8 +596,9 @@ Four things to read from it:
   stiffer part;
 * **the grey band is still in the design variables.** The density before
   projection stays grey, 0.324 and 0.354: the projection does not remove
-  the filter's boundary band, it maps it to solid or void at `eta`. It
-  gives no minimum length scale either (`docs/limitations.md`);
+  the filter's boundary band, it maps it to solid or void at `eta`. On its
+  own it gives no minimum length scale either; section 13 adds the robust
+  formulation for that, and measures what it secures;
 * **the stopping rule has to change with it.** The MBB deck with only the
   projection switched on (`sparlab_topopt --projection`, schedule `beta` 1
   to 32 every 50 iterations) ran to its 600-iteration cap. At `beta = 32`
@@ -810,35 +826,324 @@ Four things to read from it:
 This design's `structure_after.stl` is 2-manifold: no two retained cells
 touch only along an edge. The coarse design of section 6 has 32 such edges.
 
+## 11. Linear against quadratic tetrahedra on the engine mount
+
+`python/scripts/tet10_part_study.py` (`make tet10-study`) meshes the engine
+mount of section 9 from its CAD model with Gmsh at element sizes of 8, 6, 4
+and 3 mm, each with linear and with quadratic tetrahedra, plus linear meshes
+at 2 and 1.5 mm. Gmsh's curvature refinement (elements per full circle on the
+holes) scales with the element size - 12 at 4 mm, where the linear mesh is
+section 9's own 39 936 cells - so the holes refine with the rest of the part.
+Each mesh is solved by `sparlab_solve` in up to three ways:
+
+* **Tet4** - the linear mesh as it is;
+* **Tet10, straight** - the same mesh elevated in SparLab (`mesh.order: 2`):
+  an edge node at every edge midpoint, the faceted holes of the linear mesh;
+* **Tet10, curved** - Gmsh's quadratic mesh, its edge nodes on the curved
+  hole surfaces (mesh volume within `6e-7` of the exact CAD volume at 3 mm).
+
+The bolt holes are clamped. Each load case is a uniform traction on the
+pin-hole surface, scaled to a 12 kN vertical (5 kN lateral) resultant on the
+exact cylinder and integrated consistently by every element, so every mesh
+approximates the same continuous problem. The measured quantity is the
+compliance `f.u`. A displacement-based solution is too stiff - its compliance
+lies below the exact value and rises towards it - so each run is measured
+against the finest curved Tet10 run (3 mm, 388 488 DOFs), itself a lower
+bound.
+
+| Mesh | Cells | DOFs | Vertical `f.u` [J] | vs finest Tet10 | Lateral `f.u` [J] | vs finest Tet10 |
+|------|------:|-----:|-------------------:|----------------:|------------------:|----------------:|
+| Tet4, 8 mm | 6 393 | 5 079 | 0.264302 | -35.5 % | 0.0754349 | -37.9 % |
+| Tet4, 4 mm (section 9's mesh) | 39 936 | 25 920 | 0.332694 | **-18.9 %** | 0.0973581 | **-19.9 %** |
+| Tet4, 2 mm | 279 539 | 158 916 | 0.379692 | -7.4 % | 0.112135 | -7.7 % |
+| Tet4, 1.5 mm | 654 840 | 357 087 | 0.391839 | -4.4 % | 0.115920 | -4.6 % |
+| Tet10 straight, 8 mm | 6 393 | 33 045 | 0.379813 | -7.4 % | 0.111162 | -8.5 % |
+| Tet10 straight, 4 mm | 39 936 | 184 443 | 0.405147 | -1.2 % | 0.119529 | -1.6 % |
+| Tet10 curved, 8 mm | 6 393 | 33 045 | 0.384998 | -6.1 % | 0.113381 | -6.7 % |
+| Tet10 curved, 6 mm | 12 548 | 61 812 | 0.400594 | -2.3 % | 0.118455 | -2.5 % |
+| Tet10 curved, 4 mm | 39 936 | 184 443 | 0.406011 | -1.0 % | 0.120104 | -1.2 % |
+| Tet10 curved, 3 mm | 86 703 | 388 488 | 0.410003 | reference | 0.121500 | reference |
+
+All fourteen runs, with volume errors and solve times, are in
+`docs/results/README.md`.
+
+![Tet4 against Tet10 on the engine mount](figures/tet10_part_study.png)
+
+Four things to read from it:
+
+* **the part meshed with linear tetrahedra reads too stiff by a fifth.** On
+  section 9's mesh the Tet4 compliance is 18.9 % below the finest Tet10 run
+  for the vertical load and 19.9 % for the lateral one, and that run is
+  itself below the exact value, so the shortfall is at least that. Refining
+  the linear mesh to 1.5 mm - 654 840 cells and 14 times the unknowns - still
+  leaves 4.4 %;
+* **per unknown, the quadratic element wins by a wide margin.** The curved
+  Tet10 at 6 mm, 61 812 DOFs, already reads a higher compliance - closer to
+  the exact value, which lies above both - than the Tet4 at 1.5 mm with 5.8
+  times as many unknowns;
+* **most of the gain is the element, the rest the geometry.** The
+  straight-sided elevation of a Tet4 mesh comes within 1.4 % (8 mm) to 0.13 %
+  (3 mm) of the curved mesh of the same cells. Its faceted holes are
+  inscribed polygons: 0.35 % too much volume at 8 mm, and a pin surface whose
+  traction carries 11 795 N instead of 12 000 N. Elevating an existing linear
+  mesh removes most of the stiffness error; putting the edge nodes on the
+  CAD surface removes the geometric error, which matters on coarse meshes;
+* **no extrapolated exact value is claimed.** Richardson extrapolation over
+  the three finest curved runs finds no consistent order: the increments are
+  0.0054 J (6 to 4 mm) and 0.0040 J (4 to 3 mm), too slow a decrease for a
+  power law in `h`. Unstructured meshes are not nested refinements, and the
+  clamped and re-entrant edges of the part limit the convergence rate, so the
+  reference column is the finest run, not an estimate of the limit.
+
+Solving is cheap next to the gain: the multigrid solver ("auto") takes 40 to
+47 CG iterations per load case on the Tet10 meshes, and 33 s for the
+388 488-DOF run (reading, assembly and both load cases). The 6 mm curved
+Tet10 run, closer to the exact value than the 1.5 mm Tet4, takes 3.5 s
+against the Tet4's 28.0 s. The 6 mm curved mesh is committed
+(`configs/meshes/engine_mount_3d_tet10.inp`, curvature refinement 12) and
+cross-validated node by node against scikit-fem and CalculiX C3D10
+(`docs/verification.md`, section 14).
+
+## 12. A column with a buckling constraint
+
+`configs/benchmarks/column_buckling.json` - a 0.5 m x 1 m plate, 10 mm thick
+(40 x 80 Q4, 7075-T6), clamped along its base and loaded by 100 kN of axial
+compression on a 0.1 m pad (kept solid) at the middle of its top edge, with a
+quarter of the material. Minimum compliance subject to
+`topology.buckling_constraint`: the six lowest positive load factors of
+`(K + lambda K_G) phi = 0` at or above 6, aggregated by a
+Kreisselmeier-Steinhauser function (`P = 40`). MMA with a move limit of
+0.05; the projection runs from `beta = 1` to 16 with the robust formulation
+(`robust_delta = 0.05`, filter radius 3 cells), so the constraint acts on the
+eroded design (`docs/topology_optimization.md`, sections 3c and 5d). After
+the run the `buckling` section analyses the full solid domain and the
+exported part - the density thresholded at 0.5, largest face-connected
+group, full material. The deck is repeated with `--no-buckling-constraint`
+and with `--no-robust`.
+
+| Run | Compliance [J] | SIMP `lambda_1` | Mode-1 energy in solid | Exported part `lambda_1` | Iterations, stop | Linear solves | Optimisation [s] |
+|-----|---------------:|----------------:|-----------------------:|-------------------------:|------------------|--------------:|-----------------:|
+| compliance only | 112.182 | - | - | **2.862** | 55, design change | 58 | 1.6 |
+| `lambda >= 6`, plain projection | 159.209 | 6.0005 | 0.80 | **3.645** | 298, design change | 63 407 | 107.9 |
+| `lambda >= 6`, robust projection | 186.636 | 6.0020 (eroded design) | 0.66 | **5.815** | 375, objective stall | 90 702 | 156.7 |
+
+"Mode-1 energy in solid" is the share of the SIMP model's first buckling
+mode's strain energy in elements at density `>= 0.5`. The full solid domain
+buckles at `lambda_1 = 149.65`.
+
+![The column with and without the buckling constraint](figures/column_buckling_comparison.png)
+
+![Convergence with the buckling constraint](figures/column_buckling_history.png)
+
+Four things to read from it:
+
+* **minimum compliance alone designs a column that buckles.** The
+  compliance optimum is a straight strut ten cells (0.125 m) wide under the
+  pad; the exported part buckles at 2.86 times the design load;
+* **the constraint is met on the model it acts on.** Both constrained runs
+  end with the SIMP model's `lambda_1` at 6.00 - active and satisfied. The
+  material moves into two splayed legs joined by a crossbar, and the
+  compliance rises by 42 % (plain projection) and 66 % (robust): the price of
+  stability;
+* **the exported part is what counts, and the plain projection does not
+  deliver it.** The plain design's diagonal braces are grey: the SIMP model
+  counts their stress stiffness, the threshold keeps fragments of them (nine
+  groups above 0.5; 1.0 % of the material discarded as islands). Only 80 % of
+  the SIMP mode's strain energy lies in elements at density `>= 0.5`, and the
+  exported part buckles at 3.65;
+* **the robust formulation closes most of the gap.** The constraint now
+  holds the eroded design, so members that erosion removes do not count: the
+  exported part buckles at 5.81, 3.1 % short of 6. The rest of the gap is
+  still the SIMP model's: 34 % of the eroded design's first-mode energy sits
+  in elements below 0.5 at `beta = 16`. A slightly higher requirement or a
+  sharper final projection is the engineering answer; neither was run. At
+  `robust_delta = 0.05` the erosion is mild and buys no minimum member size
+  here: the length-scale scan still finds members about one cell thick, and
+  a probe of one cell's radius removes 14 % of the part's solid
+  (`docs/results/README.md`).
+
+The constraint is not cheap: each iteration solves the eigenproblem with
+subspace iteration warm-started from the previous design (8 to 10 subspace
+iterations near the end), and one adjoint per aggregated mode, all with the
+Cholesky factorisation of the static solve - 242 linear solves per iteration
+against one without the constraint. Mode 5 of the robust run's SIMP spectrum
+(`lambda = 13.8`) keeps 0.4 % of its energy in solid elements, a void mode the
+stress interpolation `rho^p` without the `E_min` floor pushes up the spectrum;
+the diagnostic names it, and at more than twice the requirement it does not
+steer the constraint.
+
+**Against the equal-mass plate the constrained column loses** (stiffness
+gain 0.832 in the summary table), and the loss says more about the plane
+model than about the optimiser. The uniform plate of the same mass is
+2.5 mm thick instead of 10 mm. Its compliance is `C_solid / nu` = 155.286 J,
+and its in-plane load factor is `nu` times the solid's: at a fixed load `K`
+scales with the thickness while `K_G` - thickness times a stress that scales
+with its inverse - does not, so `lambda_1 = 0.25 x 149.65 = 37.41`
+(`sparlab_solve` on the thinned plate: 37.4129). In the plane model that
+plate is stiffer than both constrained designs (159.209 J and 186.636 J)
+and clears the requirement six times over. The optimiser cannot reach it: at uniform
+density 0.25, SIMP leaves 1.6 % of the solid's stiffness, and the projection
+drives the design to 0 and 1 anyway. What rules the thin plate out is what a
+plane model cannot see (`docs/limitations.md`): out of its plane, a 2.5 mm
+plate 1 m tall buckles at about 130 N (Euler, clamped-free wide column,
+`pi^2 D b / 4 L^2`), under a thousandth of the design load. The optimised
+members are not safe out of plane either - the compliance optimum's
+0.125 m x 10 mm strut buckles out of plane at about 1.8 kN by the same
+formula - so the benchmark is an in-plane stability problem: a web braced
+out of its plane, which the plane-stress idealisation assumes.
+
+## 13. The robust formulation on the MBB beam
+
+`configs/benchmarks/mbb_beam_robust.json` is `mbb_beam_projected` with
+`topology.projection.robust` on: the objective is the compliance of the
+eroded design (threshold `eta = 0.6`), the volume constraint holds the dilated
+design (`eta = 0.4`) to a target rescaled every 20 iterations so that the
+blueprint (`eta = 0.5`) meets the 50 % fraction, and the blueprint is reported
+and exported. `--no-robust` gives `mbb_beam_robust_off`, which reproduces
+`mbb_beam_projected` to every printed digit (189.654 J, 218 iterations) and
+adds two checks: the length-scale scan and `projection.erosion_check`, which
+evaluates the finished plain design at the same eroded and dilated
+thresholds.
+
+| Run | Eroded (part thinner) [J] | Blueprint [J] | Dilated (part thicker) [J] | Volume fractions e / b / d | Smallest member | Narrowest gap |
+|-----|--------------------------:|--------------:|---------------------------:|----------------------------|----------------:|--------------:|
+| plain projection | 231.398 (**+22.0 %**) | 189.654 | 181.045 (-4.5 %) | 0.457 / 0.500 / 0.542 | 3 cells | 5 cells |
+| robust formulation | 204.051 (**+4.4 %**) | 195.485 | 186.273 (-4.7 %) | 0.464 / 0.498 / 0.531 | 4 cells | 6 cells |
+
+![The MBB beam with and without the robust formulation](figures/mbb_beam_robust_comparison.png)
+
+Three things to read from it:
+
+* **the robust design pays 3 % as drawn.** Its blueprint is 3.1 % more
+  compliant than the plain design, at 0.4 % less material. The volume
+  constraint holds the dilated design; the blueprint follows it only through
+  the ratio of the two volumes as of the last rescaling (iteration 221), and
+  at `beta = 32` interface elements flip between iterations, so from then on
+  the blueprint's fraction alternates between about 0.498 and 0.502. The
+  returned design is on the low side (0.4979);
+* **and gains where it was meant to.** If the part comes out uniformly
+  thinner by the erosion, the plain design loses 22.0 % of its stiffness,
+  because two of its diagonals are thin enough to vanish (the figure's top
+  left panel); the robust design loses 4.4 %. Its worst case is 11.8 %
+  better than the plain design's;
+* **the measured length scale grows by a cell.** Members of at least 4
+  cells and gaps of at least 6, against 3 and 5, to half a cell. The size
+  the formulation secures follows from the filter radius and `robust_delta`;
+  0.1 is a mild erosion, and a larger one should buy a larger minimum size
+  at a higher price in compliance - not run here. The scan measures the
+  design; it is not a proof of a bound.
+
+The volume update matters with OC. Rescaled at every iteration, the dilated
+target and the design fed each other: as soon as `beta` reached 32 the run
+locked into a period-2 cycle, the eroded volume fraction alternating between
+0.45 and 0.48, and never met a stopping criterion. Rescaled every 20
+iterations a much smaller cycle remains - the eroded compliance alternates
+by a few hundredths of a percent as the interface flips - and its spread
+over the stall window, `8.0e-4`, is under the `1e-3` tolerance: the run
+stops after 236 iterations on the objective stall. The OC update also no
+longer aborts when a rescaled target lies outside what the move limit can
+reach in one step: it steps as far as it can and says so.
+
+## 14. Printable designs: the overhang filter
+
+Two decks with `topology.overhang` (`docs/topology_optimization.md`, section
+3d), each repeated with `--no-overhang-filter`, which keeps the overhang
+check but not the filter:
+
+* `configs/benchmarks/mbb_beam_overhang.json` - the projected MBB beam of
+  section 7, built along +y (the plate under its bottom edge); a third run
+  builds it along -y, from the top edge down;
+* `configs/benchmarks/bracket_3d_overhang.json` - the projected solid
+  bracket of section 7, built along +y, standing on its bottom face.
+
+Both use MMA. With OC and the projected decks' settings the filtered runs
+ended at the iteration cap in period-2 cycles at the final `beta`: the MBB
+compliance alternated within 0.4 % built +y and between 236 and 260 J built
+-y, the bracket's by 0.11 %, just above the stall tolerance. Lowering the OC
+damping to 0.3 made the bracket converge (192 iterations, 0.186705 J, 1.2 %
+below the MMA design) but left the MBB beam far from a design (292 J after
+219 iterations, built +y). MMA converged in every case, so both decks use
+it, and the unfiltered comparison runs use it too - which is why the
+unfiltered MBB (186.441 J) differs from `mbb_beam_projected` (OC, 189.654 J).
+
+| Run | Build | Compliance [J] | Unsupported solid elements | Unsupported volume | Groups at 0.5 | Iterations, stop |
+|-----|-------|---------------:|---------------------------:|-------------------:|--------------:|------------------|
+| MBB, no filter | +y | 186.441 | 132 of 5 420 | 2.44 % | 1 | 216, objective stall |
+| MBB, filter | +y | 193.255 (+3.7 %) | **0** of 5 403 | 0 | 1 | 211, objective stall |
+| MBB, filter | -y | 206.731 (+10.9 %) | **0** of 5 408 | 0 | 1 | 219, objective stall |
+| bracket, no filter | +y | 0.180861 | 78 of 1 234 | 6.32 % | 1 | 170, objective stall |
+| bracket, filter | +y | 0.188922 (+4.5 %) | **0** of 1 235 | 0 | 5 | 177, objective stall |
+
+A solid element (density `>= 0.5`) off the build plate is unsupported when
+nothing solid lies directly or diagonally below it: three elements in 2-D, a
+cross of five in 3-D, a 45-degree limit on these square cells. The check
+counts them on the thresholded design with the same stencil the filter uses,
+and the figure script counts them again and must agree.
+
+![The MBB beam built without and with the overhang filter](figures/mbb_beam_overhang_comparison.png)
+
+![The solid bracket built without and with the overhang filter](figures/bracket_3d_overhang_comparison.png)
+
+Four things to read from it:
+
+* **without the filter the designs cannot be printed as they are.** The
+  MBB's unsupported elements are the undersides of its shallow members; the
+  bracket's are the top chord spanning its cavity, 6.3 % of its material;
+* **the filtered designs have no unsupported element**, and they look it:
+  members at 45 degrees and steeper, closed diamonds instead of horizontal
+  spans;
+* **the price depends on the direction.** Built from the bottom up, the MBB
+  beam costs 3.7 % in compliance; built from the top down, 10.9 %, because
+  every member must then hang at 45 degrees or steeper from the loaded top
+  chord. The bracket costs 4.5 %;
+* **the overhang rule and the interpretation's connectivity rule differ.** A
+  45-degree staircase of cubic cells touches the cells below it along an
+  edge, which the filter counts as support and the face-connectivity rule of
+  the interpretation does not count as a joint: the filtered bracket's
+  thresholded part falls into 5 face-connected groups, and 0.7 % of its
+  material is discarded as islands. Only the overhang rule is modelled - not
+  support removal, residual stress, surface finish or a minimum wall
+  (`docs/limitations.md`).
+
 ## Convergence behaviour
 
 ![Cantilever convergence history](figures/cantilever_beam_convergence.png)
 
 Both stopping criteria are exercised. The cantilever, the MBB beam, the
 stress-constrained L-bracket and the unprojected solid bracket stop on the
-design change; the aerospace bracket, the wing rib and all five projected
+design change; the aerospace bracket, the wing rib and all nine projected
 runs stop on the objective stall. The stall measure is the relative spread
 `(max - min) / |C|` of the last `objective_window + 1` compliances, which an
-oscillating design cannot satisfy mid-cycle. Final indicator values:
+oscillating design cannot satisfy mid-cycle. The design-change tolerance is
+0.01 in every deck; the stall tolerance is set per deck. Final indicator
+values:
 
-| Case | Stop reason | Final `max |dx|` | Final compliance spread | Window [iterations] |
-|------|-------------|-----------------:|------------------------:|--------------------:|
-| `cantilever_beam` | design change | 0.00857 | `6.6e-05` | 21 |
-| `mbb_beam` | design change | 0.00697 | `6.2e-05` | 21 |
-| `mbb_beam_projected` | objective stall | 0.1 | `9.5e-04` | 11 |
-| `aerospace_bracket` | objective stall | 0.0202 | `4.9e-05` | 21 |
-| `wing_rib` | objective stall | 0.0112 | `4.9e-05` | 21 |
-| `l_bracket_stress` | design change | 0.00936 | `1.2e-03` | 21 |
-| `bracket_3d` | design change | 0.00988 | `1.4e-04` | 21 |
-| `bracket_3d_projected` | objective stall | 0.1 | `9.1e-04` | 11 |
-| `lug_bracket_2d` | objective stall | 0.1 | `9.7e-04` | 11 |
-| `engine_mount_3d` | objective stall | 0.1 | `9.9e-04` | 11 |
-| `bracket_3d_large` | objective stall | 0.1 | `2.1e-04` | 11 |
+| Case | Stop reason | Final `max |dx|` | Final compliance spread | Stall tolerance | Window [iterations] |
+|------|-------------|-----------------:|------------------------:|----------------:|--------------------:|
+| `cantilever_beam` | design change | 0.00857 | `6.6e-05` | `5e-05` | 21 |
+| `mbb_beam` | design change | 0.00697 | `6.2e-05` | `5e-05` | 21 |
+| `mbb_beam_projected` | objective stall | 0.1 | `9.5e-04` | `1e-03` | 11 |
+| `aerospace_bracket` | objective stall | 0.0202 | `4.9e-05` | `5e-05` | 21 |
+| `wing_rib` | objective stall | 0.0112 | `4.9e-05` | `5e-05` | 21 |
+| `l_bracket_stress` | design change | 0.00936 | `1.2e-03` | `5e-05` | 21 |
+| `bracket_3d` | design change | 0.00988 | `1.4e-04` | `5e-05` | 21 |
+| `bracket_3d_projected` | objective stall | 0.1 | `9.1e-04` | `1e-03` | 11 |
+| `lug_bracket_2d` | objective stall | 0.1 | `9.7e-04` | `1e-03` | 11 |
+| `engine_mount_3d` | objective stall | 0.1 | `9.9e-04` | `1e-03` | 11 |
+| `bracket_3d_large` | objective stall | 0.1 | `2.1e-04` | `1e-03` | 11 |
+| `column_buckling` | objective stall | 0.0398 | `6.8e-05` | `1e-04` | 11 |
+| `mbb_beam_robust` | objective stall | 0.1 | `8.0e-04` | `1e-03` | 11 |
+| `mbb_beam_overhang` | objective stall | 0.0811 | `7.9e-04` | `1e-03` | 11 |
+| `bracket_3d_overhang` | objective stall | 0.0446 | `9.8e-04` | `1e-03` | 11 |
 
-The projected runs all stop on the stall with the design change at the move
-limit of 0.1. At a sharp projection single elements on the solid-void
+The projected OC runs all stop on the stall with the design change at the
+move limit of 0.1. At a sharp projection single elements on the solid-void
 interface flip between their bounds while the compliance stands still
-(section 7).
+(section 7). The three MMA runs stop on the stall too, with the design
+change below their move limits (0.05 for the column, 0.1 for the overhang
+decks). Of the comparison runs, the column without the constraint and the
+column without the robust formulation stop on the design change (55 and 298
+iterations); the rest stop on the stall.
 
 The objective criterion is what makes the fine-mesh cases terminate. A measured
 example on the cantilever benchmark, with both criteria disabled and the cap
@@ -1013,8 +1318,8 @@ second in 3-D.
 
 From the `timings_s` block of each summary:
 
-| Case | Optimisation [s] | Modal [s] | Solid reference [s] | Re-solve [s] | Output [s] | Total [s] |
-|------|-----------------:|----------:|--------------------:|-------------:|-----------:|----------:|
+| Case | Optimisation [s] | Modal or buckling [s] | Solid reference [s] | Re-solve [s] | Output [s] | Total [s] |
+|------|-----------------:|----------------------:|--------------------:|-------------:|-----------:|----------:|
 | `cantilever_beam` | 48.9 | 3.09 | 0.12 | 0.04 | 0.49 | 52.7 |
 | `mbb_beam` | 56.6 | - | 0.09 | 0.03 | 0.28 | 57.2 |
 | `mbb_beam_projected` | 31.6 | - | 0.09 | 0.03 | 0.26 | 32.2 |
@@ -1027,13 +1332,19 @@ From the `timings_s` block of each summary:
 | `engine_mount_3d` | 278.5 | 10.15 | 0.53 | 0.16 | 1.67 | 292.4 |
 | `bracket_3d_large` | 1339.9 | 320.75 | 7.82 | 4.36 | 6.58 | 1681.0 |
 | `l_bracket_unconstrained` | 3.8 | - | 0.03 | 0.01 | 0.10 | 4.0 |
+| `column_buckling` | 156.7 | 0.64 (buckling) | 0.02 | 0.01 | 0.15 | 157.6 |
+| `mbb_beam_robust` | 35.2 | - | 0.11 | 0.04 | 0.33 | 35.9 |
+| `mbb_beam_overhang` | 26.4 | - | 0.10 | 0.03 | 0.32 | 27.0 |
+| `bracket_3d_overhang` | 100.3 | - | 0.59 | 0.31 | 0.26 | 101.5 |
 
 The optimisation loop dominates everywhere, which is the intended cost
 profile. The modal analyses of the solid domain and of the extracted
 topology cost a few percent with the direct solver, where one factorisation
 serves every solve of the subspace iteration. With multigrid CG each of
 those solves is a new CG run, and the share rises to 18 % on the projected
-bracket and 19 % on the 356 475-DOF bracket. All of the file output,
-including the density snapshots that drive the animations, costs under 2 % of
-every run longer than ten seconds, and 2.5 % of the 4 s unconstrained
-L-bracket.
+bracket and 19 % on the 356 475-DOF bracket. The column's buckling check of
+the solid domain and the exported part costs 0.4 % of its run; the
+constraint inside the loop is what makes that run expensive (section 12).
+All of the file output, including the density snapshots that drive the
+animations, costs under 2 % of every run longer than ten seconds, and 2.5 %
+of the 4 s unconstrained L-bracket.

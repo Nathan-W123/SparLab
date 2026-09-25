@@ -101,8 +101,16 @@ class OverhangFilter {
     Vector xi;
     Vector support_max;  ///< Xi per element (0 on the first layer)
   };
+  /// The smooth maximum over the supports of `e`, with the terms of its
+  /// derivative: the largest support m and S = sum_j (xi_j / m)^P.
+  struct SmoothMax {
+    Scalar value = 0.0;
+    Scalar largest = 0.0;
+    Scalar scaled_sum = 0.0;
+    Scalar q = 1.0;
+  };
   Forward forward(const Vector& input) const;
-  Scalar smax(Index e, const Vector& xi) const;
+  SmoothMax smooth_max(Index e, const Vector& xi) const;
 
   OverhangOptions options_;
   std::vector<std::vector<Index>> supports_;

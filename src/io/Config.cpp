@@ -721,6 +721,7 @@ Configuration parse_configuration(const json::Value& document, const std::string
       pr.robust_delta = proj.number_or("robust_delta", pr.robust_delta);
       pr.robust_volume_interval =
           proj.integer_or("robust_volume_interval", pr.robust_volume_interval);
+      pr.erosion_check = proj.boolean_or("erosion_check", false);
       pr.validate();
       if (pr.enabled && config.topology.filter_type == FilterType::Sensitivity) {
         throw ConfigError(

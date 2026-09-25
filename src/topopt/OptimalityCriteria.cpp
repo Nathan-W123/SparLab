@@ -40,7 +40,8 @@ Vector oc_candidate(const DesignDomain& domain, const Vector& x, const Vector& d
 OptimalityCriteriaStep optimality_criteria_update(
     const DesignDomain& domain, const Vector& x, const Vector& dc_dx,
     const Vector& dv_dx, const std::function<Scalar(const Vector&)>& physical_volume_of,
-    const OptimalityCriteriaOptions& options, Scalar volume_target) {
+    const OptimalityCriteriaOptions& options, Scalar volume_target,
+    bool step_toward_unreachable_target) {
   const Index ne = domain.num_elements();
   if (x.size() != ne || dc_dx.size() != ne || dv_dx.size() != ne) {
     throw ConfigError("optimality criteria received vectors of inconsistent length");
@@ -77,6 +78,24 @@ OptimalityCriteriaStep optimality_criteria_update(
     hi *= 1.0e3;
     vol_hi = physical_volume_of(oc_candidate(domain, x, dc_dx, dv_dx, hi, options));
     ++widen;
+  }
+  if ((vol_lo < target || vol_hi > target) && step_toward_unreachable_target) {
+    // The whole move-limited box lies on one side of the target: its
+    // most-material corner (lambda -> 0) when even that is too light, its
+    // least-material corner otherwise.
+    OptimalityCriteriaStep step;
+    const bool too_light = vol_lo < target;
+    const Scalar lambda = too_light ? lo : hi;
+    step.x = oc_candidate(domain, x, dc_dx, dv_dx, lambda, options);
+    step.lambda = lambda;
+    step.achieved_volume = too_light ? vol_lo : vol_hi;
+    step.volume_converged = false;
+    step.max_change = (step.x - x).cwiseAbs().maxCoeff();
+    log::warn("optimality criteria: the moved volume target ", target,
+              " m^3 lies outside what the move limit can reach this iteration (volumes in [",
+              vol_hi, ", ", vol_lo, "] m^3); stepping to ", step.achieved_volume,
+              " m^3, the nearest reachable volume");
+    return step;
   }
   if (vol_lo < target || vol_hi > target) {
     std::ostringstream os;

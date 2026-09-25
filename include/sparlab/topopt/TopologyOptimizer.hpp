@@ -243,6 +243,9 @@ struct TopologyOptimizationResult {
   /// displacements above are the blueprint's (the intermediate design);
   /// the eroded and dilated ones are here.
   bool robust = false;
+  /// A non-robust run with projection.erosion_check: robust_record holds the
+  /// final design's eroded and dilated variants, evaluated once.
+  bool erosion_checked = false;
   RobustRecord robust_record;
 
   /// The overhang filter was part of the density chain; `printable_density`

@@ -9,8 +9,10 @@ namespace sparlab {
 
 void ProjectionOptions::validate() const {
   if (!enabled) {
-    if (robust) {
-      throw ConfigError("topology.projection.robust needs the projection itself: set "
+    if (robust || erosion_check) {
+      throw ConfigError(std::string("topology.projection.") +
+                        (robust ? "robust" : "erosion_check") +
+                        " needs the projection itself: set "
                         "topology.projection.enabled = true");
     }
     return;
@@ -31,8 +33,8 @@ void ProjectionOptions::validate() const {
     os << "topology.projection.beta_factor must exceed 1, got " << beta_factor;
   } else if (beta_interval < 1) {
     os << "topology.projection.beta_interval must be at least 1, got " << beta_interval;
-  } else if (robust && !(robust_delta > 0.0 && eta - robust_delta > 0.0 &&
-                         eta + robust_delta < 1.0)) {
+  } else if ((robust || erosion_check) &&
+             !(robust_delta > 0.0 && eta - robust_delta > 0.0 && eta + robust_delta < 1.0)) {
     os << "topology.projection.robust_delta = " << robust_delta
        << " must be positive and keep eta +- delta inside (0, 1) (eta = " << eta << ")";
   } else if (robust && robust_volume_interval < 1) {

@@ -34,12 +34,18 @@ CASES = [
     "lug_bracket_2d",
     "engine_mount_3d",
     "bracket_3d_large",
+    "column_buckling",
+    "mbb_beam_robust",
+    "mbb_beam_overhang",
+    "bracket_3d_overhang",
 ]
 
-#: Variants of another benchmark (the same problem with the projection on):
+#: Variants of another benchmark (the same problem with the projection, a
+#: buckling constraint, the robust formulation or the overhang filter on):
 #: only their topology and convergence figures are drawn, the rest would repeat
-#: the parent.
-MINIMAL_CASES = {"mbb_beam_projected", "bracket_3d_projected"}
+#: the parent; plot_manufacturing.py draws their comparisons.
+MINIMAL_CASES = {"mbb_beam_projected", "bracket_3d_projected", "column_buckling",
+                 "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang"}
 
 #: Cases whose density animation is skipped: 110k hexahedra per frame make the
 #: GIF slow to render and large, and the small-multiples figure shows the same.
@@ -91,6 +97,7 @@ def main(argv=None) -> int:
                 "--verification", os.path.join(args.results, "verification"),
                 "--benchmark", os.path.join(args.results, "benchmark"),
                 "--cross-validation", os.path.join(args.results, "cross_validation"),
+                "--tet10-study", os.path.join(args.results, "tet10_part_study"),
                 "--figures", args.figures]):
         failures.append("verification/benchmark figures failed")
 
@@ -111,6 +118,14 @@ def main(argv=None) -> int:
                    [os.path.join(SCRIPTS, "plot_projection.py"),
                     "--results", args.results, "--figures", args.figures]):
             failures.append("projection figures failed")
+
+    if not args.only or any(c in cases for c in ("column_buckling", "mbb_beam_robust",
+                                                 "mbb_beam_overhang",
+                                                 "bracket_3d_overhang")):
+        if not run("buckling, robust and overhang comparison figures",
+                   [os.path.join(SCRIPTS, "plot_manufacturing.py"),
+                    "--results", args.results, "--figures", args.figures]):
+            failures.append("buckling / robust / overhang figures failed")
 
     study_dir = os.path.join(args.results, "study")
     if os.path.isdir(study_dir):

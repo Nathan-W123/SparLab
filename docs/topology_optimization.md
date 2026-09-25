@@ -232,6 +232,111 @@ without the projection, the grey level, and the ratio between the compliance
 of the thresholded structure and the objective - in `docs/benchmarks.md`,
 section 7.
 
+## 3c. Robust formulation (minimum length scale)
+
+A single projection at `eta = 0.5` makes the design crisp but does not stop
+a member from thinning to a cell: if the part came out slightly thinner than
+drawn, such a member would vanish. The robust formulation of Wang, Lazarov
+and Sigmund (2011) projects the one filtered field at three thresholds
+(`topopt/Projection.hpp`, `topology.projection.robust`):
+
+```
+  eroded      rho_e = H(rho_tilde; beta, eta + delta)     the part comes out thinner
+  blueprint   rho_i = H(rho_tilde; beta, eta)             the design as drawn
+  dilated     rho_d = H(rho_tilde; beta, eta - delta)     the part comes out thicker
+```
+
+and optimises for the worst of them. For compliance and buckling the eroded
+design is the worst, so the objective and every constraint but the volume
+act on it, and the volume constraint acts on the dilated design, the
+heaviest:
+
+```
+  min_x  c(rho_e)
+  s.t.   V(rho_d) <= V_d* ,     V_d* = V* V(rho_d) / V(rho_i)   (rescaled every robust_volume_interval iterations)
+         every other constraint on rho_e
+```
+
+Rescaling the dilated target from the current design's ratio of dilated to
+blueprint volume makes the blueprint - the design that is reported and
+exported - meet the volume fraction `V*`, as closely as that ratio holds
+between rescalings. A member thinner than the erosion vanishes from the
+eroded design, so it carries nothing in the objective and the optimiser
+gains nothing from it: in principle the blueprint's members and gaps keep a
+minimum size set by the filter radius and `delta`. What a run delivers is
+measured, not assumed: at `delta = 0.05` the robust column still has
+members about one cell thick (`docs/benchmarks.md`, section 12). The
+gradients are exact through the same
+chain as a single projection, one per threshold; only the eroded design is
+analysed, so the formulation costs two more projections per iteration, not
+more solves.
+
+Under OC the bisection meets the rescaled target on the dilated design.
+Because that target moves, a target outside what the move limit can reach
+in one step is not an error there: the update takes the box corner nearest
+to it and warns, and the following iterations close the gap. Rescaled at
+every iteration the target and the design can feed each other into a
+period-2 cycle at a large `beta` (measured on the MBB beam at `beta = 32`)
+that no stopping rule accepts; rescaled every 20 iterations a far smaller
+cycle remains, which the objective-stall test does accept
+(`docs/benchmarks.md`, section 13).
+
+**Measuring the length scale.** `topology.length_scale_check` (on by
+default in a robust run) thresholds the final design and probes it with
+balls of growing radius on the element centroids, in half-cell steps
+(`topopt/LengthScale.cpp`): the morphological *opening* (erosion then
+dilation) removes the solid a ball cannot reach from inside the material,
+i.e. members thinner than about twice the radius, and the *closing* fills
+gaps narrower than that. The smallest member (gap) reported is twice the
+largest probe radius whose opening (closing) changes at most `tolerance`
+(2 %) of the solid (void) volume - a tolerance because opening also rounds
+convex corners, which costs a few cells at any probe size. It measures the
+design; the guarantee, where there is one, comes from the formulation.
+
+**Erosion check.** `topology.projection.erosion_check` evaluates a design
+optimised *without* the robust formulation at the same eroded and dilated
+thresholds once at the end, so the two can be compared on the same terms:
+how much stiffness the part loses if it comes out thinner.
+
+## 3d. Additive-manufacturing overhang filter
+
+A part printed layer by layer can only deposit material where the layer
+below supports it. `topology.overhang` (`topopt/OverhangFilter.cpp`) adds
+Langelaar's (2016, 2017) filter between the density filter and the
+projection, `x -> rho_tilde -> xi = AM(rho_tilde) -> rho_bar = H(xi)`, on a
+structured grid whose layers are normal to the build direction. An element
+is supported by the element below it and that element's neighbours in the
+layer - three elements in 2-D, a cross of five in 3-D - which on square or
+cubic cells is an overhang limit of 45 degrees from the plate. Layer by
+layer from the plate,
+
+```
+  xi_e = smin( rho_tilde_e , Xi_e ) ,      Xi_e = smax_{s in S(e)} xi_s ,     xi_e = rho_tilde_e on the first layer
+
+  smax(xi) = ( sum_s xi_s^P )^(1/Q) ,      Q = P + ln(n_s) / ln(xi_0)
+  smin(x, Xi) = ( x + Xi - sqrt((x - Xi)^2 + eps) + sqrt(eps) ) / 2
+```
+
+with `P = 40`, `xi_0 = 0.5` (so `n_s` supports at 0.5 give exactly 0.5) and
+`eps = 1e-4`: an element holds at most as much material as its supports.
+The smooth maximum is evaluated relative to the largest support, `smax =
+m^(P/Q) (sum_s (xi_s/m)^P)^(1/Q)`, because a direct sum of `xi^40` over
+near-void densities underflows and its derivative then overflows - an MBB
+run met exactly that. Passive elements keep their density.
+
+**Sensitivities.** `xi` depends on every input below it, so the chain rule
+runs as an adjoint recursion from the top layer down: with
+`lambda_e = df/dxi_e + sum_{c: e in S(c)} lambda_c dxi_c/dXi_c dXi_c/dxi_e`,
+`df/drho_tilde_e = lambda_e dxi_e/drho_tilde_e` - one pass over the elements,
+exact, and checked against central differences in four build directions
+on Q4 and Hex8 meshes (`docs/verification.md`, section 21).
+
+**The overhang check.** After every run with a `topology.overhang` section -
+filtered or not - the thresholded design is checked against the same
+stencil, and the summary counts the solid elements off the plate with no
+solid support. Only this rule is modelled; `docs/limitations.md` lists what
+is not.
+
 ## 4. Sensitivity analysis
 
 Compliance is self-adjoint. Differentiating `K u = f` with `f` independent of the
@@ -449,6 +554,57 @@ is on. It is the standard research formulation (Le, Norato, Bruns, Ha and
 Tortorelli 2010), implemented so the design it produces can be checked by
 the re-solve.
 
+## 5d. Buckling constraint
+
+`topology.buckling_constraint` (MMA only, `topopt/BucklingConstraint.cpp`)
+asks the lowest `m` positive load factors of the linear buckling problem
+(`docs/formulation.md`, section 7b) of each constrained load case to stay at
+or above `lambda_req`. With `r_i = lambda_req / lambda_i` the constraint is
+the Kreisselmeier-Steinhauser aggregate
+
+```
+  g = KS_P(r) - 1 = r_max + (1/P) ln sum_i exp(P (r_i - r_max)) - 1 <= 0
+```
+
+a smooth upper bound on `max_i r_i - 1` that exceeds it by at most
+`ln(m)/P` - conservative, and differentiable where two load factors cross,
+which a single `lambda_1` is not. `P = 40`, `m = 6` by default.
+
+**Interpolation.** The stiffness is SIMP, `E_K = E_min + rho^p (E_0 -
+E_min)`; the stress in `K_G` uses `E_G = rho^p E_0` without the floor (Gao
+and Ma 2015). With the same law in both, a void element's geometric
+stiffness keeps pace with its elastic stiffness and near-void regions carry
+spurious "pseudo" buckling modes at very low load factors. Each mode's share
+of strain energy in elements at density `>= 0.5` is recorded, so a mode
+that still lives in void is visible.
+
+**Sensitivity.** With `phi^T K phi = 1`, so `phi^T K_G phi = -1/lambda`,
+
+```
+  d lambda / d rho_e = lambda E_K'/E_0 phi_e^T K_e^0 phi_e
+                     + lambda^2 E_G'/E_0 phi_e^T K_G,e^0(u_e) phi_e
+                     - lambda^2 E_K'/E_0 a_e^T K_e^0 u_e ,
+
+  K a = sum_e (E_G/E_0) A_e^T g_e(phi_e) ,       phi_e^T K_G,e(u_e) phi_e = g_e(phi_e)^T u_e
+```
+
+where the adjoint `a` accounts for the stress's dependence on the design
+through `u`; each mode costs one adjoint solve with the factorisation the
+static solve made. The formula holds for a simple eigenvalue; the aggregate
+stays differentiable at a repeated one. The eigensolve of an iteration
+starts from the previous iteration's subspace, which keeps it to a few
+subspace iterations. Checked against central differences through the filter
+and the projection (`docs/verification.md`, section 20).
+
+**The constraint's view and the part's.** The load factors the constraint
+holds are those of the SIMP model, grey material included. The `buckling`
+section of the deck re-analyses the exported part - thresholded, largest
+face-connected group, full material - after the run, and that is the number
+that says whether the part meets the requirement. On the column benchmark
+they differ markedly with a plain projection and much less with the robust
+formulation, where the constraint acts on the eroded design
+(`docs/benchmarks.md`, section 12).
+
 ## 6. Passive regions
 
 A passive region is imposed as **equal lower and upper bounds** on the design
@@ -582,6 +738,11 @@ The optimiser and its supporting pieces report, never hide:
 | `stress.p_norm_ratio`, `stress.scale` | the aggregate over the limit, and the scale that maps it to the maximum | how far the aggregate sits from the maximum it stands for |
 | `interpreted_solid_analysis.max_von_mises_over_limit` | peak von Mises of the re-solved thresholded structure over the limit | the number that says whether the *structure* meets the limit |
 | `geometry_export` | triangles, closure, non-manifold edges, enclosed vs cell volume of `structure_after.stl` | whether the exported surface is a usable solid, and what it inherits from the interpretation |
+| `robust` / `erosion_check` | compliance and volume fraction of the eroded, blueprint and dilated designs | how much the design loses if the part comes out thinner or thicker |
+| `manufacturing_checks.length_scale` | smallest member and gap of the thresholded design, from morphological opening and closing | the length scale the design delivers, to half a cell |
+| `manufacturing_checks.overhang` | solid elements off the plate with no solid support, for the build direction | whether the design is printable under the 45-degree rule |
+| `buckling` (MMA) | the SIMP model's lowest aggregated load factors, their KS value and each mode's energy share in solid | what the constraint holds |
+| `buckling_check` | lowest load factors of the full solid domain and of the exported part | whether the *part* meets the buckling requirement |
 
 The grey level needs care. A density filter of radius `r_min` leaves a genuinely
 intermediate boundary layer roughly `r_min` wide, and on a coarse mesh that layer

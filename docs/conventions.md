@@ -103,6 +103,19 @@ numbering of the grid they split: element `2 elem(i, j) + s` is triangle `s`
 of cell `(i, j)`, and element `6 elem(i, j, k) + s` tetrahedron `s` of the
 cell.
 
+### Quadratic tetrahedra
+
+A Tet10 lists its four corners as a Tet4 does (positive volume), then the
+six edge nodes of the edges `(0 1)`, `(1 2)`, `(2 0)`, `(0 3)`, `(1 3)`,
+`(2 3)` - the VTK (`VTK_QUADRATIC_TETRA`, cell type 24), Abaqus / CalculiX
+(`C3D10`) and scikit-fem order. Gmsh (element type 11) numbers the last two
+the other way round, and its reader swaps them. A face lists its three
+corners as the Tet4 face does, then the edge nodes of its corner pairs
+`(0 1)`, `(1 2)`, `(2 0)`; faces are matched between cells by their corners
+only. `mesh.order: 2` elevates a Tet4 mesh by appending one node per edge
+after the existing nodes, in order of first appearance, so the corner nodes
+keep their numbers.
+
 ### Meshes read from a file
 
 Nodes keep the order of the file, renumbered consecutively from 0 after the
@@ -143,6 +156,16 @@ beam or shell elements.
 * Positive moment is counter-clockwise about `+z`, i.e. `M = x F_y - y F_x`,
   taken about the origin. On a solid mesh the moment is the full vector
   `M = x cross F` about the origin, reported component by component.
+* A buckling load factor `lambda` multiplies the load case: the structure is
+  predicted to buckle under `lambda f`. Load factors are reported positive
+  and ascending; the negative ones of the pencil (buckling under the
+  reversed load) are not reported, and a load case with no positive one is
+  flagged `no_positive_load_factor`. Buckling modes are normalised to
+  `phi^T K phi = 1` (and in the VTK files to a largest displacement of 1);
+  their sign is arbitrary.
+* A build direction `+y` means the part grows along `+y` from a plate at the
+  low-`y` end of the domain; `-y` from a plate at the high end. Layer 0 is
+  the layer on the plate.
 
 ## Voigt notation
 
@@ -230,6 +253,9 @@ Every tolerance is configurable and every run records the value it used in
 | `topology.optimizer.mma.subproblem_tolerance` | `1e-7` | final barrier parameter of the MMA subproblem; each level converges to a KKT residual of 0.9 times its barrier |
 | `topology.optimizer.mma.max_newton_iterations` | `500` | Newton iterations per barrier level before the subproblem is reported as failed |
 | `topology.stress.feasibility_tolerance` | `1e-3` | relative margin used when the summary reports whether the relaxed stress maximum meets the limit |
+| `buckling.tolerance` (and `topology.buckling_constraint.tolerance`) | `1e-8` | relative change of the requested load factors between subspace iterations |
+| `buckling.residual_tolerance` | `1e-6` | relative eigenpair residual `\|\|K phi + lambda K_G phi\|\| / \|\|K phi\|\|`, also part of the stopping rule |
+| `topology.length_scale_check.tolerance` | `0.02` | share of the solid (void) volume a morphological probe may change and still pass |
 
 The decks that use the multigrid solver (`bracket_3d_projected`,
 `bracket_3d_large`, `engine_mount_3d`) set `iterative_tolerance` to `1e-10`.
@@ -243,11 +269,13 @@ and `summary.json`. Nothing is silently accepted.
 ## Determinism
 
 The only randomness in the code is the filler part of the subspace-iteration
-starting basis and the node perturbation of the `make_perturbed_*_mesh`
-generators (quadrilateral, hexahedral, and the triangle and tetrahedron meshes
-split from them). All take an explicit seed (`modal.seed`, default
-`20240917`) and default to deterministic values, so repeated runs of the same
-deck on the same build give bit-identical results. The MMA subproblem solver
+starting bases (modal and buckling) and the node perturbation of the
+`make_perturbed_*_mesh` generators (quadrilateral, hexahedral, and the
+triangle and tetrahedron meshes split from them, linear and quadratic). All
+take an explicit seed (`modal.seed` and `buckling.seed`, default `20240917`)
+and default to deterministic values, so repeated runs of the same deck on
+the same build give bit-identical results - the benchmark comparison runs
+reproduced their earlier numbers to every printed digit. The MMA subproblem solver
 and the stress-constraint scaling are deterministic by construction: they
 start from fixed values and involve no random choice.
 
@@ -259,6 +287,7 @@ kernel when OpenMP is on, the matrix-vector product inside its
 Jacobi-preconditioned CG, and computes each row of it on a single thread,
 so that solver is deterministic too. The element loops -
 assembly, sensitivities, stress recovery - run sequentially in element
-order. The two committed meshes come from Gmsh run
-single-threaded with fixed options by `python/scripts/make_meshes.py`, which
-records the Gmsh version and every option beside each mesh.
+order. The committed meshes come from Gmsh run single-threaded with fixed
+options by `python/scripts/make_meshes.py`, which records the Gmsh version
+and every option beside each mesh; the Tet10 study regenerates the 4 mm
+engine mount identically (39 936 cells, 8 640 nodes).

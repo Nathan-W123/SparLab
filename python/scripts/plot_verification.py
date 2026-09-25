@@ -31,6 +31,7 @@ def main(argv=None) -> int:
     parser.add_argument("--verification", default="results/verification")
     parser.add_argument("--benchmark", default="results/benchmark")
     parser.add_argument("--cross-validation", default="results/cross_validation")
+    parser.add_argument("--tet10-study", default="results/tet10_part_study")
     parser.add_argument("--figures", default="docs/figures")
     args = parser.parse_args(argv)
 
@@ -85,6 +86,18 @@ def main(argv=None) -> int:
         ("cross-validation",
          lambda: studies.plot_cross_validation(
              args.cross_validation, figure("cross_validation.png"))),
+        ("cross-validation of the buckling load factors",
+         lambda: studies.plot_buckling_cross_validation(
+             args.cross_validation, figure("cross_validation_buckling.png"))),
+        ("quadratic tetrahedra: cantilever convergence",
+         lambda: studies.plot_tet10_convergence(
+             args.verification, figure("verify_mesh_convergence_tet10.png"))),
+        ("linear buckling vs Euler-Engesser",
+         lambda: studies.plot_buckling_verification(
+             args.verification, figure("verify_buckling_euler.png"))),
+        ("Tet4 / Tet10 engine mount study",
+         lambda: studies.plot_tet10_part_study(
+             args.tet10_study, figure("tet10_part_study.png"))),
     ]
 
     for label, task in tasks:

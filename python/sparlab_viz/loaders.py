@@ -252,6 +252,17 @@ class CaseResults:
         suffix = f"_{_safe(tag)}" if tag else ""
         return load_csv(self.path(f"mode_shapes{suffix}.csv"), required=False)
 
+    # -- buckling ----------------------------------------------------------
+    def buckling(self, tag: str) -> Optional[pd.DataFrame]:
+        """Load factors of the buckling check: tag "solid" or "topology"."""
+        return load_csv(self.path(f"buckling_{_safe(tag)}.csv"), required=False)
+
+    def buckling_mode(self, tag: str, load_case: str, mode: int) -> Optional["VtkGrid"]:
+        """The mesh and shape of one buckling mode (1-based `mode`), from the
+        VTK file the run wrote (with output.vtk and output.mode_shapes)."""
+        path = self.path(f"buckling_{_safe(tag)}_{_safe(load_case)}_{mode}.vtk")
+        return read_legacy_vtk(path) if os.path.isfile(path) else None
+
     # -- topology ----------------------------------------------------------
     def history(self) -> Optional[pd.DataFrame]:
         return load_csv(self.path("history.csv"), required=False)
@@ -273,6 +284,93 @@ class CaseResults:
     @property
     def is_topology_run(self) -> bool:
         return "optimization_result" in self.summary
+
+
+@dataclass
+class VtkGrid:
+    """An unstructured grid read from a legacy ASCII VTK file."""
+
+    title: str
+    points: np.ndarray                 # (num_points, 3)
+    cells: List[np.ndarray]            # node lists, one array per cell
+    cell_types: np.ndarray             # VTK cell type ids
+    point_data: Dict[str, np.ndarray] = field(default_factory=dict)
+    cell_data: Dict[str, np.ndarray] = field(default_factory=dict)
+
+
+def read_legacy_vtk(path: str) -> VtkGrid:
+    """Read the ASCII UNSTRUCTURED_GRID files SparLab writes: POINTS, CELLS,
+    CELL_TYPES, and SCALARS / VECTORS blocks under POINT_DATA and CELL_DATA."""
+    if not os.path.isfile(path):
+        raise ResultError(f"{path} does not exist; run the corresponding case first")
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    if len(lines) < 4 or not lines[0].startswith("# vtk DataFile"):
+        raise ResultError(f"{path} is not a legacy VTK file")
+    if lines[2].strip().upper() != "ASCII":
+        raise ResultError(f"{path} is not an ASCII VTK file")
+    title = lines[1].strip()
+    tokens: List[str] = []
+    for line in lines[3:]:
+        tokens.extend(line.split())
+    pos = 0
+
+    def take(count: int) -> List[str]:
+        nonlocal pos
+        out = tokens[pos:pos + count]
+        if len(out) != count:
+            raise ResultError(f"{path} ends inside a data block")
+        pos += count
+        return out
+
+    points = np.zeros((0, 3))
+    cells: List[np.ndarray] = []
+    cell_types = np.zeros(0, dtype=int)
+    point_data: Dict[str, np.ndarray] = {}
+    cell_data: Dict[str, np.ndarray] = {}
+    section: Optional[Dict[str, np.ndarray]] = None
+    section_size = 0
+    while pos < len(tokens):
+        key = tokens[pos].upper()
+        pos += 1
+        if key == "DATASET":
+            kind = take(1)[0].upper()
+            if kind != "UNSTRUCTURED_GRID":
+                raise ResultError(f"{path}: dataset {kind} is not supported")
+        elif key == "POINTS":
+            count = int(take(2)[0])
+            points = np.array(take(3 * count), dtype=float).reshape(count, 3)
+        elif key == "CELLS":
+            count, size = (int(v) for v in take(2))
+            flat = np.array(take(size), dtype=int)
+            at = 0
+            for _ in range(count):
+                n = flat[at]
+                cells.append(flat[at + 1:at + 1 + n])
+                at += n + 1
+        elif key == "CELL_TYPES":
+            count = int(take(1)[0])
+            cell_types = np.array(take(count), dtype=int)
+        elif key in ("POINT_DATA", "CELL_DATA"):
+            section_size = int(take(1)[0])
+            section = point_data if key == "POINT_DATA" else cell_data
+        elif key in ("SCALARS", "VECTORS"):
+            if section is None:
+                raise ResultError(f"{path}: {key} outside POINT_DATA / CELL_DATA")
+            name = take(1)[0]
+            take(1)  # data type
+            components = 3 if key == "VECTORS" else 1
+            if key == "SCALARS":
+                # Optional component count, then the LOOKUP_TABLE line.
+                if tokens[pos].upper() != "LOOKUP_TABLE":
+                    components = int(take(1)[0])
+                take(2)
+            values = np.array(take(section_size * components), dtype=float)
+            section[name] = values.reshape(section_size, components) if components > 1 \
+                else values
+        else:
+            raise ResultError(f"{path}: unexpected keyword {key}")
+    return VtkGrid(title, points, cells, cell_types, point_data, cell_data)
 
 
 def load_case(directory: str) -> CaseResults:

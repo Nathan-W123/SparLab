@@ -614,7 +614,7 @@ void ResultWriter::write_density(const Mesh& mesh, const DesignDomain& domain,
   const bool printable =
       result.overhang_filtered && result.printable_density.size() == mesh.num_elements();
   if (printable) header.push_back("printable_density[-]");
-  const bool robust = result.robust &&
+  const bool robust = (result.robust || result.erosion_checked) &&
                       result.robust_record.eroded_density.size() == mesh.num_elements();
   if (robust) header.insert(header.end(), {"eroded_density[-]", "dilated_density[-]"});
   CsvWriter csv(file("density_final.csv"), header);
@@ -1122,6 +1122,9 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                      "(eta + delta); volume on the dilated design (eta - delta) against "
                      "V* V_dilated / V_blueprint, rescaled every robust_volume_interval "
                      "iterations; the blueprint (eta) is reported and exported"));
+        } else if (po.erosion_check) {
+          pj.set("erosion_check", json::Value::make_bool(true));
+          pj.set("robust_delta", json::Value::make_number(po.robust_delta));
         }
       }
       setup.set("projection", pj);
@@ -1217,7 +1220,7 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
                          "filtered_grey_level that of the density before projection"));
       res.set("projection", pj);
     }
-    if (result.robust) {
+    if (result.robust || result.erosion_checked) {
       const RobustRecord& rr = result.robust_record;
       json::Value rb = json::Value::make_object();
       json::Value designs = json::Value::make_array();
@@ -1234,11 +1237,21 @@ json::Value make_topology_summary(const Configuration& config, const FemModel& m
              rr.volume_fraction_intermediate);
       design("dilated", rr.eta_dilated, rr.compliance_dilated, rr.volume_fraction_dilated);
       rb.set("designs", designs);
-      rb.set("dilated_target_fraction", json::Value::make_number(rr.dilated_target_fraction));
-      rb.set("note", json::Value::make_string(
-                         "compliance_J and volume_fraction below are the blueprint's; the "
-                         "optimiser minimised the eroded design's compliance"));
-      res.set("robust", rb);
+      if (result.robust) {
+        rb.set("dilated_target_fraction",
+               json::Value::make_number(rr.dilated_target_fraction));
+        rb.set("note", json::Value::make_string(
+                           "compliance_J and volume_fraction below are the blueprint's; "
+                           "the optimiser minimised the eroded design's compliance"));
+        res.set("robust", rb);
+      } else {
+        rb.set("note", json::Value::make_string(
+                           "a design optimised without the robust formulation, evaluated "
+                           "once at the eroded and dilated thresholds eta +- robust_delta "
+                           "of the final beta: its compliance if the part came out "
+                           "uniformly thinner or thicker than drawn"));
+        res.set("erosion_check", rb);
+      }
     }
     res.set("compliance_J", json::Value::make_number(result.compliance));
     res.set("load_case_compliance_J", json::array_of(result.load_case_compliance));

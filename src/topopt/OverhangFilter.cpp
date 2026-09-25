@@ -114,9 +114,20 @@ OverhangFilter::OverhangFilter(const Mesh& mesh, OverhangOptions options,
     return layer_of_[static_cast<std::size_t>(x)] < layer_of_[static_cast<std::size_t>(y)];
   });
   q_of_count_.assign(8, options_.smax_exponent);
+  std::size_t most_supports = 0;
+  for (const std::vector<Index>& s : supports_) most_supports = std::max(most_supports, s.size());
   for (std::size_t count = 1; count < q_of_count_.size(); ++count) {
     q_of_count_[count] = options_.smax_exponent + std::log(static_cast<Scalar>(count)) /
                                                       std::log(options_.smax_reference);
+    if (count <= most_supports && !(q_of_count_[count] > 0.0)) {
+      std::ostringstream os;
+      os << "topology.overhang.smax_exponent " << options_.smax_exponent
+         << " is too small for " << count << " supports at smax_reference "
+         << options_.smax_reference << ": the exponent Q = P + ln(n)/ln(xi_0) of the "
+         << "smooth maximum must stay positive, so P must exceed "
+         << std::log(static_cast<Scalar>(count)) / -std::log(options_.smax_reference);
+      throw ConfigError(os.str());
+    }
   }
   Scalar lateral_size = 0.0;
   for (int k : lateral) lateral_size += h[k];
@@ -124,12 +135,20 @@ OverhangFilter::OverhangFilter(const Mesh& mesh, OverhangOptions options,
   angle_degrees_ = std::atan(h[a] / lateral_size) * 180.0 / 3.14159265358979323846;
 }
 
-Scalar OverhangFilter::smax(Index e, const Vector& xi) const {
+OverhangFilter::SmoothMax OverhangFilter::smooth_max(Index e, const Vector& xi) const {
+  // Relative to the largest support m, with S = sum_j (xi_j / m)^P in
+  // [1, n_s]: smax = m^(P/Q) S^(1/Q). Summing xi_j^P directly underflows
+  // for the near-void densities of an optimisation (1e-8^40 = 1e-320), and
+  // the derivative's S^(1/Q - 1) then overflows to infinity.
   const std::vector<Index>& s = supports_[static_cast<std::size_t>(e)];
-  Scalar sum = 0.0;
-  for (Index j : s) sum += std::pow(std::max(xi(j), 0.0), options_.smax_exponent);
-  if (!(sum > 0.0)) return 0.0;
-  return std::pow(sum, 1.0 / q_of_count_[s.size()]);
+  SmoothMax out;
+  for (Index j : s) out.largest = std::max(out.largest, xi(j));
+  if (!(out.largest > 0.0)) return out;
+  const Scalar p = options_.smax_exponent;
+  for (Index j : s) out.scaled_sum += std::pow(std::max(xi(j), 0.0) / out.largest, p);
+  out.q = q_of_count_[s.size()];
+  out.value = std::pow(out.largest, p / out.q) * std::pow(out.scaled_sum, 1.0 / out.q);
+  return out;
 }
 
 OverhangFilter::Forward OverhangFilter::forward(const Vector& input) const {
@@ -145,7 +164,7 @@ OverhangFilter::Forward OverhangFilter::forward(const Vector& input) const {
     if (layer_of_[static_cast<std::size_t>(e)] == 0 || passive_[static_cast<std::size_t>(e)]) {
       continue;
     }
-    const Scalar big_xi = smax(e, out.xi);
+    const Scalar big_xi = smooth_max(e, out.xi).value;
     out.support_max(e) = big_xi;
     const Scalar x = input(e);
     const Scalar d = x - big_xi;
@@ -176,14 +195,14 @@ Vector OverhangFilter::pull_back(const Vector& input, const Vector& df_dxi) cons
     out(e) = lambda(e) * 0.5 * (1.0 - d / root);
     const Scalar through = lambda(e) * 0.5 * (1.0 + d / root);
     if (through == 0.0) continue;
-    const std::vector<Index>& s = supports_[static_cast<std::size_t>(e)];
-    Scalar sum = 0.0;
-    for (Index j : s) sum += std::pow(std::max(fw.xi(j), 0.0), p);
-    if (!(sum > 0.0)) continue;
-    const Scalar q = q_of_count_[s.size()];
-    const Scalar common = through * (p / q) * std::pow(sum, 1.0 / q - 1.0);
-    for (Index j : s) {
-      lambda(j) += common * std::pow(std::max(fw.xi(j), 0.0), p - 1.0);
+    // d smax / d xi_j = (P/Q) m^(P/Q - 1) S^(1/Q - 1) (xi_j / m)^(P - 1);
+    // P/Q >= 1, so the power of m stays bounded as m -> 0.
+    const SmoothMax sm = smooth_max(e, fw.xi);
+    if (!(sm.largest > 0.0)) continue;
+    const Scalar common = through * (p / sm.q) * std::pow(sm.largest, p / sm.q - 1.0) *
+                          std::pow(sm.scaled_sum, 1.0 / sm.q - 1.0);
+    for (Index j : supports_[static_cast<std::size_t>(e)]) {
+      lambda(j) += common * std::pow(std::max(fw.xi(j), 0.0) / sm.largest, p - 1.0);
     }
   }
   return out;

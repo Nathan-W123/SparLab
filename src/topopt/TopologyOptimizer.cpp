@@ -340,8 +340,9 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
     result.element_strain_energy = blueprint.element_strain_energy;
     result.volume_constraint_violation = (result.volume - target) / target;
     // The volume constraint of the loop is the dilated design's against its
-    // rescaled target; the blueprint meets V* only up to the lag of that
-    // rescaling, which the summary records.
+    // rescaled target; the blueprint follows V* only through the ratio of the
+    // two volumes, as of the last rescaling, so it misses V* by however much
+    // that ratio has moved since - which the summary records.
     Scalar violation = rr.dilated_target_fraction > 0.0
                            ? rr.volume_fraction_dilated / rr.dilated_target_fraction - 1.0
                            : 0.0;
@@ -352,6 +353,31 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
       violation = std::max(violation, rec.constraint);
     }
     result.constraint_violation = violation;
+  }
+  // Erosion check of a non-robust design: the same filtered field projected
+  // at eta +- delta, as if the part came out uniformly thinner or thicker.
+  if (options_.projection.enabled && !options_.projection.robust &&
+      options_.projection.erosion_check) {
+    result.erosion_checked = true;
+    RobustRecord& rr = result.robust_record;
+    const Scalar beta = objective.projection_beta();
+    const Scalar eta = objective.projection_eta();
+    rr.eta_eroded = eta + options_.projection.robust_delta;
+    rr.eta_intermediate = eta;
+    rr.eta_dilated = eta - options_.projection.robust_delta;
+    rr.compliance_intermediate = eval.compliance;
+    rr.volume_fraction_intermediate = eval.volume_fraction;
+    objective.set_projection(beta, rr.eta_eroded);
+    const ObjectiveEvaluation eroded = objective.evaluate(x, /*need_gradients=*/false);
+    rr.compliance_eroded = eroded.compliance;
+    rr.volume_fraction_eroded = eroded.volume_fraction;
+    rr.eroded_density = eroded.physical_density;
+    objective.set_projection(beta, rr.eta_dilated);
+    const ObjectiveEvaluation dilated = objective.evaluate(x, /*need_gradients=*/false);
+    rr.compliance_dilated = dilated.compliance;
+    rr.volume_fraction_dilated = dilated.volume_fraction;
+    rr.dilated_density = dilated.physical_density;
+    objective.set_projection(beta, eta);
   }
   result.overhang_filtered = objective.overhang() != nullptr;
   if (result.overhang_filtered) result.printable_density = eval.printable_density;
@@ -543,7 +569,8 @@ TopologyOptimizationResult TopologyOptimizer::run_oc() {
     }
     const OptimalityCriteriaStep step =
         optimality_criteria_update(domain_, x, eval.dc_dx, dv_dx, volume_of_design,
-                                   options_.oc, robust ? dilated_target : 0.0);
+                                   options_.oc, robust ? dilated_target : 0.0,
+                                   /*step_toward_unreachable_target=*/robust);
 
     TopologyIteration record;
     record.iteration = iteration;
