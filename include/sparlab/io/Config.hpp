@@ -9,10 +9,12 @@
 ///   "mesh":     { "type": "structured_quad", "nx":.., "ny":.., "lx":.., "ly":.. },
 ///               // or { "type": "structured_hex", "nx","ny","nz", "lx","ly","lz" }
 ///               // or "structured_tri" / "structured_tet" with the same keys
+///               // or { "type": "structured_shell", "shape": "cylinder", .. }
 ///               // or { "type": "file", "path": "part.msh", "scale": 0.001 }
 ///               // "order": 2 turns tetrahedra into 10-node Tet10 cells
 ///   "material": { "youngs_modulus":.., "poisson_ratio":.., "density":.. },
 ///   "model":    { "thickness":.., "stress_state": "plane_stress" },
+///               // a shell: { "thickness":.., "shell": { "sections": [..] } }
 ///   "boundary_conditions": [ { "fix": ["x","y"], "region": {..} } ],
 ///   "load_cases":          [ { "name":.., "weight":.., "point_loads": [..] } ],
 ///   "solver":   { "linear": {..}, "equilibrium_tolerance":.. },
@@ -34,6 +36,11 @@
 /// `path` is relative to the deck's own directory, and its physical groups
 /// (Gmsh) or *NSET / *ELSET cards (Abaqus) become regions through
 /// `{"group": "<name>"}`.
+///
+/// A shell mesh (`structured_shell`, or a file of S4 cells, or of
+/// quadrilaterals with `"shell": true`) lies in 3-D and takes three-entry
+/// vectors, the stress state "shell", a thickness, rotations among the fixed
+/// components ("rx", "ry", "rz") and nodal moments.
 ///
 /// Every numeric field is in SI units. Unknown keys are reported (not ignored),
 /// because a misspelled key that silently takes its default is a direct route
@@ -68,6 +75,7 @@ enum class MeshKind {
   StructuredHex,   ///< "structured_hex": 3-D Hex8 grid
   StructuredTri,   ///< "structured_tri": the Q4 grid, each cell split into 2 Tri3
   StructuredTet,   ///< "structured_tet": the Hex8 grid, each cell split into 6 Tet4
+  StructuredShell, ///< "structured_shell": a plate, cylinder or sphere of MITC4 cells
   File             ///< "file": an unstructured Gmsh (.msh) or Abaqus (.inp) mesh
 };
 
@@ -154,6 +162,15 @@ struct TopologyConfig {
   Scalar length_scale_tolerance = 0.02;
 };
 
+/// A shell section: the thickness of the shell elements a region selects
+/// (at their centroids, or an element set), overriding `model.thickness`
+/// there (later sections win).
+struct ShellSection {
+  std::string name;
+  SelectorGroup region;
+  Scalar thickness = 0.0;  ///< [m]
+};
+
 /// A material assigned to an element region, overriding the deck's primary
 /// `material` there (later regions win).
 struct MaterialRegion {
@@ -177,7 +194,8 @@ class Configuration {
   std::string source_path;
 
   MeshKind mesh_kind = MeshKind::StructuredQuad;
-  StructuredMeshSpec mesh_spec;   ///< structured kinds
+  StructuredMeshSpec mesh_spec;   ///< structured box kinds
+  ShellMeshSpec shell_mesh;       ///< MeshKind::StructuredShell
   /// Polynomial order of the tetrahedra: 1 (Tet4) or 2 (Tet10). A
   /// `structured_tet` deck with order 2 splits the grid into Tet10 cells; a
   /// file of linear tetrahedra with order 2 is elevated to straight-sided
@@ -194,6 +212,10 @@ class Configuration {
   Scalar thickness = 1.0;
   StressState stress_state = StressState::PlaneStress;
   IntegrationOptions integration;
+  /// A shell model's drilling stiffness and fold angle (`model.shell`), and
+  /// its sections.
+  ShellOptions shell;
+  std::vector<ShellSection> shell_sections;
 
   std::vector<DisplacementConstraint> constraints;
   std::vector<LoadCaseSpec> load_cases;
@@ -214,6 +236,9 @@ class Configuration {
 
   /// Spatial dimension implied by the mesh (2 or 3).
   int dim() const;
+
+  /// True for a deck of shell elements.
+  bool is_shell() const { return stress_state == StressState::Shell; }
 
   /// One-line description of the mesh source for messages and summaries,
   /// e.g. "structured_tet 40 x 20 x 10" or "file 'bracket.msh' (Tri3)".

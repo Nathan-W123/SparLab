@@ -138,6 +138,11 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
       filter_(filter),
       domain_(domain),
       options_(options) {
+  if (model.is_shell()) {
+    throw ConfigError("topology optimisation of a shell model is not supported: the "
+                      "densities, filters and sensitivities are those of continuum cells, "
+                      "and a shell's design variable would be its thickness");
+  }
   options_.simp.validate();
   if (options_.max_iterations < 1) {
     throw ConfigError("optimizer.max_iterations must be at least 1");

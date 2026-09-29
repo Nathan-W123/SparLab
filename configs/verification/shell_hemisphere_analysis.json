@@ -1,0 +1,42 @@
+{
+  // ---------------------------------------------------------------------------
+  // The pinched hemisphere with an 18 degree hole (MacNeal and Harder 1985) of
+  // MITC4 shells, whole: R = 10, t = 0.04, E = 6.825e7, nu = 0.3, loads of 2
+  // on the equator, outwards at (+-10, 0, 0) and inwards at (0, +-10, 0). It
+  // stands on six held components that symmetry has zero and that carry no
+  // reaction: u_y and u_z at (+-10, 0, 0), u_x at (0, 10, 0) and u_y where
+  // the hole's edge meets the plane y = 0 - rather than on a quarter's
+  // symmetry planes, whose held rotations CalculiX imposes through rigid
+  // knots that stiffen its model. 48 x 12 cells (12 x 12 per quarter); the
+  // displacement under a load converges towards 0.094 (sparlab_verify --study
+  // shell-pinched-hemisphere). Cross-validated by an independent MITC4 in
+  // NumPy and by CalculiX's S4.
+  // ---------------------------------------------------------------------------
+  "name": "shell_hemisphere_analysis",
+  "description": "Pinched hemisphere of MITC4 shells: point loads on the equator",
+  "units": "consistent (the benchmark's own)",
+  "mesh": { "type": "structured_shell", "shape": "sphere", "radius": 10.0,
+            "longitudes": [0.0, 360.0], "polar_angles": [18.0, 90.0],
+            "n_around": 48, "n_meridian": 12 },
+  "material": { "name": "hemisphere", "youngs_modulus": 6.825e7, "poisson_ratio": 0.3, "density": 1.0 },
+  "model": { "thickness": 0.04 },
+  "boundary_conditions": [
+    { "name": "x_points", "fix": ["y", "z"],
+      "region": { "any_of": [ { "box": { "xmin": 9.999, "zmax": 1e-9 } },
+                              { "box": { "xmax": -9.999, "zmax": 1e-9 } } ] } },
+    { "name": "y_point", "fix": ["x"], "region": { "box": { "ymin": 9.999, "zmax": 1e-9 } } },
+    { "name": "hole_point", "fix": ["y"],
+      "region": { "box": { "xmin": 0.0, "ymin": -1e-9, "ymax": 1e-9, "zmin": 9.5 } } }
+  ],
+  "load_cases": [
+    { "name": "pinch",
+      "point_loads": [
+        { "name": "out_px", "force": [2.0, 0.0, 0.0], "region": { "box": { "xmin": 9.999, "zmax": 1e-9 } } },
+        { "name": "out_mx", "force": [-2.0, 0.0, 0.0], "region": { "box": { "xmax": -9.999, "zmax": 1e-9 } } },
+        { "name": "in_py", "force": [0.0, -2.0, 0.0], "region": { "box": { "ymin": 9.999, "zmax": 1e-9 } } },
+        { "name": "in_my", "force": [0.0, 2.0, 0.0], "region": { "box": { "ymax": -9.999, "zmax": 1e-9 } } }
+      ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "output": { "csv": true, "vtk": true }
+}

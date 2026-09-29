@@ -76,10 +76,10 @@ SparseMatrix assemble_geometric_stiffness(const FemModel& model, const Assembler
     const Scalar s = stress_scale != nullptr ? (*stress_scale)(e) : 1.0;
     if (s == 0.0) return Matrix::Zero(edofs, edofs);
     const Vector ue = model.dofs().gather(mesh.element_nodes(e), npe, displacement);
-    const Matrix coords = mesh.element_coordinates(e);
+    const Matrix coords = model.element_geometry(e);
     if (temperature == nullptr || model.material_of(e).thermal_expansion() == 0.0) {
       return element.geometric_stiffness(coords, model.constitutive_of(e), ue, s,
-                                         model.thickness(), model.integration());
+                                         model.thickness_of(e), model.integration());
     }
     // Thermal prestress: sigma = s D (B u - eps0) at each point.
     std::vector<Vector> stresses;

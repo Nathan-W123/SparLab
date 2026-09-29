@@ -128,6 +128,15 @@ def main(argv=None) -> int:
         ("Hertz point contact",
          lambda: studies.plot_hertz_point(
              args.verification, figure("verify_hertz_point.png"))),
+        ("Shell plates and cylinder",
+         lambda: studies.plot_shell_plates(
+             args.verification, figure("verify_shell_plates.png"))),
+        ("Shell frequencies and buckling",
+         lambda: studies.plot_shell_eigen(
+             args.verification, figure("verify_shell_eigen.png"))),
+        ("Shell benchmarks and folds",
+         lambda: studies.plot_shell_benchmarks(
+             args.verification, figure("verify_shell_benchmarks.png"))),
     ]
 
     for label, task in tasks:

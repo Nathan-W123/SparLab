@@ -45,7 +45,8 @@ void check_nodes(FaceShape shape, const Matrix& face_coords) {
 FaceShape face_shape_of(ElementType type) {
   switch (type) {
     case ElementType::Quad4:
-    case ElementType::Tri3: return FaceShape::Line2;
+    case ElementType::Tri3:
+    case ElementType::Shell4: return FaceShape::Line2;  // a shell's faces are its edges
     case ElementType::Hex8: return FaceShape::Quad4;
     case ElementType::Tet4: return FaceShape::Tri3;
     case ElementType::Tet10: return FaceShape::Tri6;

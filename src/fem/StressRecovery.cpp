@@ -5,6 +5,7 @@
 
 #include <Eigen/Eigenvalues>
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 
@@ -103,14 +104,54 @@ Vector element_stress_at(const FemModel& model, Index element, const NaturalPoin
   return stiffness_scale * (model.constitutive_of(element) * strain);
 }
 
+ShellField recover_shell_resultants(const FemModel& model, const Assembler& assembler,
+                                    const Vector& displacement) {
+  check_displacement(model, displacement);
+  const auto* shell = dynamic_cast<const Shell4Element*>(&model.element());
+  if (shell == nullptr) {
+    throw ModelError("recover_shell_resultants needs a shell model; a continuum model's "
+                     "stresses come from recover_stresses");
+  }
+  const Mesh& mesh = model.mesh();
+  const Index ne = mesh.num_elements();
+  const Index nn = mesh.num_nodes();
+  ShellField field;
+  field.element.resize(static_cast<std::size_t>(ne));
+  field.element_von_mises.setZero(ne);
+  field.element_strain_energy.setZero(ne);
+  field.nodal_von_mises.setZero(nn);
+  Vector nodal_weight = Vector::Zero(nn);
+  Vector ue;
+  for (Index e = 0; e < ne; ++e) {
+    gather_element_displacement(model, e, displacement, ue);
+    const ShellResultants r = shell->resultants(model.element_geometry(e),
+                                                model.constitutive_of(e), ue,
+                                                model.thickness_of(e), 0.0, 0.0);
+    field.element[static_cast<std::size_t>(e)] = r;
+    const Scalar vm = std::max({r.von_mises_top, r.von_mises_bottom, r.von_mises_mid});
+    field.element_von_mises(e) = vm;
+    field.element_strain_energy(e) = 0.5 * ue.dot(assembler.element_stiffness(e) * ue);
+    const Scalar w = mesh.element_measure(e);
+    const Index* nodes = mesh.element_nodes(e);
+    for (int a = 0; a < mesh.nodes_per_elem(); ++a) {
+      field.nodal_von_mises(nodes[a]) += w * vm;
+      nodal_weight(nodes[a]) += w;
+    }
+  }
+  for (Index n = 0; n < nn; ++n) {
+    if (nodal_weight(n) > 0.0) field.nodal_von_mises(n) /= nodal_weight(n);
+  }
+  return field;
+}
+
 StressField recover_stresses(const FemModel& model, const Assembler& assembler,
                              const Vector& displacement,
                              const Vector* stiffness_scale,
                              const Vector* temperature) {
   check_displacement(model, displacement);
   if (model.dofs_per_node() != model.dim()) {
-    throw ModelError("recover_stresses is the continuum recovery; shell and beam models "
-                     "report their stresses through their own elements");
+    throw ModelError("recover_stresses is the continuum recovery; a shell model reports "
+                     "its resultants through recover_shell_resultants");
   }
   if (temperature != nullptr && temperature->size() != model.mesh().num_nodes()) {
     throw ModelError("recover_stresses: the temperature field does not match the mesh");

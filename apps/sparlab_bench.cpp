@@ -77,8 +77,10 @@ Mesh build_bench_mesh(ElementType element, const StructuredMeshSpec& spec) {
     case ElementType::Hex8: return make_structured_hex_mesh(spec);
     case ElementType::Tet4: return make_structured_tet_mesh(spec);
     case ElementType::Tet10: return make_structured_tet10_mesh(spec);
+    case ElementType::Shell4: break;
   }
-  throw ConfigError("unhandled element type");
+  throw ConfigError("the benchmark meshes are continuum boxes; " + to_string(element) +
+                    " is not one of them");
 }
 
 FemModel build_bench_model(ElementType element, Index nx, Index ny, Index nz) {

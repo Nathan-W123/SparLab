@@ -114,6 +114,7 @@ import numpy as np
 
 import contact_xval
 import dynamics_xval
+import shell_xval
 
 from sparlab_viz.loaders import Mesh, ResultError, load_case
 
@@ -1277,6 +1278,12 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
     case = load_case(case_dir)
     mesh = case.mesh
     summary = case.summary
+    if summary["mesh"]["element_type"] == "Shell4":
+        # A shell run: an independent MITC4 in NumPy, and CalculiX's S4 for
+        # information (shell_xval.py).
+        return shell_xval.shell_case_report(case, case_dir, tolerances, skip_calculix,
+                                            run_calculix, parse_frd_displacements, _safe,
+                                            run_calculix_buckling)
     material = summary["material"]
     thickness = float(summary["mesh"].get("thickness_m", 1.0))
     stress_state = material["stress_state"]
@@ -1845,6 +1852,11 @@ def main(argv=None) -> int:
     parser.add_argument("--tol-calculix-contact", type=float, default=1e-5,
                         help="CalculiX LINMORTAR vs SparLab's contact solution (the .frd "
                              "rounding is 5e-6)")
+    parser.add_argument("--tol-shell-numpy", type=float, default=1e-7,
+                        help="shell runs: the independent NumPy MITC4's displacements and "
+                             "rotations")
+    parser.add_argument("--tol-shell-numpy-eigen", type=float, default=1e-7,
+                        help="shell runs: its frequencies and buckling factors")
     parser.add_argument("--skfem-buckling-max-dofs", type=int, default=6000,
                         help="largest free-DOF count for the dense buckling eigensolve")
     args = parser.parse_args(argv)
@@ -1869,6 +1881,8 @@ def main(argv=None) -> int:
                   "calculix_transient": args.tol_calculix_transient,
                   "skfem_contact": args.tol_skfem_contact,
                   "calculix_contact": args.tol_calculix_contact,
+                  "shell_numpy": args.tol_shell_numpy,
+                  "shell_numpy_eigen": args.tol_shell_numpy_eigen,
                   "skfem_buckling_max_dofs": args.skfem_buckling_max_dofs}
     import skfem
     summary = {
@@ -1906,7 +1920,7 @@ def main(argv=None) -> int:
         for lc in report["load_cases"]:
             for code, stats in lc["codes"].items():
                 if stats["passed"] is None:
-                    verdict = "INFO (different idealisation)"
+                    verdict = f"INFO ({stats.get('info', 'different idealisation')})"
                 else:
                     all_passed = all_passed and stats["passed"]
                     verdict = "PASS" if stats["passed"] else "FAIL"
@@ -1916,9 +1930,11 @@ def main(argv=None) -> int:
                          f"{stats['max_rel_diff']:.1e}]")
                 if "round_off_scale" in stats:
                     extra += f" [kappa_1 eps {stats['round_off_scale']:.1e}]"
+                tolerance = ("none" if stats["tolerance"] is None
+                             else f"{stats['tolerance']:.0e}")
                 print(f"  {report['case']:<28} {lc['load_case']:<14} {code:<18} "
                       f"{stats['element']:<12} max rel diff {judged:.3e} "
-                      f"(tol {stats['tolerance']:.0e}) {verdict}{extra}")
+                      f"(tol {tolerance}) {verdict}{extra}")
     summary["all_passed"] = all_passed
     os.makedirs(args.output, exist_ok=True)
     path = os.path.join(args.output, "summary.json")

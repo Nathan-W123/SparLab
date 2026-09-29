@@ -5,8 +5,10 @@
 
 #include <Eigen/Geometry>
 
+#include <cmath>
 #include <random>
 #include <sstream>
+#include <string>
 #include <utility>
 
 namespace sparlab {
@@ -341,6 +343,160 @@ Mesh make_perturbed_tri_mesh(const StructuredMeshSpec& spec, Scalar perturbation
 Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed) {
   return split_into_tetrahedra(make_perturbed_hex_mesh(spec, perturbation, seed));
+}
+
+std::string to_string(ShellShape shape) {
+  switch (shape) {
+    case ShellShape::Plate: return "plate";
+    case ShellShape::Cylinder: return "cylinder";
+    case ShellShape::Sphere: return "sphere";
+  }
+  return "unknown";
+}
+
+ShellShape parse_shell_shape(const std::string& text) {
+  if (text == "plate") return ShellShape::Plate;
+  if (text == "cylinder") return ShellShape::Cylinder;
+  if (text == "sphere") return ShellShape::Sphere;
+  throw ConfigError("shell shape must be \"plate\", \"cylinder\" or \"sphere\", got '" +
+                    text + "'");
+}
+
+Mesh make_structured_shell_mesh(const ShellMeshSpec& spec) {
+  constexpr Scalar kPi = 3.14159265358979323846;
+  constexpr Scalar kDegree = kPi / 180.0;
+  const auto fail = [](const std::string& text) { throw ConfigError("shell mesh: " + text); };
+  if (spec.n1 < 1 || spec.n2 < 1) {
+    std::ostringstream os;
+    os << "at least one element per direction is needed (got n1 = " << spec.n1
+       << ", n2 = " << spec.n2 << ")";
+    fail(os.str());
+  }
+  const Scalar span = spec.angle_end - spec.angle_start;
+  bool closed = false;
+  if (spec.shape == ShellShape::Plate) {
+    if (!(spec.lx > 0.0) || !(spec.ly > 0.0)) {
+      std::ostringstream os;
+      os << "a plate needs positive extents (got lx = " << spec.lx << " m, ly = " << spec.ly
+         << " m)";
+      fail(os.str());
+    }
+    // Moving the corners of a rectangle by up to p of its sides along each
+    // axis keeps it convex while p < 1/4 (at 1/4 three corners can line up).
+    if (!(spec.perturbation >= 0.0 && spec.perturbation < 0.25)) {
+      std::ostringstream os;
+      os << "the perturbation must lie in [0, 0.25) to keep every cell convex (got "
+         << spec.perturbation << ")";
+      fail(os.str());
+    }
+  } else {
+    if (!(spec.radius > 0.0)) {
+      std::ostringstream os;
+      os << "a " << to_string(spec.shape) << " needs a positive radius (got " << spec.radius
+         << " m)";
+      fail(os.str());
+    }
+    if (!(span > 0.0) || span > 360.0 + 1.0e-12) {
+      std::ostringstream os;
+      os << "the angles must run upwards over at most 360 degrees (got " << spec.angle_start
+         << " to " << spec.angle_end << ")";
+      fail(os.str());
+    }
+    closed = std::abs(span - 360.0) <= 1.0e-12;
+    if (closed && spec.n1 < 3) {
+      std::ostringstream os;
+      os << "a closed circle needs at least 3 elements around it (got n1 = " << spec.n1 << ")";
+      fail(os.str());
+    }
+    if (spec.shape == ShellShape::Cylinder) {
+      if (!(spec.length > 0.0)) {
+        std::ostringstream os;
+        os << "a cylinder needs a positive length (got " << spec.length << " m)";
+        fail(os.str());
+      }
+      if (spec.axis < 0 || spec.axis > 2) {
+        std::ostringstream os;
+        os << "the cylinder axis must be 0 (x), 1 (y) or 2 (z) (got " << spec.axis << ")";
+        fail(os.str());
+      }
+    } else if (!(spec.polar_start > 0.0 && spec.polar_start < spec.polar_end &&
+                 spec.polar_end < 180.0)) {
+      std::ostringstream os;
+      os << "the polar angles must satisfy 0 < start < end < 180 degrees (got "
+         << spec.polar_start << " to " << spec.polar_end
+         << "); at a pole the quadrilaterals would collapse into triangles, so leave an "
+            "opening there (as the pinched hemisphere does)";
+      fail(os.str());
+    }
+  }
+
+  const Index m1 = closed ? spec.n1 : spec.n1 + 1;  // node columns along direction 1
+  const Index m2 = spec.n2 + 1;
+  Matrix coords(3, m1 * m2);
+  Matrix normals(3, m1 * m2);
+  const Scalar d1 = 1.0 / static_cast<Scalar>(spec.n1);
+  const Scalar d2 = 1.0 / static_cast<Scalar>(spec.n2);
+  for (Index j = 0; j < m2; ++j) {
+    for (Index i = 0; i < m1; ++i) {
+      const Scalar a = static_cast<Scalar>(i) * d1;  // in [0, 1] along direction 1
+      const Scalar b = static_cast<Scalar>(j) * d2;  // along direction 2
+      const Index n = j * m1 + i;
+      switch (spec.shape) {
+        case ShellShape::Plate:
+          coords.col(n) = spec.origin + Vector3(a * spec.lx, b * spec.ly, 0.0);
+          normals.col(n) = Vector3::UnitZ();
+          break;
+        case ShellShape::Cylinder: {
+          const Vector3 e = Vector3::Unit(spec.axis);
+          const Vector3 p = Vector3::Unit((spec.axis + 1) % 3);
+          const Vector3 q = Vector3::Unit((spec.axis + 2) % 3);
+          const Scalar theta = (spec.angle_start + a * span) * kDegree;
+          const Vector3 radial = std::cos(theta) * p + std::sin(theta) * q;
+          coords.col(n) = spec.origin + spec.radius * radial + (b * spec.length) * e;
+          normals.col(n) = radial;
+          break;
+        }
+        case ShellShape::Sphere: {
+          const Scalar lambda = (spec.angle_start + a * span) * kDegree;
+          const Scalar phi =
+              (spec.polar_end - b * (spec.polar_end - spec.polar_start)) * kDegree;
+          const Vector3 radial(std::sin(phi) * std::cos(lambda), std::sin(phi) * std::sin(lambda),
+                               std::cos(phi));
+          coords.col(n) = spec.origin + spec.radius * radial;
+          normals.col(n) = radial;
+          break;
+        }
+      }
+    }
+  }
+  if (spec.shape == ShellShape::Plate && spec.perturbation > 0.0) {
+    std::mt19937 rng(spec.seed);
+    std::uniform_real_distribution<Scalar> dist(-1.0, 1.0);
+    const Scalar dx = spec.lx * d1;
+    const Scalar dy = spec.ly * d2;
+    for (Index j = 1; j + 1 < m2; ++j) {
+      for (Index i = 1; i + 1 < m1; ++i) {
+        const Index n = j * m1 + i;
+        coords(0, n) += spec.perturbation * dx * dist(rng);
+        coords(1, n) += spec.perturbation * dy * dist(rng);
+      }
+    }
+  }
+  std::vector<Index> connectivity;
+  connectivity.reserve(static_cast<std::size_t>(spec.n1 * spec.n2) * 4);
+  for (Index j = 0; j < spec.n2; ++j) {
+    for (Index i = 0; i < spec.n1; ++i) {
+      const Index i1 = closed ? (i + 1) % spec.n1 : i + 1;
+      connectivity.insert(connectivity.end(),
+                          {j * m1 + i, j * m1 + i1, (j + 1) * m1 + i1, (j + 1) * m1 + i});
+    }
+  }
+  Mesh mesh(std::move(coords), std::move(connectivity), ElementType::Shell4);
+  mesh.set_node_normals(std::move(normals));
+  mesh.validate();
+  log::debug("structured shell mesh: ", to_string(spec.shape), ", ", spec.n1, " x ", spec.n2,
+             " elements", closed ? " (closed around)" : "");
+  return mesh;
 }
 
 Mesh make_perturbed_tet10_mesh(const StructuredMeshSpec& spec, Scalar perturbation,

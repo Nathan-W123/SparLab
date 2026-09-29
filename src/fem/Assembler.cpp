@@ -39,8 +39,9 @@ void check_scale(const Vector* scale, Index num_elements, const char* what) {
 }  // namespace
 
 Assembler::Assembler(const FemModel& model) : model_(model) {
-  // One cached element matrix pair needs identical cells *and* one material.
-  uniform_ = mesh_is_uniform(model_.mesh()) && model_.single_material();
+  // One cached element matrix pair needs identical cells *and* one material;
+  // a shell's elements differ in their directors and thicknesses.
+  uniform_ = mesh_is_uniform(model_.mesh()) && model_.single_material() && !model_.is_shell();
   build_cache();
 }
 
@@ -57,15 +58,14 @@ void Assembler::build_cache() {
 }
 
 Matrix Assembler::compute_element_stiffness(Index e) const {
-  return model_.element().stiffness(model_.mesh().element_coordinates(e),
-                                    model_.constitutive_of(e), model_.thickness(),
-                                    model_.integration());
+  return model_.element().stiffness(model_.element_geometry(e), model_.constitutive_of(e),
+                                    model_.thickness_of(e), model_.integration());
 }
 
 Matrix Assembler::compute_element_mass(Index e) const {
-  return model_.element().consistent_mass(model_.mesh().element_coordinates(e),
+  return model_.element().consistent_mass(model_.element_geometry(e),
                                           model_.material_of(e).density(),
-                                          model_.thickness(), model_.integration());
+                                          model_.thickness_of(e), model_.integration());
 }
 
 const Matrix& Assembler::element_stiffness(Index e) const {
@@ -302,7 +302,9 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
     } else if (scaled_diagonal) {
       // HRZ: per displacement component, the diagonal scaled so it sums to
       // the element mass, which conserves the mass and keeps every entry
-      // positive.
+      // positive. A component the element gives no inertia at all - the
+      // rotation about the normal of a flat shell along a global axis, which
+      // moves no point of it - stays massless.
       for (int k = 0; k < dim; ++k) {
         Scalar total = 0.0;
         Scalar diagonal = 0.0;
@@ -310,6 +312,7 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
           diagonal += me(dim * a + k, dim * a + k);
           for (int b = 0; b < npe; ++b) total += me(dim * a + k, dim * b + k);
         }
+        if (!(diagonal > 0.0)) continue;
         for (int a = 0; a < npe; ++a) {
           const Index row = gdofs[static_cast<std::size_t>(dim * a + k)];
           triplets.emplace_back(row, row, s * me(dim * a + k, dim * a + k) * total / diagonal);
@@ -380,12 +383,14 @@ SparseMatrix Assembler::assemble_elementwise(
 Scalar Assembler::total_mass(const Vector* scale) const {
   const Mesh& mesh = model_.mesh();
   check_scale(scale, mesh.num_elements(), "mass");
-  // The thickness factor is 1 for a solid mesh, which leaves the product exact.
-  const Scalar thickness = mesh.dim() == 2 ? model_.thickness() : 1.0;
+  // The thickness factor is 1 for a solid mesh, which leaves the product exact;
+  // a shell's is its element's (the mid-surface area times the thickness).
+  const bool thick = mesh.dim() == 2 || model_.is_shell();
   Scalar mass = 0.0;
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     const Scalar s = scale ? (*scale)(e) : 1.0;
-    mass += s * model_.material_of(e).density() * mesh.element_measure(e) * thickness;
+    mass += s * model_.material_of(e).density() * mesh.element_measure(e) *
+            (thick ? model_.thickness_of(e) : 1.0);
   }
   return mass;
 }

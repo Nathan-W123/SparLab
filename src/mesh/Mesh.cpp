@@ -4,6 +4,7 @@
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/elements/Hex8.hpp"
 #include "sparlab/elements/Quad4.hpp"
+#include "sparlab/elements/Shell4.hpp"
 #include "sparlab/elements/Tet10.hpp"
 
 #include <Eigen/Geometry>
@@ -26,6 +27,7 @@ int nodes_per_element(ElementType type) {
     case ElementType::Tri3: return 3;
     case ElementType::Tet4: return 4;
     case ElementType::Tet10: return 10;
+    case ElementType::Shell4: return 4;
   }
   throw MeshError("unhandled element type");
 }
@@ -37,9 +39,16 @@ int element_dimension(ElementType type) {
     case ElementType::Tri3: return 2;
     case ElementType::Tet4: return 3;
     case ElementType::Tet10: return 3;
+    case ElementType::Shell4: return 3;
   }
   throw MeshError("unhandled element type");
 }
+
+int topological_dimension(ElementType type) {
+  return type == ElementType::Shell4 ? 2 : element_dimension(type);
+}
+
+bool is_shell(ElementType type) { return type == ElementType::Shell4; }
 
 bool is_simplex(ElementType type) {
   return type == ElementType::Tri3 || type == ElementType::Tet4 ||
@@ -53,7 +62,8 @@ int corner_nodes(ElementType type) {
 int face_corner_nodes(ElementType type) {
   switch (type) {
     case ElementType::Quad4:
-    case ElementType::Tri3: return 2;
+    case ElementType::Tri3:
+    case ElementType::Shell4: return 2;
     case ElementType::Hex8: return 4;
     case ElementType::Tet4:
     case ElementType::Tet10: return 3;
@@ -68,6 +78,7 @@ std::string to_string(ElementType type) {
     case ElementType::Tri3: return "Tri3";
     case ElementType::Tet4: return "Tet4";
     case ElementType::Tet10: return "Tet10";
+    case ElementType::Shell4: return "Shell4";
   }
   return "Unknown";
 }
@@ -93,6 +104,7 @@ const std::vector<std::vector<int>>& element_local_faces(ElementType type) {
     case ElementType::Tri3: return tri_edges;
     case ElementType::Tet4: return tet_faces;
     case ElementType::Tet10: return tet10_faces;
+    case ElementType::Shell4: return quad_edges;
   }
   throw MeshError("unhandled element type");
 }
@@ -246,6 +258,32 @@ Mesh elevate_to_tet10(const Mesh& linear) {
   return quadratic;
 }
 
+namespace {
+
+/// The smallest scaled Jacobian over the corners of a shell quadrilateral,
+/// measured about its normal at the centre: 1 for a rectangle, 0 for a
+/// corner of 180 degrees, negative for a concave or folded corner.
+Scalar shell4_corner_quality(const Matrix& xe) {
+  Vector3 n;
+  try {
+    n = Shell4Element::normal(xe, 0.0, 0.0);
+  } catch (const MeshError&) {
+    return -1.0;
+  }
+  if (!n.allFinite()) return -1.0;
+  Scalar value = std::numeric_limits<Scalar>::max();
+  for (int a = 0; a < 4; ++a) {
+    const Vector3 p = xe.col(a);
+    const Vector3 e1 = Vector3(xe.col((a + 1) % 4)) - p;
+    const Vector3 e2 = Vector3(xe.col((a + 3) % 4)) - p;
+    const Scalar denom = e1.norm() * e2.norm();
+    value = std::min(value, denom > 0.0 ? e1.cross(e2).dot(n) / denom : -1.0);
+  }
+  return value;
+}
+
+}  // namespace
+
 Mesh::Mesh(Matrix coords, std::vector<Index> connectivity, ElementType type)
     : coords_(std::move(coords)),
       connectivity_(std::move(connectivity)),
@@ -291,6 +329,7 @@ Scalar Mesh::element_measure(Index e) const {
     }
     return 0.5 * twice_area;
   }
+  if (type_ == ElementType::Shell4) return Shell4Element::area(element_coordinates(e));
   if (type_ == ElementType::Tet4) return tet4_volume(element_coordinates(e));
   if (type_ == ElementType::Tet10) return tet10_volume(element_coordinates(e));
   Scalar min_det = 0.0;
@@ -305,7 +344,8 @@ Scalar Mesh::mean_element_size() const {
     Scalar measure_sum = 0.0;
     for (Index e = 0; e < ne; ++e) measure_sum += element_measure(e);
     const Scalar mean_measure = measure_sum / static_cast<Scalar>(ne);
-    return dim_ == 2 ? std::sqrt(mean_measure) : std::cbrt(mean_measure);
+    return topological_dimension(type_) == 2 ? std::sqrt(mean_measure)
+                                             : std::cbrt(mean_measure);
   }
   // Mean edge length, the quantity a mesh generator's size field controls;
   // the corners span a Tet10's edges.
@@ -335,6 +375,9 @@ MeshQuality Mesh::quality() const {
   switch (type_) {
     case ElementType::Quad4:
     case ElementType::Hex8: q.metric = "minimum scaled Jacobian at the corners"; break;
+    case ElementType::Shell4:
+      q.metric = "minimum scaled Jacobian at the corners, about the element normal";
+      break;
     case ElementType::Tri3: q.metric = "4 sqrt(3) A / sum of squared edge lengths"; break;
     case ElementType::Tet4: q.metric = "6 sqrt(2) V / rms edge length cubed"; break;
     case ElementType::Tet10:
@@ -358,6 +401,8 @@ MeshQuality Mesh::quality() const {
             denom > 0.0 ? (e1.x() * e2.y() - e1.y() * e2.x()) / denom : -1.0;
         value = std::min(value, sj);
       }
+    } else if (type_ == ElementType::Shell4) {
+      value = shell4_corner_quality(element_coordinates(e));
     } else if (type_ == ElementType::Hex8) {
       value = std::numeric_limits<Scalar>::max();
       for (int a = 0; a < 8; ++a) {
@@ -414,6 +459,26 @@ void Mesh::set_node_set(const std::string& name, std::vector<Index> nodes) {
   node_sets_[name] = std::move(nodes);
 }
 
+void Mesh::set_node_normals(Matrix normals) {
+  if (!is_shell(type_)) throw MeshError("node normals belong to a shell mesh");
+  if (normals.rows() != 3 || normals.cols() != num_nodes()) {
+    std::ostringstream os;
+    os << "node normals must be 3 x " << num_nodes() << ", got " << normals.rows() << " x "
+       << normals.cols();
+    throw MeshError(os.str());
+  }
+  for (Index n = 0; n < num_nodes(); ++n) {
+    const Scalar length = normals.col(n).norm();
+    if (!(std::abs(length - 1.0) <= 1.0e-10)) {
+      std::ostringstream os;
+      os << "the normal given at node " << n << " has length " << length
+         << "; node normals must be unit vectors";
+      throw MeshError(os.str());
+    }
+  }
+  node_normals_ = std::move(normals);
+}
+
 void Mesh::set_element_set(const std::string& name, std::vector<Index> elements) {
   if (name.empty()) throw MeshError("an element set needs a non-empty name");
   std::sort(elements.begin(), elements.end());
@@ -455,7 +520,8 @@ void Mesh::validate() const {
   }
 
   const Index ne = num_elements();
-  const char* unit = dim_ == 2 ? " m^2" : " m^3";
+  const bool areas = topological_dimension(type_) == 2;
+  const char* unit = areas ? " m^2" : " m^3";
   Scalar min_measure = std::numeric_limits<Scalar>::max();
   Scalar max_measure = 0.0;
   for (Index e = 0; e < ne; ++e) {
@@ -471,7 +537,23 @@ void Mesh::validate() const {
         }
       }
     }
-    if (dim_ == 2) {
+    if (type_ == ElementType::Shell4) {
+      // A shell cell has no orientation to invert, but a corner may not be
+      // concave or fold back against the element's normal.
+      const Scalar quality = shell4_corner_quality(element_coordinates(e));
+      if (!(quality > 0.0)) {
+        std::ostringstream os;
+        os << "shell element " << e << " has a corner whose scaled Jacobian about the "
+              "element normal is "
+           << quality
+           << "; the quadrilateral is concave, folded or collapsed (its nodes must go round "
+              "it in order)";
+        throw MeshError(os.str());
+      }
+      const Scalar area = element_measure(e);
+      min_measure = std::min(min_measure, area);
+      max_measure = std::max(max_measure, area);
+    } else if (dim_ == 2) {
       const Scalar area = element_measure(e);
       if (!(area > 0.0)) {
         std::ostringstream os;
@@ -542,7 +624,7 @@ void Mesh::validate() const {
   }
 
   if (max_measure / min_measure > 1.0e8) {
-    log::warn("extreme element ", (dim_ == 2 ? "area" : "volume"), " ratio ",
+    log::warn("extreme element ", (areas ? "area" : "volume"), " ratio ",
               max_measure / min_measure, " (min ", min_measure, unit, ", max ",
               max_measure, unit, "); conditioning of the stiffness matrix may suffer");
   }

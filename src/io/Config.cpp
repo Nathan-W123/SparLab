@@ -15,8 +15,9 @@ StressState parse_stress_state(const std::string& text) {
   if (text == "plane_stress") return StressState::PlaneStress;
   if (text == "plane_strain") return StressState::PlaneStrain;
   if (text == "three_dimensional" || text == "3d") return StressState::ThreeDimensional;
+  if (text == "shell") return StressState::Shell;
   throw ConfigError("unknown stress state '" + text +
-                    "' (expected plane_stress|plane_strain|three_dimensional)");
+                    "' (expected plane_stress|plane_strain|three_dimensional|shell)");
 }
 
 MassType parse_mass_type(const std::string& text) {
@@ -154,6 +155,7 @@ std::string to_string(MeshKind kind) {
     case MeshKind::StructuredHex: return "structured_hex";
     case MeshKind::StructuredTri: return "structured_tri";
     case MeshKind::StructuredTet: return "structured_tet";
+    case MeshKind::StructuredShell: return "structured_shell";
     case MeshKind::File: return "file";
   }
   return "unknown";
@@ -310,7 +312,8 @@ int Configuration::dim() const {
     case MeshKind::StructuredQuad:
     case MeshKind::StructuredTri: return 2;
     case MeshKind::StructuredHex:
-    case MeshKind::StructuredTet: return 3;
+    case MeshKind::StructuredTet:
+    case MeshKind::StructuredShell: return 3;
     case MeshKind::File:
       if (file_mesh == nullptr) {
         throw ConfigError("the configuration names a mesh file that has not been read");
@@ -329,6 +332,11 @@ std::string Configuration::describe_mesh() const {
          << to_string(file_mesh->element_type()) << ", " << file_mesh->num_elements()
          << " elements)";
     }
+    return os.str();
+  }
+  if (mesh_kind == MeshKind::StructuredShell) {
+    os << to_string(mesh_kind) << " " << to_string(shell_mesh.shape) << " " << shell_mesh.n1
+       << " x " << shell_mesh.n2;
     return os.str();
   }
   os << to_string(mesh_kind) << " " << mesh_spec.nx << " x " << mesh_spec.ny;
@@ -465,12 +473,14 @@ Configuration parse_configuration(const json::Value& document, const std::string
       config.mesh_kind = MeshKind::StructuredTri;
     } else if (type == "structured_tet") {
       config.mesh_kind = MeshKind::StructuredTet;
+    } else if (type == "structured_shell") {
+      config.mesh_kind = MeshKind::StructuredShell;
     } else if (type == "file") {
       config.mesh_kind = MeshKind::File;
     } else {
       throw ConfigError("'" + mesh.path() + ".type' must be one of structured_quad, "
-                        "structured_tri, structured_hex, structured_tet or file; got '" +
-                        type + "'");
+                        "structured_tri, structured_hex, structured_tet, structured_shell "
+                        "or file; got '" + type + "'");
     }
     if (config.mesh_kind == MeshKind::File) {
       for (const char* key : {"nx", "ny", "nz", "lx", "ly", "lz", "x0", "y0", "z0"}) {
@@ -497,6 +507,7 @@ Configuration parse_configuration(const json::Value& document, const std::string
         throw ConfigError(os.str());
       }
       file.read.merge_duplicate_nodes = mesh.boolean_or("merge_duplicate_nodes", false);
+      file.read.shell = mesh.boolean_or("shell", false);
       const ConfigNode order_node = mesh.child("order");
       file.read.duplicate_tolerance = mesh.number_or("duplicate_tolerance", 0.0);
       // The reader's messages name the file and line; the deck key is added
@@ -538,6 +549,41 @@ Configuration parse_configuration(const json::Value& document, const std::string
         }
         config.mesh_order = static_cast<int>(order);
       }
+    } else if (config.mesh_kind == MeshKind::StructuredShell) {
+      ShellMeshSpec& s = config.shell_mesh;
+      try {
+        s.shape = parse_shell_shape(mesh.string_or("shape", "plate"));
+      } catch (const ConfigError& e) {
+        throw ConfigError("'" + mesh.path() + ".shape': " + e.what());
+      }
+      s.origin = mesh.vector3_or("origin", Vector3::Zero(), 3);
+      if (s.shape == ShellShape::Plate) {
+        s.n1 = mesh.require("nx").integer();
+        s.n2 = mesh.require("ny").integer();
+        s.lx = mesh.positive_number("lx");
+        s.ly = mesh.positive_number("ly");
+        s.perturbation = mesh.number_or("perturbation", 0.0);
+        s.seed = static_cast<unsigned int>(mesh.integer_or("seed", static_cast<int>(s.seed)));
+      } else {
+        s.radius = mesh.positive_number("radius");
+        s.n1 = mesh.require("n_around").integer();
+        if (s.shape == ShellShape::Cylinder) {
+          s.n2 = mesh.require("n_along").integer();
+          s.length = mesh.positive_number("length");
+          s.axis = parse_axis(mesh, "axis");
+          const Vector2 angles = mesh.vector2_or("angles", Vector2(0.0, 360.0));
+          s.angle_start = angles(0);
+          s.angle_end = angles(1);
+        } else {
+          s.n2 = mesh.require("n_meridian").integer();
+          const Vector2 longitudes = mesh.vector2_or("longitudes", Vector2(0.0, 360.0));
+          s.angle_start = longitudes(0);
+          s.angle_end = longitudes(1);
+          const Vector2 polar = mesh.require("polar_angles").vector2();
+          s.polar_start = polar(0);
+          s.polar_end = polar(1);
+        }
+      }
     } else {
       const bool solid = config.mesh_kind == MeshKind::StructuredHex ||
                          config.mesh_kind == MeshKind::StructuredTet;
@@ -575,6 +621,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
     }
   }
   const int dim = config.dim();
+  const bool shell = config.mesh_kind == MeshKind::StructuredShell ||
+                     (config.mesh_kind == MeshKind::File && config.file_mesh != nullptr &&
+                      is_shell(config.file_mesh->element_type()));
 
   // --- material -----------------------------------------------------------
   {
@@ -595,26 +644,56 @@ Configuration parse_configuration(const json::Value& document, const std::string
     // A unit out-of-plane thickness is the conventional default for a 2-D
     // plane problem; it applies whether or not a "model" section is present.
     // A solid mesh has no thickness and rejects any other value.
+    if (shell && !model.child("thickness").exists()) {
+      throw ConfigError("'model.thickness' is required for the shell mesh (" +
+                        config.describe_mesh() + "): the thickness of its shell [m], which "
+                        "'model.shell.sections' may override by region");
+    }
     config.thickness = model.number_or("thickness", 1.0);
     if (!(config.thickness > 0.0)) {
       std::ostringstream os;
       os << "'model.thickness' must be positive, got " << config.thickness << " m";
       throw ConfigError(os.str());
     }
-    if (dim == 3 && config.thickness != 1.0) {
+    if (dim == 3 && !shell && config.thickness != 1.0) {
       std::ostringstream os;
       os << "'model.thickness' is " << config.thickness << " m but the "
          << config.describe_mesh() << " mesh is a solid with no thickness; remove the key";
       throw ConfigError(os.str());
     }
-    config.stress_state = parse_stress_state(
-        model.string_or("stress_state", dim == 3 ? "three_dimensional" : "plane_stress"));
+    config.stress_state = parse_stress_state(model.string_or(
+        "stress_state", shell ? "shell" : (dim == 3 ? "three_dimensional" : "plane_stress")));
+    if (shell != (config.stress_state == StressState::Shell)) {
+      throw ConfigError("'model.stress_state' = \"" + to_string(config.stress_state) +
+                        "\" does not fit the " + config.describe_mesh() + " mesh: " +
+                        (shell ? "a shell mesh takes the stress state \"shell\""
+                               : "the stress state \"shell\" needs a shell mesh "
+                                 "(structured_shell, or S4 cells in a file)"));
+    }
     if (stress_state_dimension(config.stress_state) != dim) {
       std::ostringstream os;
       os << "'model.stress_state' = \"" << to_string(config.stress_state) << "\" is a "
          << stress_state_dimension(config.stress_state) << "-D idealisation but the "
          << config.describe_mesh() << " mesh is " << dim << "-D";
       throw ConfigError(os.str());
+    }
+    const ConfigNode shell_node = model.child("shell");
+    if (shell_node.exists() && !shell) {
+      throw ConfigError("'" + shell_node.path() + "' applies to a shell mesh; the " +
+                        config.describe_mesh() + " mesh is not one");
+    }
+    if (shell) {
+      config.shell.drilling_factor =
+          shell_node.number_or("drilling_stiffness", config.shell.drilling_factor);
+      config.shell.fold_angle_deg = shell_node.number_or("fold_angle", config.shell.fold_angle_deg);
+      int index = 0;
+      for (const ConfigNode& sec : shell_node.array("sections")) {
+        ShellSection section;
+        section.name = sec.string_or("name", "section" + std::to_string(index++));
+        section.region = parse_region(sec.require("region"), section.name, dim);
+        section.thickness = sec.positive_number("thickness");
+        config.shell_sections.push_back(std::move(section));
+      }
     }
     const ConfigNode integ = model.child("integration");
     config.integration.stiffness_points = integ.integer_or("stiffness_points", 2);
@@ -657,15 +736,35 @@ Configuration parse_configuration(const json::Value& document, const std::string
         } else if (c == "z") {
           throw ConfigError("'" + component.path() +
                             "' fixes \"z\" but the mesh is two-dimensional");
+        } else if (shell && (c == "rx" || c == "ry" || c == "rz")) {
+          constraint.set(c == "rx" ? 3 : (c == "ry" ? 4 : 5), true);
+        } else if (c == "rx" || c == "ry" || c == "rz") {
+          throw ConfigError("'" + component.path() + "' fixes the rotation \"" + c +
+                            "\", but the nodes of the " + config.describe_mesh() +
+                            " mesh carry translations only; rotations are degrees of "
+                            "freedom of a shell");
         } else {
           throw ConfigError("'" + component.path() + "' must be \"x\", \"y\"" +
-                            (dim == 3 ? " or \"z\"" : "") + ", got \"" + c + "\"");
+                            (dim == 3 ? ", \"z\"" : "") +
+                            (shell ? ", \"rx\", \"ry\" or \"rz\"" : "") + ", got \"" + c +
+                            "\"");
         }
       }
       const Vector3 values = bc.vector3_or("value", Vector3::Zero(), dim);
       constraint.value_x = values.x();
       constraint.value_y = values.y();
       constraint.value_z = values.z();
+      const ConfigNode rotation = bc.child("rotation");
+      if (rotation.exists()) {
+        if (!shell) {
+          throw ConfigError("'" + rotation.path() + "' prescribes rotations, which only a "
+                            "shell model's nodes carry");
+        }
+        const Vector3 r = rotation.vector3(3);
+        constraint.value_rx = r.x();
+        constraint.value_ry = r.y();
+        constraint.value_rz = r.z();
+      }
       config.constraints.push_back(std::move(constraint));
     }
   }
@@ -696,7 +795,19 @@ Configuration parse_configuration(const json::Value& document, const std::string
         ln << spec.name << "_point" << load_index++;
         load.region =
             parse_region(pl.require("region"), pl.string_or("name", ln.str()), dim);
-        load.force = pl.require("force").vector3(dim);
+        const ConfigNode moment = pl.child("moment");
+        if (moment.exists()) {
+          if (!shell) {
+            throw ConfigError("'" + moment.path() + "' applies a moment, which needs a shell "
+                              "model (on a continuum mesh apply a couple of forces or a "
+                              "traction)");
+          }
+          load.moment = moment.vector3(3);
+          load.force = pl.child("force").exists() ? pl.require("force").vector3(dim)
+                                                  : Vector3(Vector3::Zero());
+        } else {
+          load.force = pl.require("force").vector3(dim);
+        }
         const std::string distribution = pl.string_or("distribution", "total");
         if (distribution == "total") {
           load.distribute_total = true;
@@ -1437,6 +1548,51 @@ Configuration parse_configuration(const json::Value& document, const std::string
     config.output.write_mode_shapes = out.boolean_or("mode_shapes", true);
   }
 
+  // --- shells -------------------------------------------------------------
+  // A shell model is linear (small rotations) and has no through-thickness
+  // temperature: what it cannot do is refused here, with the reason.
+  if (config.is_shell()) {
+    const auto refuse = [](const std::string& what, const std::string& why) {
+      throw ConfigError(what + " is not available for a shell model: " + why);
+    };
+    if (config.nonlinear.enabled) {
+      refuse("'nonlinear'", "the MITC4 shell is formulated with small rotations; its "
+                            "analyses are linear static, modal and buckling");
+    }
+    if (config.nonlinear.options.contact.enabled) {
+      refuse("'contact'", "contact is formulated between continuum bodies");
+    }
+    if (config.transient.enabled) {
+      refuse("'transient'", "the rotation of a shell node about its director moves no "
+                            "material, so the mass matrix is singular and the initial "
+                            "accelerations are not determined");
+    }
+    if (config.topology.enabled) {
+      refuse("'topology'", "the densities, filters and sensitivities are those of "
+                           "continuum cells, and a shell's design variable would be its "
+                           "thickness");
+    }
+    for (const LoadCaseSpec& lc : config.load_cases) {
+      if (lc.has_temperature()) {
+        refuse("the temperature of load case '" + lc.name + "'",
+               "the shell element has no thermal strain through its thickness");
+      }
+      if (lc.centrifugal.enabled) {
+        refuse("the centrifugal load of load case '" + lc.name + "'",
+               "it varies through the thickness in a way nodal loads cannot carry");
+      }
+    }
+    for (const MaterialRegion& mr : config.material_regions) {
+      if (mr.material.plasticity().enabled()) {
+        refuse("plasticity (material region '" + mr.name + "')",
+               "the shell is linear elastic");
+      }
+    }
+    if (config.material().plasticity().enabled()) {
+      refuse("plasticity", "the shell is linear elastic");
+    }
+  }
+
   // --- unknown keys -------------------------------------------------------
   const std::vector<std::string> unused = root.unused_keys();
   if (!unused.empty()) {
@@ -1466,6 +1622,7 @@ Mesh build_mesh(const Configuration& config) {
     case MeshKind::StructuredTet:
       return config.mesh_order == 2 ? make_structured_tet10_mesh(config.mesh_spec)
                                     : make_structured_tet_mesh(config.mesh_spec);
+    case MeshKind::StructuredShell: return make_structured_shell_mesh(config.shell_mesh);
     case MeshKind::File:
       if (config.file_mesh == nullptr) {
         throw ConfigError("the configuration names a mesh file that has not been read");
@@ -1479,6 +1636,19 @@ FemModel build_model(const Configuration& config) {
   Mesh mesh = build_mesh(config);
   FemModel model(std::move(mesh), config.material(), config.thickness,
                  config.stress_state, config.integration);
+  if (model.is_shell()) {
+    model.set_shell_options(config.shell);
+    for (const ShellSection& section : config.shell_sections) {
+      const std::vector<Index> elements = section.region.select_elements(model.mesh());
+      if (elements.empty()) {
+        throw ConfigError("shell section '" + section.name + "' selected no element; check "
+                          "its coordinates or group name");
+      }
+      model.assign_thickness(section.thickness, elements);
+      log::info("shell section '", section.name, "': ", elements.size(),
+                " element(s) of thickness ", section.thickness, " m");
+    }
+  }
   for (const MaterialRegion& mr : config.material_regions) {
     const std::vector<Index> elements = mr.region.select_elements(model.mesh());
     if (elements.empty()) {

@@ -462,6 +462,10 @@ ContactProblem::ContactProblem(const FemModel& model, const ContactOptions& opti
     : model_(model), options_(options) {
   const Mesh& mesh = model.mesh();
   const int dim = mesh.dim();
+  if (model.dofs_per_node() != dim) {
+    throw ConfigError("contact is formulated between continuum bodies; a shell model takes "
+                      "no contact (its faces are the two sides of a mid-surface)");
+  }
   if (mesh.element_type() == ElementType::Tet10) {
     throw ConfigError("contact needs linear elements (Q4, Tri3, Hex8, Tet4): the dual basis "
                       "of the contact pressure does not exist on the six-node face of a Tet10, "

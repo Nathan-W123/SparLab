@@ -190,11 +190,16 @@ int main(int argc, char** argv) {
       }
     }
 
+    // Stresses of a continuum model; resultants of a shell model.
     std::vector<StressField> stresses;
+    std::vector<ShellField> shells;
     {
       ScopedTimer t(timings, "stress_recovery");
-      stresses.reserve(solutions.size());
       for (std::size_t l = 0; l < solutions.size(); ++l) {
+        if (model.is_shell()) {
+          shells.push_back(recover_shell_resultants(model, assembler, solutions[l].displacement));
+          continue;
+        }
         const Vector& temperature = model.load_case_data(l).temperature;
         stresses.push_back(recover_stresses(model, assembler, solutions[l].displacement,
                                             nullptr,
@@ -218,7 +223,11 @@ int main(int argc, char** argv) {
         const std::string& name = solutions[l].load_case_name;
         if (config.output.write_csv) {
           writer.write_displacement(model.mesh(), name, solutions[l].displacement);
-          writer.write_stress(model.mesh(), name, stresses[l]);
+          if (model.is_shell()) {
+            writer.write_shell_resultants(model, name, shells[l]);
+          } else {
+            writer.write_stress(model.mesh(), name, stresses[l]);
+          }
           writer.write_reactions(model.mesh(), model.dofs(), name,
                                  solutions[l].reactions);
         }
@@ -226,7 +235,9 @@ int main(int argc, char** argv) {
         if (config.output.write_csv && temperature.size() > 0) {
           writer.write_temperature(model.mesh(), name, temperature);
         }
-        if (config.output.write_vtk) {
+        if (config.output.write_vtk && model.is_shell()) {
+          writer.write_shell_vtk(model, name, solutions[l].displacement, shells[l]);
+        } else if (config.output.write_vtk) {
           writer.write_static_vtk(model.mesh(), name, solutions[l].displacement,
                                   stresses[l], nullptr, nullptr,
                                   temperature.size() > 0 ? &temperature : nullptr);
@@ -296,7 +307,8 @@ int main(int argc, char** argv) {
 
     timings.add("total", wall.elapsed_seconds());
     json::Value summary = make_static_summary(config, model, diagnostics, solutions,
-                                              stresses, modal.get(), timings);
+                                              stresses, modal.get(), timings,
+                                              model.is_shell() ? &shells : nullptr);
     if (!buckling.empty()) {
       summary.set("buckling", buckling_json(buckling, config.buckling.options,
                                             "the model as meshed"));
@@ -334,8 +346,9 @@ int main(int argc, char** argv) {
                 << app::format(s.compliance) << " J, strain energy "
                 << app::format(s.strain_energy) << " J, max |u| "
                 << app::format(s.max_displacement_magnitude) << " m, max von Mises "
-                << app::format(stresses[l].element_von_mises.maxCoeff())
-                << " Pa\n";
+                << app::format(model.is_shell() ? shells[l].element_von_mises.maxCoeff()
+                                                : stresses[l].element_von_mises.maxCoeff())
+                << " Pa" << (model.is_shell() ? " (shell faces and mid-surface)" : "") << "\n";
       const auto vec = [&](const Vector3& v) {
         std::string text = "(" + app::format(v.x()) + ", " + app::format(v.y());
         if (model.dim() == 3) text += ", " + app::format(v.z());

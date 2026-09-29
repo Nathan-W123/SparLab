@@ -2551,7 +2551,10 @@ int main(int argc, char** argv) {
             "bimetal-strip | self-weight | elastica | hyperelastic-cylinder | "
             "arch-snap-through | plastic-cylinder | plastic-bending | plastic-cycle | "
             "transient-modal | rod-harmonic | rod-transient | nonlinear-oscillator | "
-            "contact-patch | hertz-line | hertz-point"},
+            "contact-patch | hertz-line | hertz-point | shell-patch | shell-plate | "
+            "shell-plate-modes | shell-plate-buckling | shell-cylinder-pressure | "
+            "shell-scordelis-lo | shell-pinched-cylinder | shell-pinched-hemisphere | "
+            "shell-box-beam"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2689,6 +2692,33 @@ int main(int argc, char** argv) {
     }
     if (all || study == "hertz-point") {
       outcomes.push_back(verify::study_hertz_point(out_dir, summary));
+    }
+    if (all || study == "shell-patch") {
+      outcomes.push_back(verify::study_shell_patch(out_dir, summary));
+    }
+    if (all || study == "shell-plate") {
+      outcomes.push_back(verify::study_shell_plate(out_dir, summary));
+    }
+    if (all || study == "shell-plate-modes") {
+      outcomes.push_back(verify::study_shell_plate_modes(out_dir, summary));
+    }
+    if (all || study == "shell-plate-buckling") {
+      outcomes.push_back(verify::study_shell_plate_buckling(out_dir, summary));
+    }
+    if (all || study == "shell-cylinder-pressure") {
+      outcomes.push_back(verify::study_shell_cylinder_pressure(out_dir, summary));
+    }
+    if (all || study == "shell-scordelis-lo") {
+      outcomes.push_back(verify::study_shell_scordelis_lo(out_dir, summary));
+    }
+    if (all || study == "shell-pinched-cylinder") {
+      outcomes.push_back(verify::study_shell_pinched_cylinder(out_dir, summary));
+    }
+    if (all || study == "shell-pinched-hemisphere") {
+      outcomes.push_back(verify::study_shell_pinched_hemisphere(out_dir, summary));
+    }
+    if (all || study == "shell-box-beam") {
+      outcomes.push_back(verify::study_shell_box_beam(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

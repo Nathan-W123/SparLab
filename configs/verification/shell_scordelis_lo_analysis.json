@@ -1,0 +1,34 @@
+{
+  // ---------------------------------------------------------------------------
+  // The Scordelis-Lo roof (MacNeal and Harder 1985) of MITC4 shells, whole: a
+  // cylindrical roof R = 25, L = 50, 40 degrees each side of the crown,
+  // t = 0.25, E = 4.32e8, nu = 0, on rigid diaphragms (u_y = u_z = 0 at
+  // x = +-25) under its self-weight of 90 per unit area (rho = 1, g = 360
+  // through t = 0.25); u_x held at the middle of the crown, where symmetry
+  // has it zero. The whole roof rather than a quarter, because a quarter's
+  // symmetry planes hold rotations, which CalculiX imposes through rigid
+  // knots that stiffen its model tenfold here. 24 x 24 cells (12 x 12 per
+  // quarter); the free-edge deflection converges to 0.3024 (sparlab_verify
+  // --study shell-scordelis-lo). Static, modal and buckling, cross-validated
+  // by an independent MITC4 in NumPy and by CalculiX's S4.
+  // ---------------------------------------------------------------------------
+  "name": "shell_scordelis_lo_analysis",
+  "description": "Scordelis-Lo roof of MITC4 shells: self-weight, modes, buckling",
+  "units": "consistent (the benchmark's own)",
+  "mesh": { "type": "structured_shell", "shape": "cylinder", "axis": "x", "radius": 25.0,
+            "length": 50.0, "origin": [-25.0, 0.0, 0.0], "angles": [50.0, 130.0],
+            "n_around": 24, "n_along": 24 },
+  "material": { "name": "scordelis_lo", "youngs_modulus": 4.32e8, "poisson_ratio": 0.0, "density": 1.0 },
+  "model": { "thickness": 0.25 },
+  "boundary_conditions": [
+    { "name": "diaphragms", "fix": ["y", "z"],
+      "region": { "any_of": [ { "box": { "xmax": -25.0 } }, { "box": { "xmin": 25.0 } } ] } },
+    { "name": "crown_middle", "fix": ["x"],
+      "region": { "box": { "xmin": 0.0, "xmax": 0.0, "ymin": 0.0, "ymax": 0.0 } } }
+  ],
+  "load_cases": [ { "name": "self_weight", "gravity": [0.0, 0.0, -360.0] } ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 4 },
+  "buckling": { "enabled": true, "num_modes": 2 },
+  "output": { "csv": true, "vtk": true, "mode_shapes": true }
+}

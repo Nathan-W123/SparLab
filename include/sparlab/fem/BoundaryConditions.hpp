@@ -22,6 +22,8 @@
 
 namespace sparlab {
 
+class FemModel;
+
 /// Prescribed displacement on the x, y and/or z component of a node region,
 /// and, on a shell or beam model, prescribed rotations about the global axes.
 struct DisplacementConstraint {
@@ -209,5 +211,17 @@ Index apply_constraints(const Mesh& mesh,
 Vector assemble_load_vector(const Mesh& mesh, const Element& element,
                             const LoadCaseSpec& load_case, Scalar thickness,
                             const IntegrationOptions& integration);
+
+/// Assemble the global force vector [N and N m] of one load case of a shell
+/// model: point forces and moments as on any model; tractions [Pa] on the
+/// free edges whose nodes all lie in a region, over each edge's area (its
+/// length times its element's thickness); and each pressure on the shell
+/// elements its region selects (at their centroids, or an element set),
+/// integrated over the mid-surface against its normal \f$g_r\times g_s\f$ -
+/// a positive pressure presses on the side that normal points out of,
+/// whichever way round the element's nodes run (Shell4.hpp).
+/// \throws ConfigError for empty regions, and a traction or pressure region
+///         that matches no free edge or element.
+Vector assemble_shell_load_vector(const FemModel& model, const LoadCaseSpec& load_case);
 
 }  // namespace sparlab

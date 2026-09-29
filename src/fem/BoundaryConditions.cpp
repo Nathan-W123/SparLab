@@ -3,6 +3,8 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/elements/FaceGeometry.hpp"
+#include "sparlab/elements/Shell4.hpp"
+#include "sparlab/fem/FemModel.hpp"
 
 #include <algorithm>
 #include <set>
@@ -18,6 +20,40 @@ void require_in_plane(const Vector3& v, int dim, const std::string& what) {
        << " but the model is two-dimensional; a plane model carries no out-of-plane "
           "component (use a 3-D mesh or drop it)";
     throw ConfigError(os.str());
+  }
+}
+
+void add_point_loads(const Mesh& mesh, int ndpn, const LoadCaseSpec& load_case, Vector& f) {
+  const int dim = mesh.dim();
+  for (const PointLoadSpec& load : load_case.point_loads) {
+    require_in_plane(load.force, dim,
+                     "point load '" + load.region.name + "' in load case '" +
+                         load_case.name + "'");
+    if (ndpn < kMaxDofsPerNode && load.moment.squaredNorm() != 0.0) {
+      throw ConfigError("point load '" + load.region.name + "' in load case '" +
+                        load_case.name +
+                        "' applies a moment, but the model's nodes carry translations "
+                        "only; a moment needs shell or beam elements (on a continuum "
+                        "mesh, apply it as a couple of forces or a traction)");
+    }
+    const std::vector<Index> nodes = load.region.select_nodes(mesh);
+    if (nodes.empty()) {
+      throw ConfigError("point load region '" + load.region.name +
+                        "' in load case '" + load_case.name +
+                        "' selected no nodes; check its coordinates");
+    }
+    const Scalar scale =
+        load.distribute_total ? 1.0 / static_cast<Scalar>(nodes.size()) : 1.0;
+    for (Index n : nodes) {
+      for (int k = 0; k < dim; ++k) f(n * ndpn + k) += scale * load.force(k);
+      if (ndpn == kMaxDofsPerNode) {
+        for (int k = 0; k < 3; ++k) f(n * ndpn + 3 + k) += scale * load.moment(k);
+      }
+    }
+    log::debug("point load '", load.region.name, "' in case '", load_case.name, "': ",
+               nodes.size(), " nodes, resultant (", load.force.x(), ", ",
+               load.force.y(), (dim == 3 ? ", " : ""), (dim == 3 ? load.force.z() : 0.0),
+               ") N", load.distribute_total ? " distributed" : " per node");
   }
 }
 
@@ -111,36 +147,7 @@ Vector assemble_load_vector(const Mesh& mesh, const Element& element,
   const int ndpn = element.dofs_per_node();
   Vector f = Vector::Zero(mesh.num_nodes() * ndpn);
 
-  for (const PointLoadSpec& load : load_case.point_loads) {
-    require_in_plane(load.force, dim,
-                     "point load '" + load.region.name + "' in load case '" +
-                         load_case.name + "'");
-    if (ndpn < kMaxDofsPerNode && load.moment.squaredNorm() != 0.0) {
-      throw ConfigError("point load '" + load.region.name + "' in load case '" +
-                        load_case.name +
-                        "' applies a moment, but the model's nodes carry translations "
-                        "only; a moment needs shell or beam elements (on a continuum "
-                        "mesh, apply it as a couple of forces or a traction)");
-    }
-    const std::vector<Index> nodes = load.region.select_nodes(mesh);
-    if (nodes.empty()) {
-      throw ConfigError("point load region '" + load.region.name +
-                        "' in load case '" + load_case.name +
-                        "' selected no nodes; check its coordinates");
-    }
-    const Scalar scale =
-        load.distribute_total ? 1.0 / static_cast<Scalar>(nodes.size()) : 1.0;
-    for (Index n : nodes) {
-      for (int k = 0; k < dim; ++k) f(n * ndpn + k) += scale * load.force(k);
-      if (ndpn == kMaxDofsPerNode) {
-        for (int k = 0; k < 3; ++k) f(n * ndpn + 3 + k) += scale * load.moment(k);
-      }
-    }
-    log::debug("point load '", load.region.name, "' in case '", load_case.name, "': ",
-               nodes.size(), " nodes, resultant (", load.force.x(), ", ",
-               load.force.y(), (dim == 3 ? ", " : ""), (dim == 3 ? load.force.z() : 0.0),
-               ") N", load.distribute_total ? " distributed" : " per node");
-  }
+  add_point_loads(mesh, ndpn, load_case, f);
 
   if (!load_case.tractions.empty()) {
     const std::vector<Mesh::BoundaryFace> faces = mesh.boundary_faces();
@@ -215,6 +222,69 @@ Vector assemble_load_vector(const Mesh& mesh, const Element& element,
                  matched, (dim == 2 ? " boundary edges, length " : " boundary faces, area "),
                  total_measure, ", pressure ", load.pressure, " Pa");
     }
+  }
+
+  return f;
+}
+
+Vector assemble_shell_load_vector(const FemModel& model, const LoadCaseSpec& load_case) {
+  const Mesh& mesh = model.mesh();
+  const auto* shell = dynamic_cast<const Shell4Element*>(&model.element());
+  if (shell == nullptr) {
+    throw ModelError("assemble_shell_load_vector needs a model of shell elements");
+  }
+  const int ndpn = model.dofs_per_node();
+  const int npe = mesh.nodes_per_elem();
+  Vector f = Vector::Zero(mesh.num_nodes() * ndpn);
+
+  add_point_loads(mesh, ndpn, load_case, f);
+
+  if (!load_case.tractions.empty()) {
+    const std::vector<Mesh::BoundaryFace> edges = mesh.boundary_faces();
+    for (const TractionLoadSpec& load : load_case.tractions) {
+      Index matched = 0;
+      Scalar total_area = 0.0;
+      for (const Mesh::BoundaryFace& edge : faces_in_region(mesh, edges, load.region)) {
+        const Scalar t = model.thickness_of(edge.element);
+        const Vector fe =
+            shell->boundary_traction(model.element_geometry(edge.element), edge.local_face,
+                                     load.traction, t, model.integration());
+        model.dofs().scatter_add(mesh.element_nodes(edge.element), npe, fe, f);
+        total_area += mesh.face_measure(edge) * t;
+        ++matched;
+      }
+      if (matched == 0) {
+        throw ConfigError("traction region '" + load.region.name + "' in load case '" +
+                          load_case.name +
+                          "' matched no free edge of the shell; the region must contain "
+                          "both nodes of at least one edge that belongs to one element "
+                          "only");
+      }
+      log::debug("traction '", load.region.name, "' in case '", load_case.name, "': ",
+                 matched, " free edges, area ", total_area, " m^2, traction (",
+                 load.traction.x(), ", ", load.traction.y(), ", ", load.traction.z(), ") Pa");
+    }
+  }
+
+  for (const PressureLoadSpec& load : load_case.pressures) {
+    const std::vector<Index> elements = load.region.select_elements(mesh);
+    if (elements.empty()) {
+      throw ConfigError("pressure region '" + load.region.name + "' in load case '" +
+                        load_case.name +
+                        "' selected no shell element; on a shell model a pressure acts on "
+                        "the elements whose centroids lie in its region (or an element "
+                        "set)");
+    }
+    Scalar total_area = 0.0;
+    for (Index e : elements) {
+      const Matrix geometry = model.element_geometry(e);
+      const Vector fe = shell->pressure_load(geometry, load.pressure, model.integration());
+      model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, f);
+      total_area += Shell4Element::area(geometry);
+    }
+    log::debug("pressure '", load.region.name, "' in case '", load_case.name, "': ",
+               elements.size(), " shell elements, area ", total_area, " m^2, pressure ",
+               load.pressure, " Pa");
   }
 
   return f;

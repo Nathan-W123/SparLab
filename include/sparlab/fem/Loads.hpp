@@ -1,6 +1,6 @@
 /// \file Loads.hpp
 /// \brief Volume loads - self-weight, body forces, rotation - and thermal
-///        loads of a continuum model.
+///        loads of a continuum model; self-weight and body forces of a shell.
 ///
 /// **Body loads from the consistent mass.** A body force density that is
 /// affine in position, \f$b(x) = b_0 + B x\f$, is interpolated exactly by the
@@ -19,6 +19,14 @@
 /// through \f$c\f$ with direction \f$e\f$ is the affine
 /// \f$b = \rho\,\omega^2 (I - e e^T)(x - c)\f$. The resultant of self-weight is
 /// the model's mass times \f$g\f$ to round-off, which the tests check.
+///
+/// **Shells.** The shell's displacement interpolation (Shell4.hpp) with every
+/// nodal rotation zero and every translation \f$b\f$ is \f$b\f$ at every point
+/// of its volume, so for a constant \f$b\f$ - self-weight, a uniform body force
+/// - \f$M_e^{(1)}\hat b\f$ with the rotations of \f$\hat b\f$ zero is again
+/// \f$\int N^T b\,dV\f$ exactly, the moment a curved shell's volume gives it
+/// about the mid-surface included. The centrifugal load changes through the
+/// thickness in a way nodal values cannot carry, so a shell refuses it.
 ///
 /// **Thermal loads.** A temperature change \f$\Delta T(x) = N^T (T_e - T_{ref})\f$
 /// induces the free strain \f$\varepsilon_0 = \alpha\Delta T\f$ (Voigt form per

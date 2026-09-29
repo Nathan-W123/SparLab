@@ -5,8 +5,8 @@
 /// volume, pressure and thermal loads live in verify_loads.cpp, those of the
 /// geometrically non-linear analysis in verify_nonlinear.cpp, those of
 /// plasticity in verify_plasticity.cpp, those of dynamics in
-/// verify_dynamics.cpp and those of contact in verify_contact.cpp. All
-/// report a
+/// verify_dynamics.cpp, those of contact in verify_contact.cpp and those of
+/// shells in verify_shell.cpp. All report a
 /// `StudyOutcome` that the driver prints and writes to summary.json.
 #pragma once
 
@@ -77,6 +77,19 @@ StudyOutcome study_nonlinear_oscillator(const std::string& out_dir, json::Value&
 StudyOutcome study_contact_patch(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_hertz_line(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_hertz_point(const std::string& out_dir, json::Value& summary);
+/// \}
+
+/// Studies of the MITC4 shell (verify_shell.cpp).
+/// \{
+StudyOutcome study_shell_patch(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_plate(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_plate_modes(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_plate_buckling(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_cylinder_pressure(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_scordelis_lo(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_pinched_cylinder(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_pinched_hemisphere(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_box_beam(const std::string& out_dir, json::Value& summary);
 /// \}
 
 /// Quarter sections of a cylinder (verify_loads.cpp).

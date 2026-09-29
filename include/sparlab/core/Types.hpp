@@ -64,17 +64,19 @@ inline const char* dof_component_name(int k) {
 enum class Component : int { X = 0, Y = 1, Z = 2 };
 
 /// Idealisation used to build the constitutive matrix. The two plane states
-/// belong to 2-D meshes, `ThreeDimensional` to 3-D meshes; FemModel rejects a
-/// mismatch.
+/// belong to 2-D meshes, `ThreeDimensional` to solid meshes and `Shell` to
+/// shell meshes; FemModel rejects a mismatch.
 enum class StressState {
-  PlaneStress,      ///< sigma_zz = 0 (thin sheet). Default 2-D path.
-  PlaneStrain,      ///< epsilon_zz = 0 (thick section / plane of symmetry).
-  ThreeDimensional  ///< full isotropic elasticity on a solid mesh.
+  PlaneStress,       ///< sigma_zz = 0 (thin sheet). Default 2-D path.
+  PlaneStrain,       ///< epsilon_zz = 0 (thick section / plane of symmetry).
+  ThreeDimensional,  ///< full isotropic elasticity on a solid mesh.
+  Shell              ///< plane stress in the shell's plane, transverse shear.
 };
 
-/// Spatial dimension a stress state belongs to (2 or 3).
+/// Spatial dimension a stress state belongs to (2 or 3): the coordinates of
+/// the mesh it goes with.
 constexpr int stress_state_dimension(StressState state) {
-  return state == StressState::ThreeDimensional ? 3 : 2;
+  return state == StressState::ThreeDimensional || state == StressState::Shell ? 3 : 2;
 }
 
 /// Configuration-file spelling of a stress state.
@@ -83,6 +85,7 @@ inline std::string to_string(StressState state) {
     case StressState::PlaneStress: return "plane_stress";
     case StressState::PlaneStrain: return "plane_strain";
     case StressState::ThreeDimensional: return "three_dimensional";
+    case StressState::Shell: return "shell";
   }
   return "unknown";
 }

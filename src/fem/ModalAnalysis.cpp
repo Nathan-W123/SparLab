@@ -17,6 +17,38 @@
 namespace sparlab {
 namespace {
 
+/// The `count` lowest eigenpairs of the symmetric pencil (K, M), ascending.
+/// With M positive definite the pencil is solved as it stands. A mass that is
+/// only semi-definite - the drilling rotations of a flat shell move no
+/// material and carry none - is solved through the reversed pencil
+/// \f$M y = \mu K y\f$, K positive definite, whose largest \f$\mu\f$ are
+/// \f$1/\lambda\f$ of the lowest modes and whose zero \f$\mu\f$ are the
+/// massless directions (\f$\lambda = \infty\f$).
+/// \return false when neither form applies (K and M both singular there).
+bool lowest_pencil_pairs(const Matrix& k, const Matrix& m, int count, Vector& lambda,
+                         Matrix& vectors) {
+  {
+    Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> ges(k, m);
+    if (ges.info() == Eigen::Success) {
+      lambda = ges.eigenvalues().head(count);
+      vectors = ges.eigenvectors().leftCols(count);
+      return true;
+    }
+  }
+  Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> reversed(m, k);
+  if (reversed.info() != Eigen::Success) return false;
+  const Eigen::Index n = reversed.eigenvalues().size();
+  lambda.resize(count);
+  vectors.resize(k.rows(), count);
+  for (int i = 0; i < count; ++i) {
+    const Scalar mu = reversed.eigenvalues()(n - 1 - i);
+    if (!(mu > 0.0)) return false;
+    lambda(i) = 1.0 / mu;
+    vectors.col(i) = reversed.eigenvectors().col(n - 1 - i);
+  }
+  return true;
+}
+
 constexpr Scalar kTwoPi = 6.283185307179586476925286766559;
 
 /// Deterministic starting subspace following Bathe: the first vector is the
@@ -138,14 +170,12 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
     // a useful independent reference for the iterative path.
     const Matrix kd(k);
     const Matrix md(m);
-    Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> ges(kd, md);
-    if (ges.info() != Eigen::Success) {
+    if (!lowest_pencil_pairs(kd, md, m_req, lambda, phi)) {
       throw SolverError(
-          "dense generalised eigensolve failed; the mass matrix is not positive "
-          "definite (check material.density and the mass interpolation floor)");
+          "dense generalised eigensolve failed: the mass matrix is not positive definite "
+          "and the stiffness matrix is not either, or fewer DOFs than the modes requested "
+          "carry mass (check material.density and the mass interpolation floor)");
     }
-    lambda = ges.eigenvalues().head(m_req);
-    phi = ges.eigenvectors().leftCols(m_req);
     result.converged = true;
     result.iterations = 0;
     result.final_change = 0.0;
@@ -220,8 +250,9 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
       const Matrix krs = 0.5 * (kr + kr.transpose());
       const Matrix mrs = 0.5 * (mr + mr.transpose());
 
-      Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> ges(krs, mrs);
-      if (ges.info() != Eigen::Success) {
+      Vector mu;
+      Matrix ritz;
+      if (!lowest_pencil_pairs(krs, mrs, q, mu, ritz)) {
         std::ostringstream os;
         os << "the projected " << q << " x " << q
            << " eigenproblem became numerically singular at subspace iteration " << iter
@@ -229,9 +260,7 @@ ModalResult solve_modal(const FemModel& model, const Assembler& assembler,
               "tighten modal.tolerance";
         throw SolverError(os.str());
       }
-
-      const Vector mu = ges.eigenvalues();
-      x = xbar * ges.eigenvectors();
+      x = xbar * ritz;
       mu_previous = mu;
 
       const Vector current = mu.head(m_req);

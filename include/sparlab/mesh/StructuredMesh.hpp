@@ -1,6 +1,7 @@
 /// \file StructuredMesh.hpp
-/// \brief Generators for structured Q4 and Hex8 grids, and the triangle and
-///        tetrahedron meshes obtained by splitting their cells.
+/// \brief Generators for structured Q4 and Hex8 grids, the triangle and
+///        tetrahedron meshes obtained by splitting their cells, and structured
+///        shell surfaces (plates, cylinders, spheres).
 ///
 /// 2-D node numbering (nx = elements along x, ny = elements along y):
 /// \code
@@ -109,6 +110,59 @@ Mesh make_perturbed_tet_mesh(const StructuredMeshSpec& spec, Scalar perturbation
 Mesh make_perturbed_tet10_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                                unsigned int seed = 12345u);
 /// \}
+
+/// Surfaces of the structured shell generator.
+enum class ShellShape {
+  Plate,     ///< a rectangle in the plane z = origin.z
+  Cylinder,  ///< a cylinder, or a panel of one, about a global axis
+  Sphere     ///< a zone of a sphere between two polar angles
+};
+
+std::string to_string(ShellShape shape);
+ShellShape parse_shell_shape(const std::string& text);
+
+/// A structured MITC4 shell surface. Direction 1 runs along x (plate),
+/// around the axis (cylinder) or in longitude (sphere); direction 2 along y,
+/// along the axis, or in latitude, from the larger polar angle to the
+/// smaller. Nodes are numbered `j * (n1 + 1) + i` (`j * n1 + i` when
+/// direction 1 closes on itself, a full 360 degrees), and every element runs
+/// (i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1), so its normal
+/// \f$g_1\times g_2\f$ points along +z on a plate and away from the axis or
+/// the centre on a cylinder or a sphere - the side a positive pressure
+/// presses on. The mesh carries the surface's exact normals at its nodes.
+struct ShellMeshSpec {
+  ShellShape shape = ShellShape::Plate;
+  Index n1 = 1;  ///< elements along direction 1 (>= 1; >= 3 around a closed circle)
+  Index n2 = 1;  ///< elements along direction 2 (>= 1)
+  /// Plate: its lower corner. Cylinder: the point of its axis where it
+  /// starts. Sphere: its centre [m].
+  Vector3 origin = Vector3::Zero();
+  Scalar lx = 1.0;      ///< plate extent along x [m]
+  Scalar ly = 1.0;      ///< plate extent along y [m]
+  /// Plate: interior nodes moved in the plane by up to this fraction of the
+  /// cell size along x and along y, in [0, 0.25), which keeps every cell
+  /// convex (distorted meshes for patch tests).
+  Scalar perturbation = 0.0;
+  unsigned int seed = 12345u;
+  Scalar radius = 1.0;  ///< cylinder and sphere [m]
+  Scalar length = 1.0;  ///< cylinder, along its axis [m]
+  /// Cylinder axis: 0 = x, 1 = y, 2 = z. The angle around it starts at the
+  /// next axis and turns towards the one after (about z: from +x towards +y;
+  /// about x: from +y towards +z; about y: from +z towards +x).
+  int axis = 2;
+  /// Cylinder: the angles around the axis; sphere: the longitudes about +z
+  /// from +x [degrees]. A span of 360 closes the surface.
+  Scalar angle_start = 0.0;
+  Scalar angle_end = 360.0;
+  /// Sphere: the polar angles from +z [degrees], 0 < start < end < 180 (a
+  /// pole would collapse the quadrilaterals around it).
+  Scalar polar_start = 30.0;
+  Scalar polar_end = 150.0;
+};
+
+/// Build a structured shell mesh (Shell4 cells in 3-D) with exact node normals.
+/// \throws ConfigError for out-of-range counts, extents or angles.
+Mesh make_structured_shell_mesh(const ShellMeshSpec& spec);
 
 /// Convenience accessors for structured grids (used by tests and selectors).
 /// The two-index forms address a 2-D grid; the three-index forms a 3-D grid.

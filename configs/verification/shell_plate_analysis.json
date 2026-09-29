@@ -1,0 +1,35 @@
+{
+  // ---------------------------------------------------------------------------
+  // A simply supported square plate of MITC4 shells: static, modal, buckling.
+  //
+  // a = 1 m, t = 10 mm, aluminium, 16 x 16 cells in z = 0. Soft simple
+  // supports - w held on the edges, no rotation held (CalculiX imposes a held
+  // shell rotation through a rigid knot, which stiffens its model) - with
+  // u_x held on x = 0 and u_y on y = 0, which suits both cases: a uniform
+  // pressure of 1 kPa, and a uniform compression of 1 MPa on the edge x = a
+  // (uniaxial stress; its buckling load against k = 4). Cross-validated by an
+  // independent MITC4 in NumPy (shell_xval.py) and by CalculiX's S4.
+  // ---------------------------------------------------------------------------
+  "name": "shell_plate_analysis",
+  "description": "Simply supported square plate of MITC4 shells: pressure, compression, modes, buckling",
+  "units": "SI (m, N, Pa, kg)",
+  "mesh": { "type": "structured_shell", "shape": "plate", "nx": 16, "ny": 16, "lx": 1.0, "ly": 1.0 },
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.3, "density": 2700.0 },
+  "model": { "thickness": 0.01 },
+  "boundary_conditions": [
+    { "name": "edges", "fix": ["z"],
+      "region": { "any_of": [ { "box": { "xmax": 0.0 } }, { "box": { "xmin": 1.0 } },
+                              { "box": { "ymax": 0.0 } }, { "box": { "ymin": 1.0 } } ] } },
+    { "name": "held_x", "fix": ["x"], "region": { "box": { "xmax": 0.0 } } },
+    { "name": "held_y", "fix": ["y"], "region": { "box": { "ymax": 0.0 } } }
+  ],
+  "load_cases": [
+    { "name": "pressure", "pressures": [ { "pressure": 1000.0, "region": { "box": {} } } ] },
+    { "name": "compression",
+      "tractions": [ { "traction": [-1.0e6, 0.0, 0.0], "region": { "box": { "xmin": 1.0 } } } ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 6 },
+  "buckling": { "enabled": true, "num_modes": 3, "load_cases": ["compression"] },
+  "output": { "csv": true, "vtk": true, "mode_shapes": true }
+}

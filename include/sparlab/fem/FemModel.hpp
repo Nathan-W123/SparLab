@@ -8,9 +8,19 @@
 /// a `const FemModel&`.
 ///
 /// The spatial dimension is the mesh's. A 2-D mesh takes a plane stress state
-/// and a positive thickness; a 3-D mesh takes `StressState::ThreeDimensional`
-/// and no thickness (the value must be 1). Either mismatch is rejected in the
-/// constructor, so a deck cannot pair a solid mesh with a plane idealisation.
+/// and a positive thickness; a solid mesh takes `StressState::ThreeDimensional`
+/// and no thickness (the value must be 1); a shell mesh takes
+/// `StressState::Shell` and a positive thickness, which regions may override
+/// (`assign_thickness`). Any mismatch is rejected in the constructor, so a
+/// deck cannot pair a solid mesh with a plane idealisation.
+///
+/// **Shell directors.** The director of a shell element at a node is the
+/// surface's exact normal there when the mesh carries one (a generated
+/// plate, cylinder or sphere, Mesh::node_normals), else the average of the
+/// normals of the elements there that lie within the fold angle of one
+/// another (a smooth surface), turned to face each element's own side; an
+/// element across a fold - a T-junction, the corner of a box - keeps its own
+/// normal there, and the global rotations at the node couple the two.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -37,6 +47,15 @@ enum class MassType {
 
 std::string to_string(MassType type);
 
+/// Settings of a shell model.
+struct ShellOptions {
+  /// Drilling penalty relative to G t (Shell4.hpp).
+  Scalar drilling_factor = 1.0e-3;
+  /// Elements whose normals at a node differ by more than this share no
+  /// director there [degrees].
+  Scalar fold_angle_deg = 20.0;
+};
+
 /// A fully specified linear-elastic model plus its load cases.
 class FemModel {
  public:
@@ -52,8 +71,29 @@ class FemModel {
   /// The primary material (the deck's `material`); every element uses it
   /// unless `assign_material` gave it another.
   const IsotropicMaterial& material() const { return materials_.front(); }
-  /// Out-of-plane thickness [m] of a 2-D model; 1 for a 3-D model.
+  /// Out-of-plane thickness [m] of a 2-D model, the default thickness of a
+  /// shell model; 1 for a solid model.
   Scalar thickness() const { return thickness_; }
+  /// Thickness of element `e` [m]: a shell element's section, else
+  /// `thickness()`.
+  Scalar thickness_of(Index e) const {
+    return element_thickness_.empty() ? thickness_
+                                      : element_thickness_[static_cast<std::size_t>(e)];
+  }
+  /// True for a shell model (StressState::Shell, Shell4 elements).
+  bool is_shell() const { return stress_state_ == StressState::Shell; }
+  /// Give the listed shell elements the thickness `t` [m] (a later
+  /// assignment overrides an earlier one).
+  /// \throws ModelError on a model that is not a shell, for an element out
+  ///         of range or a non-positive thickness.
+  void assign_thickness(Scalar t, const std::vector<Index>& elements);
+  /// Replace the shell settings (drilling factor, fold angle), rebuilding the
+  /// element and the directors. \throws ModelError on a non-shell model.
+  void set_shell_options(const ShellOptions& options);
+  const ShellOptions& shell_options() const { return shell_options_; }
+  /// What the element kernels take for element `e`: its nodal coordinates
+  /// (dim x nodes), and for a shell its directors beneath them (6 x 4).
+  Matrix element_geometry(Index e) const;
   StressState stress_state() const { return stress_state_; }
   const IntegrationOptions& integration() const { return integration_; }
   const Element& element() const { return *element_; }
@@ -121,7 +161,8 @@ class FemModel {
   /// Total solid-material volume of the design domain [m^3].
   Scalar domain_volume() const;
 
-  /// Per-element volume [m^3]: area * thickness in 2-D, cell volume in 3-D.
+  /// Per-element volume [m^3]: area * thickness in 2-D and for a shell, cell
+  /// volume for a solid.
   Vector element_volumes() const;
 
  private:
@@ -139,7 +180,13 @@ class FemModel {
   std::vector<Vector> load_vectors_;
   std::vector<LoadCaseData> load_data_;
   std::shared_ptr<LinearSolverOptions> conduction_solver_;
+  std::vector<Scalar> element_thickness_;  ///< empty: every element takes thickness_
+  ShellOptions shell_options_;
+  /// Shell directors per element, one column per node; empty otherwise.
+  std::vector<Eigen::Matrix<Scalar, 3, 4>> directors_;
   bool finalized_ = false;
+
+  void compute_directors();
 };
 
 }  // namespace sparlab

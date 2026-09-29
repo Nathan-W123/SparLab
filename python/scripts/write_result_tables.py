@@ -1335,6 +1335,127 @@ def dynamic_decks_table(results_dir: str) -> Optional[str]:
                             "largest displacement", "energy balance"], rows)
 
 
+#: Rows of docs/results/shell.csv, collected by the shell tables.
+_SHELL_FRAMES: List[Dict] = []
+
+#: The shell decks (configs/verification/shell_*.json).
+SHELL_CASES = ["shell_plate_analysis", "shell_scordelis_lo_analysis",
+               "shell_hemisphere_analysis", "shell_box_beam_analysis"]
+
+
+def shell_verification_table(results_dir: str) -> Optional[str]:
+    """The shell studies at their finest meshes: errors against the exact
+    solutions of the model and their observed orders."""
+    rows = []
+
+    def record(study: str, case: str, finest: str, error, order, note: str = "") -> None:
+        _SHELL_FRAMES.append({"study": study, "case": case, "finest_mesh": finest,
+                              "error_or_value": error, "observed_order": order, "note": note})
+        rows.append([study, case, finest, _fmt(error, 3),
+                     _fmt(order, 3) if order is not None else "-", note])
+
+    patch = _verification_csv(results_dir, "shell_patch.csv")
+    if patch is not None:
+        for case in patch["case"].unique():
+            sub = patch[patch["case"] == case]
+            worst = float(max(sub["displacement_error[-]"].max(), sub["resultant_error[-]"].max()))
+            record("shell-patch", str(case), "5 x 4 cells", worst, None,
+                   f"{len(sub)} mesh(es)")
+    plates = _verification_csv(results_dir, "shell_plate.csv")
+    if plates is not None:
+        for (support, t, mesh), sub in plates.groupby(["support", "t/a", "mesh"], sort=False):
+            sub = sub.sort_values("n")
+            record("shell-plate", f"{support}, t/a = {t:g}, {mesh}", f"{int(sub['n'].max())}^2",
+                   float(sub["relative_error[-]"].iloc[-1]),
+                   float(sub["observed_order"].iloc[-1]))
+    distortion = _verification_csv(results_dir, "shell_plate_distortion.csv")
+    if distortion is not None:
+        for n, sub in distortion.groupby("n"):
+            thin = sub[sub["t/a"] <= 1e-2]["w_over_reference[-]"]
+            record("shell-plate", f"clamped, distorted {int(n)} x {int(n)}: w / w_thin over "
+                   "t/a = 1e-2 ... 1e-4", f"{int(n)}^2", float(thin.min()), None,
+                   f"to {float(thin.max()):.4f}")
+    modes = _verification_csv(results_dir, "shell_plate_modes.csv")
+    if modes is not None:
+        finest = modes[modes["n"] == modes["n"].max()]
+        for _, r in finest.iterrows():
+            record("shell-plate-modes", f"mode {int(r['mode'])} ({int(r['m'])}, "
+                   f"{int(r['n_half_waves'])}), {float(r['frequency[Hz]']):.4f} Hz",
+                   f"{int(r['n'])}^2", float(r["relative_error[-]"]),
+                   float(r["observed_order"]))
+    buckling = _verification_csv(results_dir, "shell_plate_buckling.csv")
+    if buckling is not None:
+        finest = buckling[buckling["n"] == buckling["n"].max()]
+        for _, r in finest.iterrows():
+            record("shell-plate-buckling", f"{r['loading']}, k = {float(r['k_kirchhoff[-]']):.5f}",
+                   f"{int(r['n'])}^2", float(r["relative_error[-]"]),
+                   float(r["observed_order"]))
+    cylinder = _verification_csv(results_dir, "shell_cylinder_pressure.csv")
+    if cylinder is not None:
+        r = cylinder.iloc[-1]
+        record("shell-cylinder-pressure", "radial displacement (hoop force "
+               f"{float(r['hoop_force_error[-]']):.1e})", f"{int(r['n_around'])} round",
+               float(r["radial_error[-]"]), float(r["observed_order"]))
+    return (_markdown_table(["study", "case", "finest mesh", "error", "observed order", "note"],
+                            rows) if rows else None)
+
+
+def shell_benchmark_table(results_dir: str) -> Optional[str]:
+    """The MacNeal-Harder benchmarks mesh by mesh, and the box beam."""
+    rows = []
+    names = [("shell_scordelis_lo.csv", "Scordelis-Lo roof", 0.3024),
+             ("shell_pinched_cylinder.csv", "pinched cylinder", 1.8248e-5),
+             ("shell_pinched_hemisphere.csv", "pinched hemisphere", 0.094)]
+    for name, label, reference in names:
+        table = _verification_csv(results_dir, name)
+        if table is None:
+            continue
+        values = {int(r["n"]): float(r["normalised[-]"]) for _, r in table.iterrows()}
+        for n, v in values.items():
+            _SHELL_FRAMES.append({"study": "benchmark", "case": label, "finest_mesh": f"{n}^2",
+                                  "error_or_value": v, "observed_order": None,
+                                  "note": f"reference {reference:g}"})
+        rows.append([label, f"{reference:g}"] + [f"{values.get(n, float('nan')):.4f}"
+                                                 for n in (4, 8, 16, 32, 64)])
+    table = _verification_csv(results_dir, "shell_box_beam.csv")
+    if table is not None:
+        for _, r in table.iterrows():
+            _SHELL_FRAMES.append({"study": "box-beam", "case": f"{int(r['cells_per_wall'])} "
+                                  f"cells per wall, drilling {float(r['drilling_factor']):g}",
+                                  "finest_mesh": "", "error_or_value": r["deflection_ratio[-]"],
+                                  "observed_order": None,
+                                  "note": f"twist ratio {float(r['twist_ratio[-]']):.6f}"})
+    return (_markdown_table(["benchmark", "reference", "4", "8", "16", "32", "64"], rows)
+            if rows else None)
+
+
+def shell_decks_table(results_dir: str) -> Optional[str]:
+    """The shell decks: what each solved."""
+    rows = []
+    for deck in SHELL_CASES:
+        path = os.path.join(results_dir, deck, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        s = load_json(path)
+        shell = s["mesh"].get("shell", {})
+        modal = s.get("modal") or {}
+        buckling = (s.get("buckling") or {}).get("load_cases") or []
+        for lc in s.get("load_cases", []):
+            factors = [b for b in buckling if b.get("load_case") == lc["name"]]
+            rows.append([deck, lc["name"], str(s["mesh"]["num_elements"]),
+                         _fmt(lc["max_displacement_magnitude_m"], 4),
+                         _fmt(lc.get("max_von_mises_Pa"), 4),
+                         _fmt(lc["equilibrium"]["relative_force_error"], 2),
+                         ", ".join(f"{f:.4g}" for f in (modal.get("frequencies_hz") or [])[:4])
+                         if lc is s["load_cases"][0] else "",
+                         ", ".join(f"{f:.4g}" for f in factors[0]["load_factors"][:2])
+                         if factors else "",
+                         str(shell.get("directors", ""))])
+    return (_markdown_table(["deck", "load case", "cells", "max |u|", "max von Mises [Pa]",
+                             "force balance", "f_1.. [Hz]", "lambda_1, lambda_2",
+                             "directors"], rows) if rows else None)
+
+
 #: Rows of docs/results/contact.csv, collected by the contact tables.
 _CONTACT_FRAMES: List[Dict] = []
 
@@ -1662,6 +1783,36 @@ def main(argv=None) -> int:
          "each slave node's friction force and its reaction on the master nodes act the gap "
          "apart, and their couple - the gap times the tangential force - remains in the "
          "moment balance (contact_blocks_friction_hex_nonlinear: 20 um, 4.4e-6)."),
+        ("Shell verification", shell_verification_table(args.results),
+         "From `results/verification/shell_*.csv` (`sparlab_verify --study shell-...`): the "
+         "MITC4 shell against exact solutions of the continuum model it discretises, at the "
+         "finest mesh of each study, with the order observed from the last refinement. "
+         "shell-patch: the largest relative error of the interior nodes' displacements and "
+         "rotations and of the element resultants on distorted meshes in a turned plane "
+         "(membrane, bending, both) and of rigid motions of curved panels. shell-plate: the "
+         "centre deflection of a square plate under pressure - simply supported (hard) "
+         "against the exact Reissner-Mindlin value (Navier plus the Marcus moment over "
+         "k G t), clamped against Taylor and Govindjee's thin-plate value - on regular and "
+         "distorted meshes, and on distorted meshes of the clamped plate the ratio of the "
+         "deflection to the thin-plate value over t/a = 1e-2 ... 1e-4 (MITC4 locks on the "
+         "4 x 4 mesh; the ratio is the same for every thickness from 8 x 8 on). "
+         "shell-plate-modes and -buckling: against the exact frequencies and buckling loads "
+         "of the Reissner-Mindlin plate (with rotary inertia; with the degenerated solid's "
+         "geometric stiffness), t / a = 0.01; k in units of pi^2 D / a^2. "
+         "shell-cylinder-pressure: a slice of a long cylinder, R / t = 100, against its "
+         "thick-ring state."),
+        ("Shell benchmarks", shell_benchmark_table(args.results),
+         "The MacNeal and Harder (1985) benchmarks (`sparlab_verify --study "
+         "shell-scordelis-lo`, `shell-pinched-cylinder`, `shell-pinched-hemisphere`): the "
+         "displacement the benchmark reports over its thin-shell reference, on n x n cells "
+         "of the modelled quarter or octant. The box beam's rows (bending and torsion ratios "
+         "for drilling factors 1e-6 ... 1e-1) are in shell.csv."),
+        ("Shell decks", shell_decks_table(args.results),
+         "Each `configs/verification/shell_*.json` deck solved by `sparlab_solve` "
+         "(`results/<deck>/summary.json`): the largest displacement, the largest von Mises "
+         "stress of an element's faces and mid-surface (at its centre), the relative force "
+         "balance, the lowest frequencies and buckling load factors, and where the directors "
+         "came from."),
         ("Cross-validation against independent codes", cross_validation_table(args.results),
          "Generated from `results/cross_validation/summary.json` by "
          "`python/scripts/cross_validate.py`: node-by-node comparison of the "
@@ -1710,7 +1861,14 @@ def main(argv=None) -> int:
          "the largest pressure are `pressure_max_rel_diff` and `traction_max_rel_diff` in "
          "cross_validation.csv) and on every node's status; `calculix contact` is CalculiX's "
          "linear dual mortar contact (LINMORTAR) on the solid decks with a mortar pair or a "
-         "flat rigid obstacle."),
+         "flat rigid obstacle. The shell decks (Shell4) are compared with an independent "
+         "MITC4 written in NumPy (`python/scripts/shell_xval.py`): `numpy mitc4` with "
+         "SparLab's load vector (translations over their largest value, rotations over the "
+         "larger of theirs and the largest translation over the model's size, and SparLab's "
+         "backward error in the NumPy system, `sparlab_backward_error`), `numpy mitc4 loads` "
+         "with the pressure and self-weight integrated in NumPy, `numpy mitc4 buckling` and "
+         "`modal` the load factors and frequencies; `calculix` is CalculiX's S4, a different "
+         "discretisation (a layer of incompatible-mode solids), INFO."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
@@ -1808,6 +1966,8 @@ def main(argv=None) -> int:
     if _CONTACT_FRAMES:
         pd.DataFrame(_CONTACT_FRAMES).to_csv(os.path.join(args.output, "contact.csv"),
                                              index=False)
+    if _SHELL_FRAMES:
+        pd.DataFrame(_SHELL_FRAMES).to_csv(os.path.join(args.output, "shell.csv"), index=False)
 
     lines = [
         "# SparLab result tables",

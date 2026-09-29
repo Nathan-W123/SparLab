@@ -55,6 +55,7 @@ const std::vector<std::vector<int>>& calculix_faces(ElementType type) {
     case ElementType::Hex8: return hex;
     case ElementType::Tet4:
     case ElementType::Tet10: return tet;
+    case ElementType::Shell4: break;
   }
   throw IoError("no CalculiX face table for this element type");
 }
@@ -87,6 +88,7 @@ std::string calculix_conduction_type(const FemModel& model) {
     case ElementType::Hex8: return "DC3D8";
     case ElementType::Tet4: return "DC3D4";
     case ElementType::Tet10: return "DC3D10";
+    case ElementType::Shell4: break;
   }
   throw IoError("no CalculiX heat-transfer element for this mesh");
 }
@@ -131,6 +133,32 @@ std::vector<std::string> write_material_sets(std::ostream& out, const FemModel& 
     if (!members[m].empty()) write_set(out, "ELSET", name, members[m]);
   }
   return names;
+}
+
+/// A shell model's element sets S1, S2, ... - one per material and thickness
+/// - as (set name, material index, thickness).
+struct ShellSet {
+  std::string name;
+  int material = 0;
+  Scalar thickness = 0.0;
+};
+
+std::vector<ShellSet> write_shell_sets(std::ostream& out, const FemModel& model) {
+  std::vector<ShellSet> sets;
+  std::vector<std::vector<Index>> members;
+  for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+    const int m = model.element_material(e);
+    const Scalar t = model.thickness_of(e);
+    std::size_t s = 0;
+    while (s < sets.size() && !(sets[s].material == m && sets[s].thickness == t)) ++s;
+    if (s == sets.size()) {
+      sets.push_back({"S" + std::to_string(s + 1), m, t});
+      members.emplace_back();
+    }
+    members[s].push_back(e);
+  }
+  for (std::size_t s = 0; s < sets.size(); ++s) write_set(out, "ELSET", sets[s].name, members[s]);
+  return sets;
 }
 
 /// The boundary faces of `faces_in_region` as (element, CalculiX face) pairs.
@@ -341,9 +369,19 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
   out << "SparLab cross-validation export: " << case_name << " / " << spec.name << " ("
       << element << ", " << mesh.num_elements() << " elements)\n";
   write_nodes_and_elements(out, mesh, element);
-  const std::vector<std::string> sets = write_material_sets(out, model);
+  const bool shell = model.is_shell();
+  // A shell's sections carry their thickness: one set per material and
+  // thickness, each material written once below.
+  const std::vector<ShellSet> shell_sets =
+      shell ? write_shell_sets(out, model) : std::vector<ShellSet>();
+  const std::vector<std::string> sets =
+      shell ? std::vector<std::string>(model.materials().size(), "") : write_material_sets(out, model);
+  std::vector<std::string> shell_materials = sets;
+  for (const ShellSet& s : shell_sets) {
+    shell_materials[static_cast<std::size_t>(s.material)] = "used";
+  }
   for (std::size_t m = 0; m < sets.size(); ++m) {
-    if (sets[m].empty()) continue;
+    if (sets[m].empty() && (!shell || shell_materials[m].empty())) continue;
     const IsotropicMaterial& mat = model.materials()[m];
     out << "*MATERIAL, NAME=MAT" << m + 1 << "\n*ELASTIC\n" << field(mat.youngs_modulus())
         << ", " << field(mat.poisson_ratio()) << "\n";
@@ -363,8 +401,13 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
       out << "*EXPANSION, ZERO=" << field(mat.reference_temperature()) << "\n"
           << field(mat.thermal_expansion()) << "\n";
     }
+    if (shell) continue;
     out << "*SOLID SECTION, ELSET=" << sets[m] << ", MATERIAL=MAT" << m + 1 << "\n";
     if (dim == 2) out << field(model.thickness()) << "\n";
+  }
+  for (const ShellSet& s : shell_sets) {
+    out << "*SHELL SECTION, ELSET=" << s.name << ", MATERIAL=MAT" << s.material + 1 << "\n"
+        << field(s.thickness) << "\n";
   }
   // Body-force regions get their own element sets.
   std::vector<std::string> body_sets;
@@ -405,8 +448,9 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
     LoadCaseSpec pressures_only;
     pressures_only.name = spec.name;
     pressures_only.pressures = spec.pressures;
-    concentrated -= assemble_load_vector(mesh, model.element(), pressures_only,
-                                         model.thickness(), model.integration());
+    concentrated -= shell ? assemble_shell_load_vector(model, pressures_only)
+                          : assemble_load_vector(mesh, model.element(), pressures_only,
+                                                 model.thickness(), model.integration());
   }
 
   // A transient's amplitude at every step time: the method reads the loads
@@ -510,6 +554,15 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
     if (distributed) out << "*DLOAD" << on_amplitude << "\n";
     for (const PressureLoadSpec& p : spec.pressures) {
       if (!pressure_faces) break;
+      if (shell) {
+        // On a shell the pressure loads the element. CalculiX's P acts along
+        // the element's normal (the node order's; measured: +P deflects a
+        // plate in z = 0 along +z), SparLab's against it: the sign flips.
+        for (Index e : p.region.select_elements(mesh)) {
+          out << e + 1 << ", P, " << field(-level * p.pressure) << "\n";
+        }
+        continue;
+      }
       for (const auto& face : calculix_faces_of(mesh, boundary, p.region)) {
         out << face.first + 1 << ", P" << face.second << ", " << field(level * p.pressure)
             << "\n";
@@ -552,6 +605,10 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
                             ? transient->options.snapshot_every
                             : steps;
       out << "*NODE FILE, FREQUENCY=" << every << "\nU\n*END STEP\n";
+    } else if (shell) {
+      // Results at the shell's own nodes, not at those of CalculiX's
+      // expansion into solids.
+      out << "*NODE FILE, OUTPUT=2D\nU\n*EL FILE, OUTPUT=2D\nS\n*END STEP\n";
     } else {
       out << "*NODE FILE\nU\n*EL FILE\nS\n*END STEP\n";
     }
@@ -643,6 +700,8 @@ std::string calculix_element_type(const FemModel& model) {
       return "C3D4";
     case ElementType::Tet10:
       return "C3D10";  // same node order as the Tet10
+    case ElementType::Shell4:
+      return "S4";
   }
   throw IoError("no CalculiX element type for this mesh");
 }

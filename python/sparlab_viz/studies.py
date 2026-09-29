@@ -943,7 +943,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
     # neither, a downward triangle, set below, for the transient history and a
     # pentagon for the harmonic response; on a contact deck, compared through
     # its non-linear analysis alone, a hexagon for the final contact state.
-    code_names = ["scikit-fem", "calculix"]
+    code_names = ["scikit-fem", "calculix", "numpy mitc4"]
     st.require_scatter_series(len(code_names), "codes")
     kinds_of = {
         "scikit-fem": [
@@ -958,6 +958,10 @@ def plot_cross_validation(directory: str, path: str) -> str:
              "scikit-fem, harmonic response (a direct complex solve)"),
             ("scikit-fem contact", "h", 0.0, "contact",
              "scikit-fem, contact (its own semismooth Newton solve)"),
+        ],
+        "numpy mitc4": [
+            ("numpy mitc4", "o", 0.0, "shell",
+             "NumPy MITC4, shells (an independent implementation of the element)"),
         ],
         "calculix": [
             ("calculix", "o", 0.0, "linear", None),
@@ -990,9 +994,10 @@ def plot_cross_validation(directory: str, path: str) -> str:
     informational = 0
     # The round-off scale of each linear system, kappa_1 eps: two
     # backward-stable solutions of it can differ by up to about that much.
-    round_off = [(results["scikit-fem"]["round_off_scale"], position)
+    round_off = [(results[code]["round_off_scale"], position)
                  for position, (_c, _e, _l, results) in zip(y, rows)
-                 if "round_off_scale" in results.get("scikit-fem", {})]
+                 for code in ("scikit-fem", "numpy mitc4")
+                 if "round_off_scale" in results.get(code, {})]
     if round_off:
         ax.plot([r for r, _p in round_off], [p for _r, p in round_off], "|",
                 color=st.INK_MUTED, markersize=11, markeredgewidth=1.4,
@@ -1037,7 +1042,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
                 informational += len(info_x)
                 ax.plot(info_x, info_y, marker, color=colour, markersize=size,
                         markerfacecolor="none", markeredgewidth=1.5,
-                        label=f"{code}, {kind}: different idealisation, not judged")
+                        label=f"{code}, {kind}: not the same discrete problem, not judged")
             if own_x:
                 ax.plot(own_x, own_y, "s", color=colour, markersize=5.5,
                         markerfacecolor="none", markeredgewidth=1.2,
@@ -1046,6 +1051,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
     tol_lines = [
         ("skfem", "scikit-fem tolerance", 0, "--", "scikit-fem"),
         ("calculix_solid", "CalculiX tolerance", 1, "--", "calculix"),
+        ("shell_numpy", "NumPy MITC4 tolerance", 2, "-.", "numpy mitc4"),
     ]
     for key, label, slot, style, code in tol_lines:
         value = tolerances.get(key)
@@ -1071,7 +1077,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
         fig, "Cross-validation: nodal displacements vs independent codes",
         f"{len(rows)} load cases, {len(present)} "
         f"code{'s' if len(present) != 1 else ''}; linear, large-deflection, "
-        f"elastoplastic, transient, harmonic and contact; {verdict}",
+        f"elastoplastic, transient, harmonic, contact and shells; {verdict}",
     )
     handles, labels = ax.get_legend_handles_labels()
     legend_ax.legend(handles, labels, loc="center", ncol=2, fontsize=7.4, frameon=False,
@@ -1105,7 +1111,10 @@ def plot_cross_validation(directory: str, path: str) -> str:
         "scikit-fem solving the same discrete contact problem itself (its own dual-mortar "
         "integrals and gaps, a semismooth Newton method on the Alart-Curnier functions), "
         "CalculiX with its linear dual mortar contact on the solid decks it can take (a "
-        "mortar pair or a flat rigid obstacle). CalculiX results are read from the .frd file, "
+        "mortar pair or a flat rigid obstacle). The shell decks are compared with an "
+        "independent MITC4 written in NumPy (the bar is again kappa_1 eps; the drilling "
+        "rotations, held by a penalty, are where it shows) and, hollow, with CalculiX's S4, "
+        "a different discretisation (a layer of incompatible-mode solids). CalculiX results are read from the .frd file, "
         "which carries six "
         "significant digits, so differences below the dotted floor are its output "
         "rounding.",
@@ -2821,5 +2830,253 @@ def plot_hertz_point(directory: str, path: str) -> str:
         "the refinement stops lowering the centre and interior errors from a / h = 6 on, as "
         "in plane strain, where the finite bodies and the curvature set the floor (a 3-D "
         "series separating the two has not been run).",
+    )
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Shells (MITC4)
+# ---------------------------------------------------------------------------
+SHELL_THICKNESS_SLOTS = {0.1: 0, 0.01: 1, 0.001: 2, 0.0001: 3}
+
+
+def plot_shell_plates(directory: str, path: str) -> str:
+    """The simply supported plate at four thicknesses (no shear locking), the
+    clamped plate, the distorted clamped plate's locking on a coarse mesh,
+    and the pressurised cylinder."""
+    plates = load_csv(os.path.join(directory, "shell_plate.csv"))
+    distortion = load_csv(os.path.join(directory, "shell_plate_distortion.csv"))
+    cylinder = load_csv(os.path.join(directory, "shell_cylinder_pressure.csv"))
+    fig, axes = st.figure(11.0, 8.6, nrows=2, ncols=2)
+
+    ax = axes[0, 0]
+    simple = plates[plates["support"] == "simple"]
+    for t, slot in SHELL_THICKNESS_SLOTS.items():
+        for mesh, style in (("regular", "-o"), ("distorted", "--s")):
+            sub = simple[(np.isclose(simple["t/a"], t)) & (simple["mesh"] == mesh)]
+            if sub.empty:
+                continue
+            ax.plot(sub["n"], sub["relative_error[-]"], style, color=st.series_color(slot),
+                    markersize=4.0 if mesh == "regular" else 3.5,
+                    markerfacecolor="none" if mesh == "distorted" else None,
+                    label=f"t / a = {t:g}, {mesh}")
+    _order_guide(ax, simple["n"].unique(), 0.4 * float(simple["relative_error[-]"].min()), 2.0)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(sorted(simple["n"].unique()))
+    ax.set_xticklabels([str(int(n)) for n in sorted(simple["n"].unique())])
+    ax.set_xlabel("cells per side, n [-]")
+    ax.set_ylabel("|w - w_exact| / w_exact at the centre [-]")
+    st.title(ax, "Simply supported plate: no shear locking",
+             "the exact Reissner-Mindlin deflection; t / a = 1e-2, 1e-3, 1e-4 give the same "
+             "error on every mesh, t / a = 0.1 (5 % shear deflection) another", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=6.6, ncol=2)
+
+    ax = axes[0, 1]
+    clamped = plates[plates["support"] == "clamped"]
+    for mesh, style, slot in (("regular", "-o", 2), ("distorted", "--s", 4)):
+        sub = clamped[clamped["mesh"] == mesh]
+        ax.plot(sub["n"], sub["relative_error[-]"], style, color=st.series_color(slot),
+                markersize=4.5, label=f"{mesh} mesh")
+        _measured_order(ax, sub["n"], sub["relative_error[-]"], 1.0 / sub["n"].to_numpy())
+    _order_guide(ax, clamped["n"].unique(), 0.4 * float(clamped["relative_error[-]"].min()), 2.0)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(sorted(clamped["n"].unique()))
+    ax.set_xticklabels([str(int(n)) for n in sorted(clamped["n"].unique())])
+    ax.set_xlim(right=1.9 * float(clamped["n"].max()))
+    ax.set_xlabel("cells per side, n [-]")
+    ax.set_ylabel("|w - w_exact| / w_exact at the centre [-]")
+    st.title(ax, "Clamped plate, t / a = 1e-3",
+             "against the thin-plate value 0.001265319 q a^4 / D; the distorted 4 x 4 "
+             "mesh locks (panel c)", wrap=48)
+    st.legend(ax, loc="upper right", fontsize=7.5)
+
+    ax = axes[1, 0]
+    for n, slot in ((4, 3), (8, 1), (16, 0)):
+        sub = distortion[distortion["n"] == n].sort_values("t/a")
+        ax.plot(sub["t/a"], sub["w_over_reference[-]"], "-o", color=st.series_color(slot),
+                markersize=4.5, label=f"{n} x {n} distorted cells")
+    ax.axhline(1.0, color=st.INK_MUTED, linewidth=1.0, linestyle=":")
+    ax.set_xscale("log")
+    ax.set_xlabel("thickness / side, t / a [-]")
+    ax.set_ylabel("w / w_thin-plate at the centre [-]")
+    ax.set_ylim(0.0, 1.3)
+    coarse = distortion[(distortion["n"] == 4) & np.isclose(distortion["t/a"], 1e-3)]
+    st.title(ax, "MITC4 on a distorted mesh: locking on the coarsest",
+             f"clamped plate, interior nodes moved by up to 0.2 of a cell: 4 x 4 cells lock "
+             f"({float(coarse['w_over_reference[-]'].iloc[0]):.2f} of w at t/a = 1e-3); from "
+             "8 x 8 on, w does not depend on t/a", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    ax = axes[1, 1]
+    ax.plot(cylinder["n_around"], cylinder["radial_error[-]"], "-o", color=st.series_color(0),
+            markersize=4.5, label="radial displacement (largest nodal error)")
+    ax.plot(cylinder["n_around"], cylinder["hoop_force_error[-]"], "-s", color=st.series_color(1),
+            markersize=4.5, label="hoop force (largest at the element centres)")
+    ax.plot(cylinder["n_around"], cylinder["axial_error[-]"], "-^", color=st.series_color(2),
+            markersize=4.5, label="axial displacement")
+    _measured_order(ax, cylinder["n_around"], cylinder["radial_error[-]"],
+                    1.0 / cylinder["n_around"].to_numpy())
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(cylinder["n_around"])
+    ax.set_xticklabels([str(int(n)) for n in cylinder["n_around"]])
+    ax.set_xlim(right=2.0 * float(cylinder["n_around"].max()))
+    ax.set_xlabel("cells round the circumference [-]")
+    ax.set_ylabel("error / exact [-]")
+    st.title(ax, "Cylinder under internal pressure",
+             "a slice of a long cylinder, R / t = 100; the thick-ring state of the shell's "
+             "continuum model, p R / (E ln((R + t/2) / (R - t/2)))", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    st.annotate_note(
+        fig,
+        "MITC4 shells (Dvorkin-Bathe), 2 x 2 x 2 Gauss points, transverse shear 5/6 G. "
+        "Plates: a = 1 m, E = 1 GPa, nu = 0.3, uniform pressure; simple support is hard (w "
+        "and the rotation along each edge held), the exact centre deflection that of the "
+        "Reissner-Mindlin plate, Navier's series plus the Marcus moment over k G t; the "
+        "distorted meshes keep their centre node at the centre. The distorted clamped 4 x 4 "
+        "mesh has 24 interior-edge shear constraints on 27 interior DOFs: once the cells are "
+        "no parallelograms, MITC4's constraints no longer leave it enough freedom and it "
+        "locks as t / a falls; 8 x 8 already has 147 DOFs for 112 constraints. The cylinder "
+        "slice's end rings are held against rotation (symmetry planes): with free ends the "
+        "flat facets' bending under the pressure leaves a boundary layer sqrt(R t) wide.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_shell_eigen(directory: str, path: str) -> str:
+    """The plate's frequencies and buckling loads against the exact values of
+    the model."""
+    modes = load_csv(os.path.join(directory, "shell_plate_modes.csv"))
+    buckling = load_csv(os.path.join(directory, "shell_plate_buckling.csv"))
+    fig, axes = st.figure(11.0, 4.6, nrows=1, ncols=2)
+
+    ax = axes[0]
+    seen = set()
+    slot = 0
+    for mode in sorted(modes["mode"].unique()):
+        sub = modes[modes["mode"] == mode].sort_values("n")
+        m, n = int(sub["m"].iloc[0]), int(sub["n_half_waves"].iloc[0])
+        key = (min(m, n), max(m, n))
+        if key in seen:  # the (m, n) and (n, m) pair of a square plate coincide
+            continue
+        seen.add(key)
+        label = f"({m}, {n})" if m == n else f"({key[0]}, {key[1]}) and ({key[1]}, {key[0]})"
+        ax.plot(sub["n"], sub["relative_error[-]"], "-o", color=st.series_color(slot),
+                markersize=4.5, label=f"mode {label}")
+        slot += 1
+    _order_guide(ax, modes["n"].unique(), 0.4 * float(modes["relative_error[-]"].min()), 2.0)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(sorted(modes["n"].unique()))
+    ax.set_xticklabels([str(int(n)) for n in sorted(modes["n"].unique())])
+    ax.set_xlabel("cells per side, n [-]")
+    ax.set_ylabel("|f - f_exact| / f_exact [-]")
+    st.title(ax, "Simply supported plate: the six lowest frequencies",
+             "against the Reissner-Mindlin frequencies with rotary inertia; t / a = 0.01",
+             wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    ax = axes[1]
+    for loading, slot, marker in (("uniaxial", 0, "o"), ("equal biaxial", 1, "s")):
+        sub = buckling[buckling["loading"] == loading].sort_values("n")
+        k = float(sub["k_kirchhoff[-]"].iloc[-1])
+        ax.plot(sub["n"], sub["relative_error[-]"], "-" + marker, color=st.series_color(slot),
+                markersize=4.5, label=f"{loading}: k = {k:.4f} at {int(sub['n'].iloc[-1])} "
+                                      "cells")
+    _order_guide(ax, buckling["n"].unique(),
+                 0.4 * float(buckling["relative_error[-]"].min()), 2.0)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(sorted(buckling["n"].unique()))
+    ax.set_xticklabels([str(int(n)) for n in sorted(buckling["n"].unique())])
+    ax.set_xlabel("cells per side, n [-]")
+    ax.set_ylabel("|N - N_exact| / N_exact [-]")
+    st.title(ax, "Simply supported plate: buckling under compression",
+             "exact loads of the model: Kirchhoff's k = 4 and 2 less the shear deformation "
+             "(5.6e-4) and the fibres' own geometric stiffness (1.6e-4); both cases buckle in "
+             "the mode (1, 1), so their errors coincide", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    st.annotate_note(
+        fig,
+        "Square plate a = 1 m, t = 0.01 m, E = 70 GPa, nu = 0.3, rho = 2700 kg/m^3, hard "
+        "simple supports; consistent mass (the rotations about the normal carry none). The "
+        "exact values are the smallest roots of the 3 x 3 problem of each trigonometric "
+        "mode (w, psi_1, psi_2) of the Reissner-Mindlin plate - with its rotary inertia for "
+        "the frequencies, and for buckling with the geometric stiffness of the degenerated "
+        "solid, which adds (t^2 / 12) N psi_a,x^2 to N w_,x^2. k is the computed load in "
+        "units of pi^2 D / a^2. The equal biaxial load's Rayleigh quotient on the mode (1, 1) "
+        "is half the uniaxial one's, on the continuum and the mesh alike.",
+    )
+    return st.save_figure(fig, path)
+
+
+SHELL_BENCHMARKS = [
+    ("shell_scordelis_lo.csv", "Scordelis-Lo roof (free-edge deflection / 0.3024)", 0, "o"),
+    ("shell_pinched_cylinder.csv", "pinched cylinder (under the load / 1.8248e-5)", 1, "s"),
+    ("shell_pinched_hemisphere.csv", "pinched hemisphere (under the load / 0.094)", 2, "^"),
+]
+
+
+def plot_shell_benchmarks(directory: str, path: str) -> str:
+    """The MacNeal-Harder benchmarks' convergence and the box beam's
+    sensitivity to the drilling stiffness."""
+    fig, axes = st.figure(11.0, 4.6, nrows=1, ncols=2)
+    ax = axes[0]
+    for name, label, slot, marker in SHELL_BENCHMARKS:
+        table = load_csv(os.path.join(directory, name))
+        ax.plot(table["n"], table["normalised[-]"], "-" + marker, color=st.series_color(slot),
+                markersize=4.5, label=f"{label}: {float(table['normalised[-]'].iloc[-1]):.4f} "
+                                      f"at {int(table['n'].iloc[-1])}")
+    ax.axhline(1.0, color=st.INK_MUTED, linewidth=1.0, linestyle=":")
+    ax.axhspan(0.99, 1.01, color=st.GRID, alpha=0.6, linewidth=0)
+    ax.set_xscale("log", base=2)
+    table = load_csv(os.path.join(directory, SHELL_BENCHMARKS[0][0]))
+    ax.set_xticks(table["n"])
+    ax.set_xticklabels([str(int(n)) for n in table["n"]])
+    ax.set_ylim(0.3, 1.1)
+    ax.set_xlabel("cells per side of the modelled part, n [-]")
+    ax.set_ylabel("displacement / reference [-]")
+    st.title(ax, "MacNeal-Harder shell benchmarks",
+             "against thin-shell theory (the band is +-1 %); the pinched cylinder converges "
+             "slowly (membrane locking of MITC4's coarse meshes)", wrap=48)
+    st.legend(ax, loc="lower right", fontsize=7.0)
+
+    ax = axes[1]
+    box = load_csv(os.path.join(directory, "shell_box_beam.csv"))
+    sweep = box[box["cells_per_wall"] == box["cells_per_wall"].max()].sort_values(
+        "drilling_factor")
+    ax.plot(sweep["drilling_factor"], sweep["deflection_ratio[-]"], "-o",
+            color=st.series_color(0), markersize=4.5, label="bending: tip deflection / beam theory")
+    ax.plot(sweep["drilling_factor"], sweep["twist_ratio[-]"], "-s", color=st.series_color(1),
+            markersize=4.5, label="torsion: tip twist / Bredt")
+    ax.axvline(1e-3, color=st.INK_MUTED, linewidth=1.0, linestyle=":")
+    ax.annotate("default 1e-3", (1e-3, 0.9985), xytext=(4, 0), textcoords="offset points",
+                fontsize=7.5, color=st.INK_MUTED)
+    ax.set_xscale("log")
+    ax.set_ylim(0.995, 1.001)
+    ax.set_xlabel("drilling stiffness / (G t) [-]")
+    ax.set_ylabel("SparLab / theory [-]")
+    st.title(ax, "Box-section cantilever: folds and the drilling stiffness",
+             "four walls meeting at 90 degree folds, 8 cells per wall; the answer barely moves "
+             "until the penalty reaches 1e-1 of G t", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    st.annotate_note(
+        fig,
+        "Scordelis-Lo roof: a quarter, self-weight, rigid diaphragms; pinched cylinder: an "
+        "octant, end diaphragms; pinched hemisphere: a quarter, 18 degree hole - the "
+        "geometry, material and loads of MacNeal and Harder (1985), n x n cells on the "
+        "modelled part, the surfaces' exact normals as directors. The references are "
+        "thin-shell theory, so a gap to them is expected: the roof approaches its value at "
+        "about first order on the finest meshes, and the finest pinched cylinder passes "
+        "Flugge's value - a shear-deformable shell's deflection under a point load grows as "
+        "log(1/h), which thin-shell theory does not have. Box beam: side 0.1 m, walls 2 mm, "
+        "2 m long, clamped; "
+        "a 1 kN shear on the side walls against P L^3 / (3 E I) + P L / (G A_s), 100 N m of "
+        "torque as Bredt's shear flow against T L / (G b^3 t).",
     )
     return st.save_figure(fig, path)

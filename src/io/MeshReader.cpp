@@ -26,7 +26,7 @@ namespace {
 // Element kinds shared by both formats
 // ---------------------------------------------------------------------------
 
-enum class Kind { Point, Line, Tri3, Quad4, Tet4, Hex8, Tet10, Unsupported };
+enum class Kind { Point, Line, Tri3, Quad4, Shell4, Tet4, Hex8, Tet10, Unsupported };
 
 struct KindInfo {
   Kind kind = Kind::Unsupported;
@@ -41,6 +41,9 @@ const char* kSecondOrderAdvice =
     "mesh with linear elements (Gmsh: Mesh.ElementOrder = 1; Abaqus/CalculiX: "
     "C3D4/C3D8, CPS3/CPS4) or, for a solid, with quadratic tetrahedra (Gmsh: "
     "Mesh.ElementOrder = 2 on a tetrahedral mesh; Abaqus/CalculiX: C3D10)";
+const char* kShellAdvice =
+    "SparLab's shell element is the 4-node MITC4 quadrilateral; re-mesh the surface with "
+    "quadrilaterals only (Abaqus/CalculiX: S4 or S4R; Gmsh: Mesh.RecombineAll = 1)";
 const char* kPrismAdvice =
     "SparLab supports tetrahedra or hexahedra only; re-mesh the volume with "
     "tetrahedra (Gmsh: Mesh.RecombineAll = 0, no Recombine in extrusions)";
@@ -144,7 +147,13 @@ KindInfo abaqus_kind(const std::string& type_in) {
       return make_kind(Kind::Unsupported, 3, n, type + " (second-order solid)",
                        kSecondOrderAdvice);
     }
-    // Plane, axisymmetric, shell, membrane and rigid surface elements.
+    // Shells: the 4-node family (S4, S4R, S4R5) is SparLab's MITC4.
+    if (prefix == "S") {
+      if (n == 4) return make_kind(Kind::Shell4, 2, 4, type + " (4-node shell)");
+      return make_kind(Kind::Unsupported, 2, n, type + " (" + std::to_string(n) + "-node shell)",
+                       kShellAdvice);
+    }
+    // Plane, axisymmetric, membrane and rigid surface elements.
     if (n == 3) return make_kind(Kind::Tri3, 2, 3, type + " (3-node triangle)");
     if (n == 4) return make_kind(Kind::Quad4, 2, 4, type + " (4-node quadrilateral)");
     return make_kind(Kind::Unsupported, 2, n, type + " (second-order surface)",
@@ -282,17 +291,26 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     throw MeshError(src + " is made of " + cell.name + " cells, which SparLab does not "
                     "implement. " + cell.advice);
   }
+  // Shell cells keep all three coordinates: an .inp file's S4 family, or the
+  // quadrilaterals of any file read with `shell` set.
+  if (options.shell && cell.kind != Kind::Quad4 && cell.kind != Kind::Shell4) {
+    throw MeshError(src + " is read as a shell (mesh.shell = true), but its cells are " +
+                    cell.name + "s. " + kShellAdvice);
+  }
+  const bool shell = cell.kind == Kind::Shell4 || options.shell;
+  const int coord_dim = shell ? 3 : dim;
   ElementType type = ElementType::Tri3;
   switch (cell.kind) {
     case Kind::Tri3: type = ElementType::Tri3; break;
-    case Kind::Quad4: type = ElementType::Quad4; break;
+    case Kind::Quad4: type = shell ? ElementType::Shell4 : ElementType::Quad4; break;
+    case Kind::Shell4: type = ElementType::Shell4; break;
     case Kind::Tet4: type = ElementType::Tet4; break;
     case Kind::Hex8: type = ElementType::Hex8; break;
     case Kind::Tet10: type = ElementType::Tet10; break;
     default: throw MeshError(src + ": unexpected cell kind");
   }
   const int npe = nodes_per_element(type);
-  report.dimension = dim;
+  report.dimension = coord_dim;
   report.element_type = type;
 
   // Node tags -> file positions.
@@ -351,11 +369,11 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
   }
   report.unreferenced_nodes = report.nodes_in_file - next;
 
-  Matrix coords(dim, next);
+  Matrix coords(coord_dim, next);
   for (std::size_t i = 0; i < used.size(); ++i) {
     if (file_to_mesh[i] < 0) continue;
     const Vector3 x = options.scale * raw.node_coords[i];
-    coords.col(file_to_mesh[i]) = x.head(dim);
+    coords.col(file_to_mesh[i]) = x.head(coord_dim);
   }
   if (!coords.allFinite()) throw MeshError(src + ": node coordinates are not finite");
 
@@ -368,7 +386,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     hi = hi.cwiseMax(x);
   }
   const Scalar diagonal = (hi - lo).norm();
-  if (dim == 2) {
+  if (coord_dim == 2) {
     const Scalar zspan = std::max(std::abs(lo.z()), std::abs(hi.z()));
     if (zspan > 1.0e-9 * std::max(diagonal, 1.0e-300)) {
       std::ostringstream os;
@@ -408,7 +426,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     };
     for (Index n = 0; n < next; ++n) {
       Vector3 x = Vector3::Zero();
-      x.head(dim) = coords.col(n);
+      x.head(coord_dim) = coords.col(n);
       const long long ci = cell_of(x, 0);
       const long long cj = cell_of(x, 1);
       const long long ck = cell_of(x, 2);
@@ -420,7 +438,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
             if (it == buckets.end()) continue;
             for (Index m : it->second) {
               Vector3 y = Vector3::Zero();
-              y.head(dim) = coords.col(m);
+              y.head(coord_dim) = coords.col(m);
               if ((x - y).norm() <= tol) {
                 found = m;
                 break;
@@ -453,7 +471,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
   // Connectivity with orientation repair.
   std::vector<Index> connectivity;
   connectivity.reserve(cells.size() * static_cast<std::size_t>(npe));
-  Matrix xe(dim, npe);
+  Matrix xe(coord_dim, npe);
   for (std::size_t c = 0; c < cells.size(); ++c) {
     std::array<Index, 10> n{};
     for (int a = 0; a < npe; ++a) {
@@ -463,7 +481,10 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     }
     for (int a = 0; a < npe; ++a) xe.col(a) = coords.col(n[static_cast<std::size_t>(a)]);
     bool flipped = false;
-    if (type == ElementType::Tri3) {
+    if (type == ElementType::Shell4) {
+      // A shell has no inside: its node order sets the side its normal, and
+      // a pressure, act on, and is kept as the file gives it.
+    } else if (type == ElementType::Tri3) {
       const Scalar twice = (xe(0, 1) - xe(0, 0)) * (xe(1, 2) - xe(1, 0)) -
                            (xe(0, 2) - xe(0, 0)) * (xe(1, 1) - xe(1, 0));
       if (twice < 0.0) {
@@ -538,7 +559,7 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     for (Index n = 0; n < next; ++n) {
       if (remap[static_cast<std::size_t>(n)] == 0) remap[static_cast<std::size_t>(n)] = kept++;
     }
-    Matrix merged(dim, kept);
+    Matrix merged(coord_dim, kept);
     for (Index n = 0; n < next; ++n) {
       if (remap[static_cast<std::size_t>(n)] >= 0) merged.col(remap[static_cast<std::size_t>(n)]) = coords.col(n);
     }

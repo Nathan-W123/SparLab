@@ -576,6 +576,12 @@ HhtParameters HhtParameters::from_alpha(Scalar alpha) {
 TransientResult solve_transient(const FemModel& model, const Assembler& assembler,
                                 std::size_t load_case, const TransientOptions& options) {
   check_load_case(model, load_case);
+  if (model.is_shell()) {
+    throw ConfigError("a transient analysis of a shell model is not available: the rotation "
+                      "of a shell node about its director moves no material, so the mass "
+                      "matrix is singular and the initial accelerations are not determined "
+                      "(the modal and frequency-response analyses do not need them)");
+  }
   const Scalar dt = options.time_step;
   if (!(dt > 0.0) || !std::isfinite(dt)) throw ConfigError("transient: time_step must be positive");
   if (!(options.end_time > 0.0) || !std::isfinite(options.end_time)) {

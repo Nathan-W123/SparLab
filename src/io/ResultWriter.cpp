@@ -208,6 +208,30 @@ json::Value mesh_stats_json(const Configuration& config, const FemModel& model) 
           box);
   out.set("thickness_m", json::Value::make_number(model.thickness()));
   out.set("domain_volume_m3", json::Value::make_number(model.domain_volume()));
+  if (model.is_shell()) {
+    json::Value shell = json::Value::make_object();
+    Scalar t_min = model.thickness_of(0);
+    Scalar t_max = t_min;
+    for (Index e = 1; e < mesh.num_elements(); ++e) {
+      t_min = std::min(t_min, model.thickness_of(e));
+      t_max = std::max(t_max, model.thickness_of(e));
+    }
+    shell.set("thickness_min_m", json::Value::make_number(t_min));
+    shell.set("thickness_max_m", json::Value::make_number(t_max));
+    shell.set("sections", json::Value::make_number(static_cast<Scalar>(config.shell_sections.size())));
+    shell.set("drilling_factor", json::Value::make_number(model.shell_options().drilling_factor));
+    shell.set("fold_angle_deg", json::Value::make_number(model.shell_options().fold_angle_deg));
+    shell.set("directors", json::Value::make_string(mesh.has_node_normals()
+                                                        ? "the surface's exact normals"
+                                                        : "averaged element normals"));
+    if (config.mesh_kind == MeshKind::StructuredShell) {
+      const ShellMeshSpec& s = config.shell_mesh;
+      shell.set("shape", json::Value::make_string(to_string(s.shape)));
+      shell.set("n1", json::Value::make_number(static_cast<Scalar>(s.n1)));
+      shell.set("n2", json::Value::make_number(static_cast<Scalar>(s.n2)));
+    }
+    out.set("shell", shell);
+  }
   if (mesh.structured_info().has_value()) {
     const StructuredGridInfo& info = *mesh.structured_info();
     json::Value grid = json::Value::make_object();
@@ -451,6 +475,26 @@ void ResultWriter::write_mesh(const FemModel& model) const {
     doc.set("element_materials", materials);
   }
 
+  // A shell's element thicknesses and directors (the geometry its kernels
+  // take, FemModel::element_geometry), for an independent assembly.
+  if (model.is_shell()) {
+    json::Value shell = json::Value::make_object();
+    json::Value thickness = json::Value::make_array();
+    json::Value directors = json::Value::make_array();
+    for (Index e = 0; e < mesh.num_elements(); ++e) {
+      thickness.push_back(json::Value::make_number(model.thickness_of(e)));
+      const Matrix g = model.element_geometry(e);
+      json::Value corners = json::Value::make_array();
+      for (int k = 0; k < 4; ++k) corners.push_back(point_json(g.block<3, 1>(3, k), 3));
+      directors.push_back(corners);
+    }
+    shell.set("thickness_m", thickness);
+    shell.set("directors", directors);
+    shell.set("drilling_factor", json::Value::make_number(model.shell_options().drilling_factor));
+    shell.set("fold_angle_deg", json::Value::make_number(model.shell_options().fold_angle_deg));
+    doc.set("shell", shell);
+  }
+
   // Prescribed DOFs, for the boundary-condition figure.
   const int ndpn = model.dofs_per_node();
   doc.set("dofs_per_node", json::Value::make_number(ndpn));
@@ -629,6 +673,72 @@ void ResultWriter::write_reactions(const Mesh& mesh, const DofManager& dofs,
     csv.row(n, row);
   }
   csv.close();
+}
+
+void ResultWriter::write_shell_resultants(const FemModel& model, const std::string& load_case,
+                                          const ShellField& field) const {
+  const Mesh& mesh = model.mesh();
+  CsvWriter csv(file("shell_" + sanitise(load_case) + ".csv"),
+                {"element", "cx[m]", "cy[m]", "cz[m]", "area[m2]", "thickness[m]",
+                 "e1x[-]", "e1y[-]", "e1z[-]", "e2x[-]", "e2y[-]", "e2z[-]",
+                 "N11[N/m]", "N22[N/m]", "N12[N/m]", "M11[N]", "M22[N]", "M12[N]",
+                 "Q13[N/m]", "Q23[N/m]", "s11_top[Pa]", "s22_top[Pa]", "s12_top[Pa]",
+                 "s11_bottom[Pa]", "s22_bottom[Pa]", "s12_bottom[Pa]",
+                 "von_mises_top[Pa]", "von_mises_bottom[Pa]", "von_mises_mid[Pa]",
+                 "strain_energy[J]"});
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    const ShellResultants& r = field.element[static_cast<std::size_t>(e)];
+    const Vector3 c = mesh.element_centroid(e);
+    std::vector<Scalar> row{c.x(), c.y(), c.z(), mesh.element_measure(e), model.thickness_of(e)};
+    for (const Vector3* v : {&r.e1, &r.e2}) row.insert(row.end(), {v->x(), v->y(), v->z()});
+    for (const Vector3* v : {&r.membrane, &r.moment}) row.insert(row.end(), {(*v)(0), (*v)(1), (*v)(2)});
+    row.insert(row.end(), {r.shear(0), r.shear(1)});
+    for (const Vector3* v : {&r.stress_top, &r.stress_bottom}) {
+      row.insert(row.end(), {(*v)(0), (*v)(1), (*v)(2)});
+    }
+    row.insert(row.end(), {r.von_mises_top, r.von_mises_bottom, r.von_mises_mid,
+                           field.element_strain_energy(e)});
+    csv.row(e, row);
+  }
+  csv.close();
+}
+
+void ResultWriter::write_shell_vtk(const FemModel& model, const std::string& load_case,
+                                   const Vector& full_displacement, const ShellField& field) const {
+  const Mesh& mesh = model.mesh();
+  const Vector displacement = translations(mesh, full_displacement);
+  const Vector rotation = rotations(mesh, full_displacement);
+  VtkWriter writer(mesh, "SparLab shell solution: " + config_.name + " / " + load_case);
+  Vector mag(mesh.num_nodes());
+  for (Index n = 0; n < mesh.num_nodes(); ++n) mag(n) = magnitude(displacement, n, 3);
+  writer.add_point_vectors("displacement", displacement);
+  writer.add_point_vectors("rotation", rotation);
+  writer.add_point_scalars("displacement_magnitude", mag);
+  writer.add_point_scalars("nodal_von_mises", field.nodal_von_mises);
+  const Index ne = mesh.num_elements();
+  const auto cell = [&](const auto& get) {
+    Vector v(ne);
+    for (Index e = 0; e < ne; ++e) v(e) = get(field.element[static_cast<std::size_t>(e)]);
+    return v;
+  };
+  Vector thickness(ne);
+  for (Index e = 0; e < ne; ++e) thickness(e) = model.thickness_of(e);
+  writer.add_cell_scalars("thickness", thickness);
+  const char* membrane[] = {"N11", "N22", "N12"};
+  const char* moment[] = {"M11", "M22", "M12"};
+  for (int k = 0; k < 3; ++k) {
+    writer.add_cell_scalars(membrane[k], cell([k](const ShellResultants& r) { return r.membrane(k); }));
+    writer.add_cell_scalars(moment[k], cell([k](const ShellResultants& r) { return r.moment(k); }));
+  }
+  writer.add_cell_scalars("Q13", cell([](const ShellResultants& r) { return r.shear(0); }));
+  writer.add_cell_scalars("Q23", cell([](const ShellResultants& r) { return r.shear(1); }));
+  writer.add_cell_scalars("von_mises_top", cell([](const ShellResultants& r) { return r.von_mises_top; }));
+  writer.add_cell_scalars("von_mises_bottom",
+                          cell([](const ShellResultants& r) { return r.von_mises_bottom; }));
+  writer.add_cell_scalars("von_mises_mid", cell([](const ShellResultants& r) { return r.von_mises_mid; }));
+  writer.add_cell_scalars("von_mises", field.element_von_mises);
+  writer.add_cell_scalars("strain_energy", field.element_strain_energy);
+  writer.write(file("fields_" + sanitise(load_case) + ".vtk"));
 }
 
 void ResultWriter::write_temperature(const Mesh& mesh, const std::string& load_case,
@@ -1484,7 +1594,8 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
                                 const std::vector<StaticSolution>& solutions,
                                 const std::vector<StressField>& stresses,
                                 const ModalResult* modal,
-                                const TimingLedger& timings) {
+                                const TimingLedger& timings,
+                                const std::vector<ShellField>* shells) {
   json::Value out = json::Value::make_object();
   out.set("provenance", make_provenance(config));
   out.set("mesh", mesh_stats_json(config, model));
@@ -1524,6 +1635,26 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
                 json::Value::make_number(stresses[l].element_von_mises.maxCoeff()));
       entry.set("total_strain_energy_J",
                 json::Value::make_number(stresses[l].element_strain_energy.sum()));
+    }
+    if (shells != nullptr && l < shells->size()) {
+      // The largest resultants over the elements (at their centres).
+      const ShellField& f = (*shells)[l];
+      entry.set("max_von_mises_Pa", json::Value::make_number(f.element_von_mises.maxCoeff()));
+      entry.set("total_strain_energy_J",
+                json::Value::make_number(f.element_strain_energy.sum()));
+      Scalar n_max = 0.0;
+      Scalar m_max = 0.0;
+      Scalar q_max = 0.0;
+      for (const ShellResultants& r : f.element) {
+        n_max = std::max(n_max, r.membrane.cwiseAbs().maxCoeff());
+        m_max = std::max(m_max, r.moment.cwiseAbs().maxCoeff());
+        q_max = std::max(q_max, r.shear.cwiseAbs().maxCoeff());
+      }
+      json::Value shell = json::Value::make_object();
+      shell.set("max_abs_membrane_force_N_per_m", json::Value::make_number(n_max));
+      shell.set("max_abs_moment_N", json::Value::make_number(m_max));
+      shell.set("max_abs_transverse_shear_N_per_m", json::Value::make_number(q_max));
+      entry.set("shell", shell);
     }
     cases.push_back(entry);
   }

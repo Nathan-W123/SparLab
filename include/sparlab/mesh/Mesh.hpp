@@ -32,14 +32,24 @@ enum class ElementType {
   Hex8,   ///< Eight-node trilinear isoparametric hexahedron (3-D).
   Tri3,   ///< Three-node linear triangle, constant strain (2-D).
   Tet4,   ///< Four-node linear tetrahedron, constant strain (3-D).
-  Tet10   ///< Ten-node quadratic tetrahedron, linear strain (3-D).
+  Tet10,  ///< Ten-node quadratic tetrahedron, linear strain (3-D).
+  Shell4  ///< Four-node MITC4 shell: a quadrilateral surface in 3-D.
 };
 
 /// Number of nodes carried by an element topology.
 int nodes_per_element(ElementType type);
 
-/// Spatial dimension of an element topology (2 or 3).
+/// Spatial dimension of an element topology (2 or 3): the coordinates of
+/// its nodes, 3 for a shell.
 int element_dimension(ElementType type);
+
+/// Dimension of the cell itself: 2 for the plane elements and the shell
+/// (an area), 3 for the solids (a volume).
+int topological_dimension(ElementType type);
+
+/// True for the shell element (a surface in 3-D whose nodes carry
+/// rotations).
+bool is_shell(ElementType type);
 
 /// True for the triangles and tetrahedra (Tri3, Tet4, Tet10).
 bool is_simplex(ElementType type);
@@ -58,8 +68,8 @@ int face_corner_nodes(ElementType type);
 std::string to_string(ElementType type);
 
 /// Local node lists of the boundary entities of a topology, each wound so its
-/// right-hand normal points out of the element: the edges of a Q4 or Tri3
-/// (two nodes each, counter-clockwise), the six quadrilateral faces of a Hex8
+/// right-hand normal points out of the element: the edges of a Q4, Tri3 or
+/// shell (two nodes each, counter-clockwise), the six quadrilateral faces of a Hex8
 /// (VTK hexahedron face convention), the four triangular faces of a Tet4, or
 /// the four 6-node faces of a Tet10 (the Tet4 corners, then the edge nodes of
 /// corner pairs 0-1, 1-2, 2-0 of the face). "Face" is used for all of them
@@ -189,6 +199,16 @@ class Mesh {
   void set_node_set(const std::string& name, std::vector<Index> nodes);
   void set_element_set(const std::string& name, std::vector<Index> elements);
 
+  /// Exact unit normals of a shell surface at its nodes (3 x num_nodes), from
+  /// a generator that knows the surface; empty otherwise. A shell model takes
+  /// them as its directors instead of averaging its element normals
+  /// (FemModel.hpp).
+  const Matrix& node_normals() const { return node_normals_; }
+  bool has_node_normals() const { return node_normals_.size() > 0; }
+  /// \throws MeshError for a mesh that is not a shell, the wrong shape or a
+  ///         vector that is not a unit vector.
+  void set_node_normals(Matrix normals);
+
   /// Boundary entity of the mesh: an edge (2-D) or a face (3-D) referenced by
   /// exactly one element, with its nodes in the element's local order (all
   /// of them, edge nodes included for a Tet10).
@@ -216,6 +236,7 @@ class Mesh {
   std::optional<StructuredGridInfo> structured_;
   std::map<std::string, std::vector<Index>> node_sets_;
   std::map<std::string, std::vector<Index>> element_sets_;
+  Matrix node_normals_;
 };
 
 /// Quadratic tetrahedron mesh from a linear one: every Tet4 edge gets a node

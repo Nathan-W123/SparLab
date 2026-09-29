@@ -1,0 +1,46 @@
+{
+  // ---------------------------------------------------------------------------
+  // A box-section cantilever read from an S4R mesh file (make_shell_meshes.py):
+  // four walls of MITC4 shells meeting at 90 degree folds, mid-surface side
+  // 0.1 m, 1 m long, the flanges (z = +-0.05 m) 3 mm thick by their own shell
+  // section and the webs 2 mm. Its root nodes' translations are held (the
+  // walls' rotations there free: CalculiX imposes a held shell rotation
+  // through a rigid knot, which stiffens its model). Load cases: a tip shear
+  // of 1 kN on the webs' tip edges, and nodal moments on the tip nodes (the
+  // moment load path of a shell), each about an axis in its wall's plane - a
+  // moment about a wall's normal does no work in CalculiX's expansion, and
+  // acts only through the drilling stiffness in SparLab's. Static, modal and
+  // buckling of the shear case, cross-validated by an independent MITC4 in
+  // NumPy and by CalculiX's S4.
+  // ---------------------------------------------------------------------------
+  "name": "shell_box_beam_analysis",
+  "description": "Box-section cantilever of MITC4 shells from an S4R file: folds, sections, moments",
+  "units": "SI (m, N, Pa, kg)",
+  "mesh": { "type": "file", "path": "../meshes/shell_box_beam.inp" },
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.3, "density": 2700.0 },
+  "model": { "thickness": 0.002,
+             "shell": { "sections": [ { "name": "flanges", "thickness": 0.003,
+                                        "region": { "group": "flanges" } } ] } },
+  "boundary_conditions": [
+    { "name": "root", "fix": ["x", "y", "z"], "region": { "group": "root" } }
+  ],
+  "load_cases": [
+    { "name": "tip_shear",
+      "tractions": [
+        { "traction": [0.0, 0.0, -2.5e6], "region": { "box": { "xmin": 1.0, "ymin": 0.05 } } },
+        { "traction": [0.0, 0.0, -2.5e6], "region": { "box": { "xmin": 1.0, "ymax": -0.05 } } }
+      ] },
+    { "name": "tip_moments",
+      "point_loads": [
+        { "name": "flanges", "force": [0.0, 0.0, 0.0], "moment": [0.0, 20.0, 0.0],
+          "region": { "any_of": [ { "box": { "xmin": 1.0, "ymin": -0.049, "ymax": 0.049, "zmin": 0.05 } },
+                                  { "box": { "xmin": 1.0, "ymin": -0.049, "ymax": 0.049, "zmax": -0.05 } } ] } },
+        { "name": "webs", "force": [0.0, 0.0, 0.0], "moment": [0.0, 0.0, 5.0],
+          "region": { "any_of": [ { "box": { "xmin": 1.0, "zmin": -0.049, "zmax": 0.049, "ymin": 0.05 } },
+                                  { "box": { "xmin": 1.0, "zmin": -0.049, "zmax": 0.049, "ymax": -0.05 } } ] } } ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 4 },
+  "buckling": { "enabled": true, "num_modes": 2, "load_cases": ["tip_shear"] },
+  "output": { "csv": true, "vtk": true, "mode_shapes": true }
+}

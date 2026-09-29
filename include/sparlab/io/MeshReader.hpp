@@ -21,6 +21,10 @@
 ///     millimetres), and a domain larger than 20 m or smaller than 0.1 mm draws
 ///     a warning that names the likely fix;
 ///   * **plane meshes.** A 2-D mesh must lie in the z = 0 plane;
+///   * **shells.** Abaqus S4, S4R and S4R5 cells (or any quadrilaterals with
+///     `shell` set) become MITC4 shell cells anywhere in space, in the node
+///     order of the file, which sets each one's normal; other shell cells are
+///     refused;
 ///   * **unused and duplicate nodes.** Nodes no cell references (geometry
 ///     points, dropped entities) are removed and counted. Coincident nodes,
 ///     which leave the cells on either side unconnected, are counted and
@@ -61,6 +65,9 @@ struct MeshReadOptions {
   /// Absolute distance [m, after scaling] below which two nodes coincide;
   /// <= 0 selects 1e-9 times the bounding-box diagonal.
   Scalar duplicate_tolerance = 0.0;
+  /// Read the file's quadrilaterals as MITC4 shell cells in 3-D. An .inp
+  /// file's S4 family (S4, S4R, S4R5) is read as shells without it.
+  bool shell = false;
 };
 
 /// What the reader found and what it did about it.

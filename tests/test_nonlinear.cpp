@@ -92,6 +92,7 @@ Mesh single_cell(ElementType type) {
     case ElementType::Hex8: return make_perturbed_hex_mesh([&] { auto s = spec; s.nx = s.ny = s.nz = 2; return s; }(), 0.2);
     case ElementType::Tet4: return make_perturbed_tet_mesh([&] { auto s = spec; s.nx = s.ny = s.nz = 2; return s; }(), 0.2);
     case ElementType::Tet10: return make_perturbed_tet10_mesh([&] { auto s = spec; s.nx = s.ny = s.nz = 2; return s; }(), 0.2);
+    case ElementType::Shell4: break;  // not a continuum element
   }
   throw ConfigError("unhandled element type");
 }

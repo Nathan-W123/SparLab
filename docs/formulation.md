@@ -1384,6 +1384,120 @@ the summary say; where the model without contact is not restrained (a body
 held only by its contact), `sparlab_solve` warns and skips those analyses
 instead of failing.
 
+## 7g. Shells (MITC4)
+
+A shell mesh (`structured_shell`, or S4 cells in a file) is made of
+four-node MITC4 elements (Dvorkin and Bathe 1984; `src/elements/Shell4.cpp`):
+a degenerated continuum whose fibres stay straight and inextensible, with
+assumed transverse shear strains that keep a thin shell from locking. Its
+analyses are linear: static, modal and buckling (`docs/verification.md`,
+section 27).
+
+**Kinematics.** A point at the natural coordinates `(r, s)` of the
+mid-surface and `zeta in [-1, 1]` through the thickness `t` lies at, and
+moves by,
+
+```
+  X = sum_k N_k (x_k + zeta t/2 V_k),        u = sum_k N_k (u_k + zeta t/2 theta_k x V_k),
+```
+
+with the bilinear `N_k`, the nodal directors `V_k` (unit vectors), and six
+DOFs per node: the translations `u_k` and the rotations `theta_k` about the
+global axes. The director at a node is the surface's exact normal when the
+mesh carries one (a generated plate, cylinder or sphere); otherwise the
+average of the normals of the elements there that lie within the fold angle
+(20 degrees by default) of one another, turned to each element's side; an
+element across a fold - the corner of a box, a T-junction - keeps its own
+normal, and the node's global rotations couple the walls. The mid-surface is
+bilinear, so a curved surface is a surface of flat or warped facets whose
+directors follow the true normals; a facet of a coarse mesh departs from them
+by half its angle.
+
+**Strains.** The covariant components
+`eps~_ij = 1/2 (g_i . u_,j + g_j . u_,i)` on the base vectors
+`g_r, g_s, g_zeta` of the point: the in-plane ones (rr, ss, rs) at the point,
+the transverse shears interpolated from the edge midpoints - `eps~_r zeta`
+from A = (0, 1) and C = (0, -1), `eps~_s zeta` from D = (1, 0) and
+B = (-1, 0) - which makes them constant along each edge's direction and
+removes the spurious shear energy of a bent thin element. `eps~_zeta zeta`
+is not used. The local Cartesian strains are `eps_ab = T_ai T_bj eps~_ij`
+with `T = E^T G^-T`, `E` the local frame and `G` the base vectors; the local
+frame has `e3` along the interpolated director, `e1` the projection of global
+x onto the plane normal to it (global z when x lies within 0.1 degree of
+`e3`) and `e2 = e3 x e1`. Stress is plane stress in `(e1, e2)` with the
+plane-stress matrix of the material, and `k G` (`k = 5/6`) in transverse
+shear. Stiffness and geometric stiffness use 2 x 2 points in the plane by 2
+through the thickness; the mass `mass_points` x `mass_points` x 3, which
+includes the rotary inertia `rho t^3 / 12`.
+
+**Drilling.** A rotation about the director moves no point of the shell, so
+alone it would be a zero-energy mode. It is tied to the in-plane rotation of
+the mid-surface by a penalty (Hughes and Brezzi's drilling constraint) at the
+2 x 2 points, `1/2 k_d int (n . theta - omega)^2 dA`, with
+`omega = 1/2 n . (a^alpha x u_,alpha)` the rotation of the mid-surface about
+its normal (`a^alpha` its in-plane dual base vectors) and
+`k_d = alpha G t`, `alpha` = `model.shell.drilling_stiffness`, `1e-3` by
+default. Under a rigid rotation both terms equal `n . omega` on any geometry,
+so the six rigid-body motions stay free of stiffness (checked to `1e-12`);
+at a fold, where one wall's rotation about its normal bends its neighbour,
+the penalty makes the two compatible. The answer barely depends on `alpha`
+(section 27: a factor 1e-5 ... 1e-2 changes the box beam's bending and
+torsion by at most 1.7e-4).
+
+**Loads.** Point forces and moments act on a node's six DOFs. A traction
+loads a free edge over its length times the element's thickness; a pressure
+the elements a region selects, over the mid-surface and against its normal,
+`f_k = -p int N_k (g_r x g_s) dr ds` (exact with 2 x 2 points: the area
+vector of a bilinear surface is linear). Self-weight and uniform body forces
+act through the volume, `f = int N^T b dV = M_e(rho = 1) b^`, the rotations
+of `b^` zero - exact, since the interpolation with those nodal values is `b`
+at every point; the resultant is `rho g` times the volume the shell's
+directors sweep, which on the facets of a curved surface falls short of
+`t A` by `O(h^2)` (1.8 % on a coarse sphere zone of 5 x 4 cells, 0.45 % on
+10 x 8). A shell refuses a centrifugal load (it varies through the thickness
+in a way nodal loads cannot carry), temperatures (no thermal strain through
+the thickness), plasticity, contact, the non-linear analysis (its rotations
+are small), transients (below) and topology optimisation, each with its
+reason.
+
+**Resultants.** At each element's centre, in its local frame: the membrane
+forces `N = int sigma dz`, the moments `M = int sigma z dz` (`M11 > 0`
+stretches the side the director points to), the transverse shears `Q`, the
+in-plane stresses on the two faces, and the von Mises stress of each face
+and of the mid-surface, where the transverse shear stress takes its
+parabolic peak `3 Q / (2 t)`.
+
+**Modes.** The consistent mass is only semi-definite: the rotation of a node
+about its director carries no inertia, as it moves no material. The modal
+solver takes such a pencil through `M y = mu K y` with `K` positive definite,
+whose largest `mu` are `1 / lambda` of the lowest modes and whose zero `mu`
+are the massless directions. A transient would need the initial
+accelerations from `M`, which that singular mass does not determine, so a
+shell refuses it.
+
+**Buckling.** The geometric stiffness is that of the in-plane stresses on
+the gradient of the whole displacement field,
+`K_G = int sigma_ab D_a^T D_b dV` over the local in-plane directions, with
+`D_a q = du/dx_a` - rotation terms included - so besides the classical
+`N w_,a w_,b` it carries the stress acting on the fibres' own rotation,
+`(t^2 / 12) N psi_,a psi_,b`, a relative `O((t / a)^2)` (1.6e-4 on the
+verification plate).
+
+**Thick-shell behaviour.** The degenerated continuum keeps the fibres'
+divergence through the thickness: a cylinder of radius `R` under internal
+pressure expands by `p R / (E ln((R + t/2) / (R - t/2)))`, the thick ring's
+value, `(t / R)^2 / 12` below the membrane formula `p R^2 / (E t)` - which is
+what the refinement converges to (section 27).
+
+**Known limits of the element.** MITC4 is free of shear locking on meshes of
+parallelograms; on distorted meshes a coarse mesh can lock as `t / a` falls -
+measured on a clamped plate, whose 4 x 4 distorted mesh has 24 interior-edge
+shear constraints on 27 interior DOFs and reaches 0.15 of the deflection at
+`t / a = 1e-3`, while from 8 x 8 on the result no longer depends on `t / a`.
+It is not free of membrane locking: bending-dominated curved shells converge
+slowly on coarse meshes (the pinched cylinder reaches 0.38, 0.75, 0.93, 0.99 of
+its reference on 4 ... 32 cells a side).
+
 ## 8. Topology optimisation
 
 See `docs/topology_optimization.md` for the SIMP interpolation, the filters, the
@@ -1457,3 +1571,25 @@ scikit-fem's alone; and on a rigid plane with friction its answer departed
 from SparLab's by 1.7e-5 (1.5e-4 with 22 nodes sticking) where scikit-fem
 agreed with SparLab's to 5e-13, so that deck is frictionless, and friction
 is judged against CalculiX on the mortar pair.
+
+A shell run is solved again by an independent MITC4 written in NumPy
+(`python/scripts/shell_xval.py`) from the equations of section 7g - the
+covariant strains of its interpolation matrices, the tying points, the
+local frame, the drilling term, the mass and the geometric stiffness - with
+the directors and thicknesses SparLab used (`mesh.json`), the loads and
+supports of `mesh.json`, and the pressure and self-weight integrated in
+NumPy from the deck; the displacements and rotations, the frequencies and
+the buckling factors are compared. CalculiX's S4 is a different
+discretisation: it expands each shell into a layer of incompatible-mode
+solids (C3D8I) over normals it averages itself, applies nodal moments and
+held rotations through rigid knots, and its shell `P` acts along the element
+normal where SparLab's acts against it (the export flips the sign and asks
+for the results at the shell's own nodes, `OUTPUT=2D`). Its answers are
+recorded, not judged, and were measured to converge to SparLab's: on the
+simply supported plate its centre deflection differs by 2.2 %, 0.20 % and
+0.089 % on 16, 32 and 64 cells a side; on the pinched hemisphere, where its
+coarse meshes lock, by 47 %, 5.9 % and 0.45 % on 12, 24 and 48 cells a quarter.
+Held rotations stiffen its model: a quarter of the Scordelis-Lo roof, whose
+symmetry planes hold rotations, gives 0.030 at the free edge against the
+reference 0.3024, where the whole roof on its diaphragms alone agrees with
+SparLab's to 0.34 %; the cross-validation decks therefore hold no rotation.

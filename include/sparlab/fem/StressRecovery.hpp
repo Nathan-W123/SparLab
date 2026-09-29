@@ -35,8 +35,11 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/elements/Shell4.hpp"
 #include "sparlab/fem/Assembler.hpp"
 #include "sparlab/fem/FemModel.hpp"
+
+#include <vector>
 
 namespace sparlab {
 
@@ -83,6 +86,22 @@ Vector element_strain_at(const FemModel& model, Index element, const NaturalPoin
 Vector element_stress_at(const FemModel& model, Index element, const NaturalPoint& point,
                          const Vector& displacement, Scalar stiffness_scale = 1.0,
                          const Vector* temperature = nullptr);
+
+/// The resultants of a shell model (Shell4.hpp), one set per element at its
+/// centre, (r, s) = (0, 0).
+struct ShellField {
+  std::vector<ShellResultants> element;  ///< per element, in its local frame there
+  /// Per element, the largest von Mises stress of the two faces and the
+  /// mid-surface [Pa].
+  Vector element_von_mises;
+  Vector element_strain_energy;          ///< 1/2 u_e^T K_e u_e [J]
+  Vector nodal_von_mises;                ///< area-weighted average of the elements' [Pa]
+};
+
+/// Recover the resultants of a shell model's displacement field.
+/// \throws ModelError when the model is not a shell or the field does not fit it.
+ShellField recover_shell_resultants(const FemModel& model, const Assembler& assembler,
+                                    const Vector& displacement);
 
 /// Recover all strain / stress data for a displacement field.
 /// \param stiffness_scale optional per-element SIMP factors \f$E(\rho)/E_0\f$.

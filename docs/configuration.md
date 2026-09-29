@@ -45,17 +45,43 @@ reports its line and column.
 
 "mesh": { "type": "structured_tet", "nx": 20, "ny": 2, "nz": 2,
           "lx": 1.0, "ly": 0.05, "lz": 0.05, "order": 2 }
+
+"mesh": { "type": "structured_shell", "shape": "cylinder", "axis": "x", "radius": 25.0,
+          "length": 50.0, "origin": [-25.0, 0.0, 0.0], "angles": [50.0, 130.0],
+          "n_around": 24, "n_along": 24 }
 ```
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `type` | string | `structured_quad` | `structured_quad` (plane, Q4), `structured_tri` (plane, Tri3: each cell split into two triangles), `structured_hex` (solid, Hex8), `structured_tet` (solid, Tet4: each cell split into six Kuhn tetrahedra), or `file` (read from a mesh file) |
+| `type` | string | `structured_quad` | `structured_quad` (plane, Q4), `structured_tri` (plane, Tri3: each cell split into two triangles), `structured_hex` (solid, Hex8), `structured_tet` (solid, Tet4: each cell split into six Kuhn tetrahedra), `structured_shell` (a surface of MITC4 shells, below), or `file` (read from a mesh file) |
 | `nx`, `ny` | integer | required for the structured types | elements per direction, `>= 1` |
 | `nz` | integer | required for `structured_hex` / `structured_tet` | elements through the third direction |
 | `lx`, `ly` | number | required for the structured types | domain extents [m], `> 0` |
 | `lz` | number | required for `structured_hex` / `structured_tet` | extent in z [m] |
 | `x0`, `y0`, `z0` | number | `0` | lower corner [m] |
 | `order` | integer | `1` | `2` makes the tetrahedra quadratic (Tet10): on `structured_tet`, and on a `file` mesh of linear tetrahedra, which is elevated with an edge node at every edge midpoint (straight-sided cells, named sets carried over). A file of 10-node tetrahedra is read as Tet10 without it; `order: 1` on such a file, or `2` on any other cell type, is an error |
+
+**Shell surfaces** (`"type": "structured_shell"`) are made of MITC4 shell
+cells in 3-D (formulation section 7g), with the surface's exact normals at
+their nodes, which the model takes as its directors:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `shape` | string | `plate` | `plate`, `cylinder` or `sphere` |
+| `origin` | `[x, y, z]` [m] | `[0, 0, 0]` | the plate's lower corner; the point of a cylinder's axis where it starts; a sphere's centre |
+| `nx`, `ny`, `lx`, `ly` | integer / number | required for a plate | cells and extents along x and y; the plate lies in the plane `z = origin.z` |
+| `perturbation`, `seed` | number, integer | `0`, `12345` | a plate's interior nodes moved in its plane by up to this fraction of a cell, in `[0, 0.25)` (which keeps every cell convex) |
+| `radius` | number [m] | required for a cylinder or a sphere | |
+| `n_around` | integer | required for a cylinder or a sphere | cells round the axis (cylinder) or in longitude (sphere); at least 3 round a closed circle |
+| `length`, `n_along` | number, integer | required for a cylinder | its length along the axis from `origin`, and the cells along it |
+| `axis` | `x`, `y` or `z` | `z` | the cylinder's axis |
+| `angles` | `[start, end]` [deg] | `[0, 360]` | the cylinder's angles round its axis, measured from the next axis towards the one after (about z: from +x towards +y; about x: from +y towards +z; about y: from +z towards +x); a span of 360 closes it |
+| `longitudes` | `[start, end]` [deg] | `[0, 360]` | a sphere's longitudes about +z from +x |
+| `polar_angles`, `n_meridian` | `[start, end]` [deg], integer | required for a sphere | its polar angles from +z, `0 < start < end < 180` (a pole would collapse the cells round it: leave an opening, as the pinched hemisphere does), and the cells between them |
+
+Every cell's nodes run so that its normal `g_1 x g_2` points along +z on a
+plate and away from the axis or the centre on a cylinder or a sphere - the
+side a positive pressure presses on.
 
 The mesh type fixes the dimension of the whole deck: a solid mesh has three
 displacement components per node, regions may use `zmin`/`zmax` and
@@ -73,6 +99,7 @@ components, `model.thickness` must be absent (a solid has none) and
 | `scale` | number | `1` | factor applied to every coordinate: `0.001` for a mesh drawn in millimetres |
 | `merge_duplicate_nodes` | bool | `false` | merge coincident nodes instead of only reporting them |
 | `duplicate_tolerance` | number [m] | `0` | distance below which two nodes coincide, after scaling; `0` means `1e-9` times the bounding-box diagonal |
+| `shell` | bool | `false` | read the file's quadrilaterals as MITC4 shell cells in 3-D (an `.inp` file's S4, S4R and S4R5 cells are shells without it) |
 
 Gmsh MSH 2.2 and 4.1 ASCII and Abaqus / CalculiX `.inp` files are read. The
 cells of the highest dimension in the file become the mesh: linear triangles
@@ -88,7 +115,9 @@ node set, and an element set when it holds cells; an Abaqus `*NSET` is a node
 set, and an `*ELSET` is an element set when it holds cells and a node set
 when it holds boundary elements. Inverted or mirrored cells are re-ordered
 and counted, nodes no cell uses are dropped, coincident nodes are reported,
-a plane mesh must lie in `z = 0`, and a domain larger than 20 m or smaller
+a plane mesh must lie in `z = 0` (a shell mesh anywhere in space, its cells'
+node order - their normals - kept as the file gives it; S3 and eight-node
+shells are refused), and a domain larger than 20 m or smaller
 than 0.1 mm draws a warning about units. Boundary conditions, loads and
 materials in an `.inp` file are not imported, and the report names every
 ignored keyword. What was read and done is recorded under `mesh.file` in
@@ -189,11 +218,23 @@ its interpolation is written for one solid material.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `thickness` | number [m] | `1.0` | out-of-plane thickness, `> 0`; plane meshes only - a solid mesh rejects the key |
-| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh) | `plane_stress`, `plane_strain` or `three_dimensional`; the plane idealisations need a plane mesh (Q4 or Tri3) and `three_dimensional` a solid one (Hex8, Tet4 or Tet10) |
+| `thickness` | number [m] | `1.0`; required on a shell mesh | out-of-plane thickness of a plane mesh, or the thickness of a shell, `> 0`; a solid mesh rejects the key |
+| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh, `shell` on a shell mesh) | `plane_stress`, `plane_strain`, `three_dimensional` or `shell`; the plane idealisations need a plane mesh (Q4 or Tri3), `three_dimensional` a solid one (Hex8, Tet4 or Tet10) and `shell` a shell mesh |
 | `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 (2x2 for the Q4, 2x2x2 for the Hex8); the linear simplices have a constant strain and integrate exactly with one point whatever is set here |
 | `integration.mass_points` | integer | `3` | Gauss points per direction for `M_e`, 1-4; the simplices use the exact closed-form consistent mass instead |
 | `integration.face_points` | integer | `2` | Gauss points per direction on a loaded edge or face, 1-4; `edge_points` is accepted as a synonym |
+| `shell.sections` | array | `[]` | shell meshes: `{ "name":, "region": {...}, "thickness": t }` - the elements a region selects (at their centroids, or an element set) take the thickness `t`; later sections win |
+| `shell.drilling_stiffness` | number | `1e-3` | shell meshes: the drilling penalty over `G t` (formulation 7g; `docs/verification.md` section 27 measures the answer's insensitivity to it) |
+| `shell.fold_angle` | number [deg] | `20` | shell meshes without exact normals: element normals at a node within this angle of one another are averaged into one director; beyond it the node is a fold and each element keeps its own. In `(0, 90)` |
+
+A shell mesh's integration is fixed by its element (2 x 2 x 2 points for the
+stiffness, `mass_points` x `mass_points` x 3 for the mass), and a shell model
+refuses what it cannot represent: the non-linear analysis (its rotations are
+small), contact, plasticity, temperatures, a centrifugal load (it varies
+through the thickness in a way nodal loads cannot carry), a transient (the
+rotation of a node about its director moves no material, so the mass matrix
+is singular and the initial accelerations are undetermined) and topology
+optimisation, each with its reason.
 
 ## Regions
 
@@ -250,8 +291,9 @@ an error, as is a region that selects nothing.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `name` | string | auto | diagnostics |
-| `fix` | array of `"x"` / `"y"` (/ `"z"` on a solid mesh) | required, non-empty | which components to prescribe |
+| `fix` | array of `"x"` / `"y"` (/ `"z"` on a solid or shell mesh; `"rx"`, `"ry"`, `"rz"` on a shell mesh) | required, non-empty | which components to prescribe; `rx`, `ry` and `rz` are the rotations about the global axes |
 | `value` | `[u_x, u_y(, u_z)]` [m] | zeros | prescribed displacement |
+| `rotation` | `[r_x, r_y, r_z]` [rad] | zeros | shell meshes: prescribed rotations |
 | `region` | object | required | node region |
 
 Non-zero values are handled by static condensation, not by modifying the load
@@ -292,7 +334,8 @@ vector, so the reactions stay exact.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `force` | `[F_x, F_y(, F_z)]` [N] | required | see `distribution` |
+| `force` | `[F_x, F_y(, F_z)]` [N] | required (optional with a `moment`) | see `distribution` |
+| `moment` | `[M_x, M_y, M_z]` [N m] | none | shell meshes: a nodal moment about the global axes, distributed like the force |
 | `distribution` | `"total"` / `"per_node"` | `"total"` | `total` divides the resultant among the selected nodes, so the total force is mesh independent; `per_node` applies `force` to each node |
 | `region` | object | required | node region |
 
@@ -305,8 +348,10 @@ vector, so the reactions stay exact.
 
 Tractions are integrated to consistent nodal forces, so the resultant is exactly
 `traction * (loaded length) * thickness` on a plane mesh and
-`traction * (loaded area)` on a solid one, at any mesh resolution. A traction
-region matching no boundary edge or face is an error.
+`traction * (loaded area)` on a solid one, at any mesh resolution. On a shell
+mesh a traction loads the free edges (those of one element only) whose nodes
+all lie in the region, over the edge's length times its element's thickness.
+A traction region matching no boundary edge or face is an error.
 
 **Pressure**
 
@@ -314,6 +359,12 @@ region matching no boundary edge or face is an error.
 |-----|------|---------|---------|
 | `pressure` | number [Pa] | required | positive pushes *into* the body |
 | `region` | object | required | node region; like a traction, a boundary edge or face is loaded when all its nodes lie inside |
+
+On a shell mesh a pressure loads the shell elements its region selects (at
+their centroids, or an element set), over their mid-surface and against its
+normal `g_r x g_s`: a positive pressure presses on the side the element's
+normal points out of - the outside of a generated cylinder or sphere, +z of a
+generated plate, the side the node order of a file's cells sets.
 
 A pressure acts along the normal of the face at every point: it is integrated
 with the face's own area vector (`x_s x x_t` on a surface, the rotated tangent
@@ -345,7 +396,10 @@ Every element carries `rho omega^2 r_perp`, `r_perp` its distance vector from
 the axis. The body loads are integrated from the consistent mass,
 `f = M_e(rho = 1) b(x_nodes)`, which is exact for any force density affine in
 position - self-weight, a uniform body force and the centrifugal load - on
-straight and curved cells alike (`include/sparlab/fem/Loads.hpp`).
+straight and curved cells alike (`include/sparlab/fem/Loads.hpp`). On a shell
+mesh self-weight and body forces act through the shell's volume the same way
+(the nodal rotations of `b` zero), exactly; a shell refuses the centrifugal
+load, which varies through the thickness.
 
 **Temperature**
 
@@ -1075,6 +1129,23 @@ run; the section's presence switches it on otherwise.
 
 `summary.json` and `mesh.json` are always written: a result directory should be
 self-describing.
+
+A shell run writes, per load case, `displacement_<case>.csv` with the three
+rotations after the translations, `reactions_<case>.csv` with the reaction
+moments, and `shell_<case>.csv` in place of the continuum stress table: per
+element, at its centre and in its local frame (`e1` the projection of global
+x onto the surface, `e3` the director), the membrane forces `N11 N22 N12`
+[N/m], the moments `M11 M22 M12` [N m / m], the transverse shears `Q13 Q23`
+[N/m], the in-plane stresses on the two faces, the von Mises stress on each
+face and on the mid-surface (with the transverse shear at its parabolic peak
+`3 Q / (2 t)`), and the strain energy. `fields_<case>.vtk` holds the
+displacements, rotations and nodal von Mises stress, and the same resultants
+per cell. `mesh.json` carries every element's thickness and directors, and
+`summary.json` the shell settings (`mesh.shell`) and each case's largest
+resultants. `--export-calculix` writes S4 decks: a `*SHELL SECTION` per
+material and thickness, a pressure as `P` on the elements (with its sign
+flipped: CalculiX's shell `P` acts along the element's normal), and the
+results at the shell's own nodes (`OUTPUT=2D`).
 
 ## Command-line overrides
 

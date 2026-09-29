@@ -94,7 +94,9 @@ NonlinearStaticAnalysis::NonlinearStaticAnalysis(const FemModel& model,
     : model_(model), assembler_(assembler), options_(std::move(options)) {
   if (!model.finalized()) throw ModelError("the model must be finalised before a solve");
   if (model.dofs_per_node() != model.dim()) {
-    throw ConfigError("the non-linear analysis is written for continuum elements");
+    throw ConfigError("the non-linear analysis is written for continuum elements; a shell "
+                      "model is analysed with small rotations (linear static, modal and "
+                      "buckling), so leave nonlinear.enabled off");
   }
   if (options_.steps < 1 || options_.max_iterations < 1 || options_.max_steps < 1) {
     throw ConfigError("the non-linear analysis needs steps, max_steps and max_iterations >= 1");
