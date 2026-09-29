@@ -85,6 +85,7 @@ add_library(sparlab STATIC
   src/topopt/SimpInterpolation.cpp
   src/topopt/DensityFilter.cpp
   src/topopt/DesignDomain.cpp
+  src/topopt/DesignLoads.cpp
   src/topopt/Sensitivity.cpp
   src/topopt/OptimalityCriteria.cpp
   src/topopt/Mma.cpp
@@ -159,7 +160,7 @@ if(SPARLAB_BUILD_APPS)
   target_sources(sparlab_verify PRIVATE apps/verify_loads.cpp apps/verify_nonlinear.cpp
                                      apps/verify_plasticity.cpp apps/verify_dynamics.cpp
                                      apps/verify_contact.cpp apps/verify_shell.cpp
-                                     apps/verify_beam.cpp)
+                                     apps/verify_beam.cpp apps/verify_topopt.cpp)
 endif()
 
 # ----------------------------------------------------------------------------

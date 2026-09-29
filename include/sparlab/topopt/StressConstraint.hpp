@@ -45,6 +45,15 @@
 /// none). Every gradient is verified against central differences in the test
 /// suite and the verification app.
 ///
+/// **Design-dependent loads.** Where a case's load follows the design
+/// (DesignLoads.hpp), \f$\partial u/\partial\tilde\rho_e =
+/// K^{-1}(\partial f/\partial\tilde\rho_e - \partial K/\partial\tilde\rho_e\,u)\f$
+/// and the implicit term gains \f$+\lambda_e^T\,\partial f_e/\partial\tilde\rho_e\f$.
+/// With a temperature field the stress is that of the strain less the free
+/// thermal strain, \f$\sigma_e = D\,(B_e u_e - \varepsilon_{0,e})\f$ at the
+/// centre; \f$\varepsilon_0\f$ does not depend on the design, so the
+/// derivatives with respect to \f$u\f$ are unchanged.
+///
 /// **What the constraint does and does not guarantee.** It bounds the
 /// relaxed, aggregated stress of the SIMP model. The reported check that
 /// matters for a design is the re-solve of the thresholded structure with

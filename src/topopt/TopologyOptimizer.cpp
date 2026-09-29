@@ -149,6 +149,34 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
                       "and a beam's design variable would be its section");
   }
   options_.simp.validate();
+  for (const LoadCaseSpec& spec : model.load_case_specs()) {
+    if (spec.has_temperature() &&
+        spec.temperature.source == TemperatureSpec::Source::Conduction) {
+      throw ConfigError(
+          "load case '" + spec.name + "': a conducted temperature field depends on the "
+          "design - heat flows through the material the optimiser places - and the "
+          "optimiser keeps each case's temperature fixed; give the temperature as a "
+          "uniform or regional field");
+    }
+    if ((spec.has_body_loads() || spec.has_temperature()) &&
+        options_.method != OptimizerMethod::MMA) {
+      throw ConfigError(
+          "load case '" + spec.name + "' carries " +
+          (spec.has_temperature() ? std::string("a temperature field")
+                                  : std::string("body loads")) +
+          ", which follow the material the design places: removing material removes "
+          "load, so the compliance gradient can be positive, which the optimality-"
+          "criteria update cannot follow; use optimizer.method = \"mma\"");
+    }
+    if ((spec.has_body_loads() || spec.has_temperature()) &&
+        filter_.type() == FilterType::Sensitivity) {
+      throw ConfigError(
+          "load case '" + spec.name + "' carries loads that follow the design, whose "
+          "compliance gradient can be positive; the sensitivity filter is a heuristic for "
+          "the non-positive gradient of fixed loads, so use filter.type = density (or "
+          "none), whose chain rule is exact");
+    }
+  }
   if (options_.max_iterations < 1) {
     throw ConfigError("optimizer.max_iterations must be at least 1");
   }
@@ -473,6 +501,20 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
     os << "the volume constraint is violated: final volume " << result.volume
        << " m^3 exceeds the target " << target << " m^3 by a relative "
        << result.volume_constraint_violation;
+    result.warnings.push_back(os.str());
+    log::warn(os.str());
+  }
+  if (objective.design_loads().design_dependent() && !result.robust &&
+      result.volume_constraint_violation < -1.0e-2) {
+    // Under body or thermal loads material brings load as well as stiffness,
+    // so the optimum need not use the whole allowance.
+    std::ostringstream os;
+    os << "the volume constraint is inactive: the design uses a volume fraction of "
+       << result.volume_fraction << " of the " << domain_.volume_fraction()
+       << " allowed, because its body or thermal loads grow with the material; under a "
+          "temperature field the thermal compliance falls with the stiffness, which can "
+          "also leave the design grey (grey level "
+       << result.gray_level << "). The Heaviside projection drives it towards 0 and 1";
     result.warnings.push_back(os.str());
     log::warn(os.str());
   }

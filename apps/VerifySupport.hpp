@@ -6,9 +6,9 @@
 /// geometrically non-linear analysis in verify_nonlinear.cpp, those of
 /// plasticity in verify_plasticity.cpp, those of dynamics in
 /// verify_dynamics.cpp, those of contact in verify_contact.cpp, those of
-/// shells in verify_shell.cpp and those of beams in verify_beam.cpp. All
-/// report a
-/// `StudyOutcome` that the driver prints and writes to summary.json.
+/// shells in verify_shell.cpp, those of beams in verify_beam.cpp and those of
+/// the topology optimiser's design-dependent loads in verify_topopt.cpp. All
+/// report a `StudyOutcome` that the driver prints and writes to summary.json.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
@@ -101,6 +101,11 @@ StudyOutcome study_beam_modes(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_beam_harmonic(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_beam_buckling(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_beam_curved(const std::string& out_dir, json::Value& summary);
+/// \}
+
+/// Studies of the topology optimiser's physics (verify_topopt.cpp).
+/// \{
+StudyOutcome study_design_loads(const std::string& out_dir, json::Value& summary);
 /// \}
 
 /// Quarter sections of a cylinder (verify_loads.cpp).

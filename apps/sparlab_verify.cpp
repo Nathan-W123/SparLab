@@ -42,7 +42,11 @@
 ///   * `buckling-euler`   buckling of a cantilever column (Q4, Hex8, Tet4, Tet10)
 ///                        vs Euler with Engesser's shear correction;
 ///   * `sensitivity-buckling` the adjoint gradient of the buckling constraint;
-///   * `sensitivity-overhang` the compliance gradient through the overhang filter.
+///   * `sensitivity-overhang` the compliance gradient through the overhang filter;
+///   * `design-loads`     self-weight, body forces, rotation and temperature
+///                        following the design: the load vectors, the
+///                        compliance, stress and buckling gradients, and the
+///                        bounded load of near-void material (verify_topopt.cpp).
 ///
 /// Studies of the pressure, volume and thermal loads (verify_loads.cpp):
 ///   * `lame-cylinder`    thick cylinder under internal pressure vs Lame;
@@ -2555,7 +2559,7 @@ int main(int argc, char** argv) {
             "shell-plate-modes | shell-plate-harmonic | shell-plate-buckling | "
             "shell-cylinder-pressure | shell-scordelis-lo | shell-pinched-cylinder | "
             "shell-pinched-hemisphere | shell-box-beam | beam-exact | beam-modes | "
-            "beam-harmonic | beam-buckling | beam-curved"},
+            "beam-harmonic | beam-buckling | beam-curved | design-loads"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2738,6 +2742,9 @@ int main(int argc, char** argv) {
     }
     if (all || study == "beam-curved") {
       outcomes.push_back(verify::study_beam_curved(out_dir, summary));
+    }
+    if (all || study == "design-loads") {
+      outcomes.push_back(verify::study_design_loads(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

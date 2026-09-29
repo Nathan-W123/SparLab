@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 309 cases, 21 249 assertions (GCC)
+make test              # the Catch2 suite: 318 cases, 21 393 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -79,6 +79,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Beam: harmonic response to a uniform load in both planes vs the exact series, 0 to 1000 Hz, undamped and `eta = 0.05`, consistent and lumped mass | verification | largest relative error of the complex midspan amplitude at 128 elements (order `>= 1.9` and the series against the closed form `<= 1e-9` also required) | `7.16e-04` | `1e-3` | PASS |
 | Beam buckling: pinned and cantilever columns vs the exact loads of the model, and torsional buckling at `G J A / I_p` | verification | largest critical-load error at 32 elements (order `>= 1.9` and the torsional load `<= 1e-10` on every mesh also required) | `2.48e-04` | `3e-4` | PASS |
 | Beam: a quarter-circle cantilever of straight elements vs Castigliano (bending, torsion, stretching, shear) | verification | largest tip-displacement error at 128 elements (order `>= 1.9` also required) | `6.69e-05` | `1e-4` | PASS |
+| Topology optimisation under loads that follow the design: self-weight, a rotation with a body force, uniform and regional temperatures; compliance, stress-aggregate and buckling gradients (Q4, Hex8) | verification | worst best-step max scaled gradient error (the load vectors to `1e-14`, near-void compliance within 2 % of the solid half and x10 without the threshold also required) | `1.88e-06` | `1e-5` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -2569,6 +2570,85 @@ What comparing with CalculiX required:
 * **Results at the beam's nodes.** As for the shells, without `OUTPUT=2D`
   its result file holds the expanded bricks' nodes; the export asks for the
   beam's own.
+
+## 29. Loads that follow the design (topology optimisation)
+
+Self-weight, body forces, the centrifugal load and temperature fields in a
+topology optimisation (`docs/topology_optimization.md`, section 2b): each
+element's body load scales with `gamma(rho)` - its volume fraction at and
+above the threshold `rho_t = 0.1`, `rho_t [p x^p - (p - 1) x^(p+1)]` below
+it - and its thermal load with the stiffness factor `E(rho)/E_0`; the
+compliance, the stress aggregate and the buckling load factors carry the
+load's derivative.
+
+**Unit tests** (`tests/test_design_loads.cpp`, 9 cases):
+
+* *the interpolation*: `gamma = rho` exactly at and above the threshold and
+  0 at 0; value and slope continuous at `rho_t` (`1e-11`, `1e-10`);
+  increasing; its derivative the central difference of the factor
+  (`< 1e-6`); and the load never more than `p rho_t^(1-p)` times the
+  stiffness's share, for `p = 1, 2, 3` and `4.5` (at `p = 1`, `rho`
+  everywhere); a threshold outside `[0, 1)` is refused with the key;
+* *the loads of a design*: at full density the model's own load vector
+  (`1e-15`), at a uniform `0.5` and `0.05` its mechanical part plus `gamma`
+  times the body part plus `E(rho)/E_0` times the thermal part (`1e-14`); the
+  element body loads scatter to the assembled vector bit for bit, and the
+  element thermal self energies sum to the model's;
+* *gradients against central differences*, at a design whose filtered
+  densities reach below the threshold: the compliance of four cases - its
+  weight with a point load, a rotation with a body force, a uniform
+  temperature rise and two temperature regions - on Q4 (with and without the
+  projection) and Hex8 (`< 1e-6`); the stress aggregate of each case (`< 1e-6`);
+  the lowest buckling load factor under self-weight and under heating
+  (`< 1e-5`);
+* *the thermoelastic energy*: the element energies sum to the elastic strain
+  energy `1/2 u^T K u - u^T f_th + 1/2 int eps0^T D eps0` (`1e-11`), and a
+  plate free to expand stores none and is stress-free;
+* *the parasitic load*: near-void material under self-weight (below);
+* *refusals*: optimality criteria with a load that follows the design, a
+  conducted temperature, a non-zero prescribed displacement;
+* *a run*: MMA designs a plate under its own weight and a point load; the
+  compliance falls, the volume stays within the target, and the reported
+  compliance is the work of the final design's own loads, whose weight is
+  `sum_e gamma(rho_e) v_e rho g` (`1e-12`).
+
+**The study** (`sparlab_verify --study design-loads`, `design_loads.csv`).
+The load vectors of a design match their definition to `2.1e-17`. Every
+gradient is compared on every element (every fourth on the column) with
+central differences of second and fourth order at steps `1e-3` to `1e-6`,
+each entry judged against `max(|analytical|, |FD|, 1e-3 ||gradient||_inf)`;
+the best step was the fourth-order difference at `1e-4` for the compliance
+and the stresses and at `1e-3` for the load factors, whose eigensolve
+round-off a smaller step amplifies. The filtered densities reach down to
+`0.0038`, so the body-load interpolation's lower branch is exercised:
+
+| Gradient | Model | Load cases | Best max scaled error |
+|----------|-------|------------|----------------------:|
+| Compliance | Q4 12 x 6 plate, clamped and held at its ends | the four cases, weighted | `7.0e-09` |
+| | the same, projected at `beta = 4` | the four cases | `2.7e-08` |
+| | Hex8 6 x 3 x 2 block | the four cases | `4.4e-10` |
+| Stress aggregate (`P = 6`, `q = 0.5`) | Q4 10 x 5 | weight / rotation and body force / uniform heating / two temperature regions | `1.8e-08` / `8.0e-08` / `2.6e-09` / `5.1e-09` |
+| Lowest buckling load factor | Q4 20 x 4 column | its weight (at 1000 g) and an end compression / heated with both ends held | `1.9e-06` / `2.3e-07` |
+
+The worst, `1.9e-06`, is the study's value (tolerance `1e-5`).
+
+**The parasitic load of near-void material.** A cantilever 1.6 m long
+whose outer half is near void, under its own weight and a load at the end of
+its solid half, against the solid half alone (`0.0074034` J):
+
+| Outer-half density | Compliance, `rho_t = 0.1` [J] | Compliance, `gamma = rho` [J] | Ratios to the solid half |
+|-------------------:|------------------------------:|------------------------------:|-------------------------:|
+| `0.1` | `0.011604` | `0.011604` | 1.567 / 1.567 |
+| `0.03` | `0.0079345` | `0.017425` | 1.072 / 2.354 |
+| `0.01` | `0.0074295` | `0.036426` | 1.0035 / 4.92 |
+| `0.003` | `0.0074041` | `0.10042` | 1.0001 / 13.6 |
+| `0.001` | `0.0074034` | `0.15204` | 1.0000 / 20.5 |
+
+With the threshold the near-void half adds at most 0.35 % at densities of
+`1e-2` and below, and nothing measurable as it empties; with `gamma = rho` it
+adds 4.9 to 20.5 times the solid half's compliance and more the emptier it
+is. The study requires the first within 2 % and the second above 10 at
+`1e-3`.
 
 ## What is not covered
 

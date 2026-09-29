@@ -42,6 +42,7 @@
 #include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 
@@ -70,8 +71,10 @@ std::vector<BucklingResult> check_buckling(const FemModel& model, const Assemble
   };
   std::vector<BucklingResult> out;
   for (std::size_t l : cases) {
+    const Vector& temperature = model.load_case_data(l).temperature;
     const SparseMatrix k_g =
-        assemble_geometric_stiffness(model, assembler, solutions[l].displacement);
+        assemble_geometric_stiffness(model, assembler, solutions[l].displacement, nullptr,
+                                     temperature.size() > 0 ? &temperature : nullptr);
     BucklingResult result = solve_buckling(model, assembler, analysis.stiffness(), k_g,
                                            config.buckling.options, solve);
     result.load_case = solutions[l].load_case_name;
@@ -328,21 +331,16 @@ int main(int argc, char** argv) {
     // missing boundary condition behind a very soft but non-singular matrix.
     require_well_posed(model);
 
-    // Self-weight and thermal loads grow and shrink with the material the
-    // optimiser places, and a second material needs its own interpolation;
-    // treating either as a fixed load would optimise the wrong problem.
+    // A second material needs its own interpolation; the optimiser has one.
+    // Self-weight, body forces, rotation and temperature loads follow the
+    // material the design places (topopt/DesignLoads.hpp).
     if (!model.single_material()) {
       throw ConfigError("topology optimisation works on one material; remove "
                         "'material_regions' (use passive regions for fixed parts)");
     }
-    for (const LoadCaseSpec& spec : model.load_case_specs()) {
-      if (spec.has_body_loads() || spec.has_temperature()) {
-        throw ConfigError("load case '" + spec.name +
-                          "': gravity, body forces, rotation and temperature loads depend "
-                          "on the design, and the optimiser does not yet interpolate "
-                          "them; analyse such cases with sparlab_solve");
-      }
-    }
+    const bool design_loads = std::any_of(
+        model.load_case_specs().begin(), model.load_case_specs().end(),
+        [](const LoadCaseSpec& spec) { return spec.has_body_loads() || spec.has_temperature(); });
 
     Assembler assembler(model);
     const Scalar filter_radius = config.resolved_filter_radius(model.mesh());
@@ -359,6 +357,10 @@ int main(int argc, char** argv) {
 
     // ---- reference analyses on the solid domain ---------------------------
     Scalar solid_compliance = 0.0;
+    // The equal-mass uniform plate of a 2-D run: thickness v t, stiffness v K,
+    // the same mechanical loads, and v times the body and thermal loads, which
+    // scale with the material. Without such loads it is C_solid / v.
+    Scalar plate_compliance = 0.0;
     {
       ScopedTimer t(timings, "solid_reference");
       StaticAnalysisOptions opts = config.analysis;
@@ -366,26 +368,56 @@ int main(int argc, char** argv) {
       const std::vector<StaticSolution> sols = analysis.solve_all();
       solid_compliance =
           StaticAnalysis::weighted_compliance(sols, model.normalised_weights());
+      const Scalar v = result.volume_fraction;
+      if (!design_loads || !(v > 0.0)) {
+        plate_compliance = v > 0.0 ? solid_compliance / v : 0.0;
+      } else if (config.dim() == 2) {
+        const std::vector<Scalar> weights = model.normalised_weights();
+        for (std::size_t l = 0; l < model.load_case_specs().size(); ++l) {
+          const LoadCaseData& data = model.load_case_data(l);
+          Vector f = data.mechanical;
+          if (data.body.size() > 0) f += v * data.body;
+          if (data.thermal.size() > 0) f += v * data.thermal;
+          const Vector u = analysis.solve_load_vector(f);
+          plate_compliance += weights[l] * f.dot(u) / v;
+        }
+      }
     }
 
     // ---- stresses of the optimised design ---------------------------------
+    // With a temperature field, the stress of the strain less the free thermal
+    // strain.
     std::vector<StressField> stresses;
     {
       ScopedTimer t(timings, "stress_recovery");
-      for (const Vector& u : result.displacements) {
-        stresses.push_back(
-            recover_stresses(model, assembler, u, &result.stiffness_factors));
+      for (std::size_t l = 0; l < result.displacements.size(); ++l) {
+        const Vector& temperature = model.load_case_data(l).temperature;
+        stresses.push_back(recover_stresses(model, assembler, result.displacements[l],
+                                            &result.stiffness_factors,
+                                            temperature.size() > 0 ? &temperature : nullptr));
       }
     }
 
     // ---- interpret the density field as a solid body -----------------------
+    // A design with no element at the threshold - a grey optimum, which a
+    // thermal or self-weight load can make optimal - has no part to export.
+    // That is a fact about the design, so it is recorded and warned about, and
+    // the optimisation result is still reported.
     std::unique_ptr<TopologyInterpretation> interpretation;
+    std::string interpretation_failure;
     {
       ScopedTimer t(timings, "interpretation");
-      interpretation = std::make_unique<TopologyInterpretation>(
-          interpret_density_as_solid(model.mesh(), result.physical_density,
-                                     domain.element_volumes(),
-                                     config.topology.optimizer.interpretation_threshold));
+      try {
+        interpretation = std::make_unique<TopologyInterpretation>(
+            interpret_density_as_solid(model.mesh(), result.physical_density,
+                                       domain.element_volumes(),
+                                       config.topology.optimizer.interpretation_threshold));
+      } catch (const MeshError& error) {
+        interpretation_failure = error.what();
+        log::warn("the density field cannot be interpreted as a solid: ", error.what(),
+                  ". The optimisation result is still reported, but there is no exported "
+                  "part, and the analyses of it are skipped");
+      }
     }
 
     // ---- analysis of the interpreted solid --------------------------------
@@ -402,7 +434,11 @@ int main(int argc, char** argv) {
     std::unique_ptr<SubModelBuild> sub_build;
     std::unique_ptr<Assembler> sub_assembler;
     json::Value interpreted = json::Value::make_object();
-    {
+    if (!interpretation) {
+      interpreted.set("analysis_failed", json::Value::make_bool(true));
+      interpreted.set("reason", json::Value::make_string("no interpreted structure: " +
+                                                         interpretation_failure));
+    } else {
       ScopedTimer t(timings, "interpreted_analysis");
       try {
         sub_build = std::make_unique<SubModelBuild>(build_solid_submodel(
@@ -442,9 +478,12 @@ int main(int argc, char** argv) {
                               result.compliance > 0.0 ? c / result.compliance : 0.0));
           Scalar max_vm = 0.0;
           json::Value per_case = json::Value::make_array();
-          for (const StaticSolution& s : sols) {
+          for (std::size_t l = 0; l < sols.size(); ++l) {
+            const StaticSolution& s = sols[l];
+            const Vector& temperature = sub.model->load_case_data(l).temperature;
             const StressField f =
-                recover_stresses(*sub.model, *sub_assembler, s.displacement);
+                recover_stresses(*sub.model, *sub_assembler, s.displacement, nullptr,
+                                 temperature.size() > 0 ? &temperature : nullptr);
             max_vm = std::max(max_vm, f.element_von_mises.maxCoeff());
             per_case.push_back(json::Value::make_number(f.element_von_mises.maxCoeff()));
           }
@@ -619,14 +658,19 @@ int main(int argc, char** argv) {
       geometry.set("before", writer.write_geometry(model.mesh(), domain.initial_design(),
                                                    model.thickness(), "structure_before",
                                                    "design domain before optimisation"));
-      Vector retained_density(interpretation->sub.mesh.num_elements());
-      for (std::size_t i = 0; i < interpretation->sub.element_map.size(); ++i) {
-        retained_density(static_cast<Eigen::Index>(i)) =
-            result.physical_density(interpretation->sub.element_map[i]);
+      if (interpretation) {
+        Vector retained_density(interpretation->sub.mesh.num_elements());
+        for (std::size_t i = 0; i < interpretation->sub.element_map.size(); ++i) {
+          retained_density(static_cast<Eigen::Index>(i)) =
+              result.physical_density(interpretation->sub.element_map[i]);
+        }
+        geometry.set("after",
+                     writer.write_geometry(interpretation->sub.mesh, retained_density,
+                                           model.thickness(), "structure_after",
+                                           "interpreted structure after optimisation"));
+      } else {
+        geometry.set("after_skipped", json::Value::make_string(interpretation_failure));
       }
-      geometry.set("after", writer.write_geometry(interpretation->sub.mesh, retained_density,
-                                                  model.thickness(), "structure_after",
-                                                  "interpreted structure after optimisation"));
       geometry.set("note", json::Value::make_string(
                                "structure_after is the density field thresholded at "
                                "solid_interpretation.threshold with only the largest "
@@ -645,15 +689,21 @@ int main(int argc, char** argv) {
     json::Value summary = make_topology_summary(
         config, model, domain, filter, result, interpretation.get(), modal_solid.get(),
         modal_topology.get(), modal_thin.get(), timings);
+    if (!interpretation) {
+      json::Value failed = json::Value::make_object();
+      failed.set("threshold",
+                 json::Value::make_number(config.topology.optimizer.interpretation_threshold));
+      failed.set("failed", json::Value::make_bool(true));
+      failed.set("reason", json::Value::make_string(interpretation_failure));
+      summary.set("solid_interpretation", failed);
+    }
 
     // Mass-stiffness comparison at equal mass.
     {
       json::Value comparison = json::Value::make_object();
       comparison.set("full_solid_compliance_J",
                      json::Value::make_number(solid_compliance));
-      const Scalar equal_mass = result.volume_fraction > 0.0
-                                    ? solid_compliance / result.volume_fraction
-                                    : 0.0;
+      const Scalar equal_mass = plate_compliance;
       if (config.dim() == 2) {
         comparison.set("equal_mass_uniform_plate_compliance_J",
                        json::Value::make_number(equal_mass));
@@ -672,7 +722,15 @@ int main(int argc, char** argv) {
       comparison.set(
           "note",
           json::Value::make_string(
-              config.dim() == 2
+              config.dim() == 2 && design_loads
+                  ? "In this 2-D idealisation K and M both scale linearly with "
+                    "thickness, so an equal-mass uniform plate has the same natural "
+                    "frequencies as the full solid domain. Its body and thermal loads "
+                    "scale with its thickness too, so its compliance is solved with the "
+                    "mechanical loads and volume_fraction times the body and thermal "
+                    "ones on volume_fraction times the stiffness. That plate is the "
+                    "equal-mass baseline for the optimised design."
+              : config.dim() == 2
                   ? "In this 2-D idealisation K and M both scale linearly with "
                     "thickness, so an equal-mass uniform plate has the same natural "
                     "frequencies as the full solid domain and a compliance of C_solid / "
@@ -792,13 +850,17 @@ int main(int argc, char** argv) {
                 << (length_report->solid_bound_reached_cap ? ", solid bound at the scan cap" : "")
                 << "\n";
     }
-    std::cout << "  interpreted: threshold "
-              << app::format(interpretation->threshold) << " keeps "
-              << interpretation->elements_retained << " of "
-              << model.mesh().num_elements() << " elements in "
-              << interpretation->components_above_threshold << " group(s), discarding "
-              << app::format(interpretation->volume_discarded_as_islands)
-              << " m^3 as islands\n";
+    if (interpretation) {
+      std::cout << "  interpreted: threshold "
+                << app::format(interpretation->threshold) << " keeps "
+                << interpretation->elements_retained << " of "
+                << model.mesh().num_elements() << " elements in "
+                << interpretation->components_above_threshold << " group(s), discarding "
+                << app::format(interpretation->volume_discarded_as_islands)
+                << " m^3 as islands\n";
+    } else {
+      std::cout << "  interpreted: none - " << interpretation_failure << "\n";
+    }
     if (modal_solid) {
       std::cout << "  f1 solid:    " << app::format(modal_solid->frequencies_hz(0))
                 << " Hz (mass " << app::format(modal_solid->total_mass) << " kg)\n";

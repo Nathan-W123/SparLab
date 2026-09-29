@@ -1550,6 +1550,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
     config.topology.optimizer.simp.mass_floor = simp.number_or("mass_floor", 1.0e-9);
     config.topology.optimizer.simp.mass_law = parse_mass_interpolation(
         simp.string_or("mass_interpolation", "penalty_matched"));
+    config.topology.optimizer.simp.body_load_threshold =
+        simp.number_or("body_load_threshold", 0.1);
 
     const ConfigNode filter = topo.child("filter");
     config.topology.filter_type = parse_filter_type(filter.string_or("type", "density"));

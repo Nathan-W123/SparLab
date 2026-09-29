@@ -47,6 +47,13 @@ void SimpOptions::validate() const {
     os << "SIMP mass_floor must lie in (0, 1) (got " << mass_floor << ")";
     throw ConfigError(os.str());
   }
+  if (!(body_load_threshold >= 0.0 && body_load_threshold < 1.0)) {
+    std::ostringstream os;
+    os << "SIMP body_load_threshold must lie in [0, 1) (got " << body_load_threshold
+       << "); it is the density below which an element's body load is penalised like "
+          "its stiffness";
+    throw ConfigError(os.str());
+  }
 }
 
 Scalar simp_stiffness_factor(Scalar rho, const SimpOptions& options) {
@@ -72,6 +79,25 @@ Scalar simp_mass_factor(Scalar rho, const SimpOptions& options) {
              (1.0 - options.mass_floor) * std::pow(r, options.penalty);
   }
   throw ConfigError("unhandled mass interpolation law");
+}
+
+Scalar body_load_factor(Scalar rho, const SimpOptions& options) {
+  const Scalar r = std::clamp(rho, 0.0, 1.0);
+  const Scalar t = options.body_load_threshold;
+  if (r >= t) return r;
+  // Below the threshold: t [p x^p - (p - 1) x^(p+1)], x = rho / t.
+  const Scalar p = options.penalty;
+  const Scalar x = r / t;
+  return t * std::pow(x, p) * (p - (p - 1.0) * x);
+}
+
+Scalar body_load_derivative(Scalar rho, const SimpOptions& options) {
+  const Scalar r = std::clamp(rho, 0.0, 1.0);
+  const Scalar t = options.body_load_threshold;
+  if (r >= t) return 1.0;
+  const Scalar p = options.penalty;
+  const Scalar x = r / t;
+  return std::pow(x, p - 1.0) * (p * p - (p * p - 1.0) * x);
 }
 
 Vector simp_stiffness_factors(const Vector& rho, const SimpOptions& options) {

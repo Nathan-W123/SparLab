@@ -50,6 +50,8 @@
 #include "sparlab/core/Types.hpp"
 #include "sparlab/fem/FemModel.hpp"
 
+#include <vector>
+
 namespace sparlab {
 
 /// Consistent nodal forces [N] of the body loads of a load case: gravity,
@@ -58,6 +60,14 @@ namespace sparlab {
 /// \throws ConfigError for a body-force region that selects no element, or a
 ///         centrifugal axis that is not a direction.
 Vector assemble_body_load_vector(const FemModel& model, const LoadCaseSpec& spec);
+
+/// The same body loads element by element: the consistent nodal forces of
+/// each element in its own DOF order (`num_nodes x dofs_per_node`), an empty
+/// vector for an element that carries none. Scattered and summed they are
+/// `assemble_body_load_vector`, bit for bit. A density-based design scales
+/// each element's forces by its own load factor (topopt/DesignLoads.hpp).
+/// \throws as `assemble_body_load_vector`.
+std::vector<Vector> element_body_loads(const FemModel& model, const LoadCaseSpec& spec);
 
 /// Nodal temperatures of a `Uniform` or `Regions` temperature field: the
 /// uniform value everywhere, then each region's value on its nodes, later
@@ -76,6 +86,27 @@ struct ThermalLoad {
 /// \param stiffness_scale optional per-element factors on D (a SIMP design).
 ThermalLoad assemble_thermal_load(const FemModel& model, const Vector& temperature,
                                   const Vector* stiffness_scale = nullptr);
+
+/// Thermal loads element by element, at the full stiffness of each element's
+/// material.
+struct ElementThermalLoads {
+  /// \f$\int_{\Omega_e} B^T D\,\varepsilon_0\,t\,dV\f$ in the element's DOF
+  /// order [N]; empty for an element whose material does not expand.
+  std::vector<Vector> force;
+  /// \f$\tfrac12\int_{\Omega_e}\varepsilon_0^T D\,\varepsilon_0\,t\,dV\f$ per
+  /// element [J].
+  Vector self_energy;
+  /// Their sum, accumulated in the order `assemble_thermal_load` uses [J].
+  Scalar total_self_energy = 0.0;
+  /// Elements whose material expands.
+  Index expanding = 0;
+};
+
+/// The thermal loads of nodal temperatures `temperature` [K] element by
+/// element; `assemble_thermal_load` scatters them.
+/// \throws ConfigError for a model of structural elements (a shell or beam
+///         has no thermal strain), ModelError for a field of the wrong length.
+ElementThermalLoads element_thermal_loads(const FemModel& model, const Vector& temperature);
 
 /// Thermal strain \f$\varepsilon_0\f$ (Voigt, 3 or 6 components) at a natural
 /// point of an element for nodal temperatures `temperature` [K].

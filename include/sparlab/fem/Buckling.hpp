@@ -143,6 +143,13 @@ SparseMatrix assemble_geometric_stiffness(const FemModel& model, const Assembler
                                           const Vector* stress_scale = nullptr,
                                           const Vector* temperature = nullptr);
 
+/// Element `e`'s geometric stiffness \f$s\,K_{G,e}(u_e)\f$ for its
+/// displacement `ue` (element DOF order), the prestress of
+/// `assemble_geometric_stiffness`: \f$s\,D B u_e\f$, or with nodal
+/// temperatures \f$s\,D(B u_e - \varepsilon_0)\f$.
+Matrix element_geometric_stiffness(const FemModel& model, Index e, const Vector& ue,
+                                   Scalar scale = 1.0, const Vector* temperature = nullptr);
+
 /// Solve the buckling eigenproblem of the stress state of `displacement`.
 /// \param k_full the assembled global stiffness the displacement was solved
 ///        with (full size); its free-free block is the left matrix.

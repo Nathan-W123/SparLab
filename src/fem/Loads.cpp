@@ -53,12 +53,25 @@ class UnitMass {
 
 Vector assemble_body_load_vector(const FemModel& model, const LoadCaseSpec& spec) {
   const Mesh& mesh = model.mesh();
+  const int npe = mesh.nodes_per_elem();
+  Vector f = Vector::Zero(model.dofs().num_dofs());
+  if (!spec.has_body_loads()) return f;
+  const std::vector<Vector> loads = element_body_loads(model, spec);
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    const Vector& fe = loads[static_cast<std::size_t>(e)];
+    if (fe.size() > 0) model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, f);
+  }
+  return f;
+}
+
+std::vector<Vector> element_body_loads(const FemModel& model, const LoadCaseSpec& spec) {
+  const Mesh& mesh = model.mesh();
   const int dim = mesh.dim();
   const int ndpn = model.dofs_per_node();
   const int npe = mesh.nodes_per_elem();
   const Index ne = mesh.num_elements();
-  Vector f = Vector::Zero(model.dofs().num_dofs());
-  if (!spec.has_body_loads()) return f;
+  std::vector<Vector> out(static_cast<std::size_t>(ne));
+  if (!spec.has_body_loads()) return out;
   if (!model.is_structural()) require_continuum(model, "a body load");
   if (model.is_shell() && spec.centrifugal.enabled) {
     throw ConfigError("load case '" + spec.name +
@@ -158,10 +171,9 @@ Vector assemble_body_load_vector(const FemModel& model, const LoadCaseSpec& spec
   for (Index e = 0; e < ne; ++e) {
     const Vector& b = density_field[static_cast<std::size_t>(e)];
     if (b.size() == 0) continue;
-    const Vector fe = unit_mass(e) * b;
-    model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, f);
+    out[static_cast<std::size_t>(e)] = unit_mass(e) * b;
   }
-  return f;
+  return out;
 }
 
 Vector resolve_region_temperatures(const Mesh& mesh, const TemperatureSpec& spec) {
@@ -197,6 +209,32 @@ Vector element_thermal_strain(const FemModel& model, Index element, const Natura
 
 ThermalLoad assemble_thermal_load(const FemModel& model, const Vector& temperature,
                                   const Vector* stiffness_scale) {
+  const Mesh& mesh = model.mesh();
+  const int npe = mesh.nodes_per_elem();
+  const ElementThermalLoads loads = element_thermal_loads(model, temperature);
+  ThermalLoad out;
+  out.force = Vector::Zero(model.dofs().num_dofs());
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    const Vector& fe = loads.force[static_cast<std::size_t>(e)];
+    if (fe.size() == 0) continue;
+    if (stiffness_scale == nullptr) {
+      model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, out.force);
+    } else {
+      model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, out.force,
+                               (*stiffness_scale)(e));
+    }
+  }
+  out.self_energy = stiffness_scale == nullptr
+                        ? loads.total_self_energy
+                        : loads.self_energy.dot(*stiffness_scale);
+  if (loads.expanding == 0) {
+    log::warn("a temperature field is applied, but no material has a thermal expansion "
+              "coefficient; set material.thermal_expansion for a thermal strain");
+  }
+  return out;
+}
+
+ElementThermalLoads element_thermal_loads(const FemModel& model, const Vector& temperature) {
   require_continuum(model, "a thermal load");
   const Mesh& mesh = model.mesh();
   if (temperature.size() != mesh.num_nodes()) {
@@ -206,32 +244,28 @@ ThermalLoad assemble_thermal_load(const FemModel& model, const Vector& temperatu
     throw ModelError(os.str());
   }
   const Element& element = model.element();
-  const int npe = mesh.nodes_per_elem();
   const Scalar t = mesh.dim() == 2 ? model.thickness() : 1.0;
   const std::vector<IntegrationPoint> rule = element.integration_rule(model.integration());
-  ThermalLoad out;
-  out.force = Vector::Zero(model.dofs().num_dofs());
-  Index expanding = 0;
+  ElementThermalLoads out;
+  out.force.resize(static_cast<std::size_t>(mesh.num_elements()));
+  out.self_energy.setZero(mesh.num_elements());
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     if (model.material_of(e).thermal_expansion() == 0.0) continue;
-    ++expanding;
-    const Scalar s = stiffness_scale ? (*stiffness_scale)(e) : 1.0;
+    ++out.expanding;
     const Matrix& d = model.constitutive_of(e);
     const Matrix coords = mesh.element_coordinates(e);
     Vector fe = Vector::Zero(element.num_dofs());
     for (const IntegrationPoint& ip : rule) {
       const StrainOperator op = element.strain_operator(coords, ip.point);
       const Vector eps0 = element_thermal_strain(model, e, ip.point, temperature);
-      const Vector sigma0 = s * (d * eps0);
+      const Vector sigma0 = d * eps0;
       const Scalar dv = t * ip.weight * op.detJ;
       fe.noalias() += dv * (op.b.transpose() * sigma0);
-      out.self_energy += 0.5 * dv * eps0.dot(sigma0);
+      const Scalar energy = 0.5 * dv * eps0.dot(sigma0);
+      out.self_energy(e) += energy;
+      out.total_self_energy += energy;
     }
-    model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, out.force);
-  }
-  if (expanding == 0) {
-    log::warn("a temperature field is applied, but no material has a thermal expansion "
-              "coefficient; set material.thermal_expansion for a thermal strain");
+    out.force[static_cast<std::size_t>(e)] = std::move(fe);
   }
   return out;
 }

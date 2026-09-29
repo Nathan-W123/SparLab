@@ -95,8 +95,12 @@ BucklingEvaluation BucklingConstraint::evaluate(ComplianceObjective& objective,
   const Vector stress_scale = buckling_stress_factors(rho, penalty);
   const DofManager& dofs = model_.dofs();
 
-  // Buckling eigenproblem of the current design, warm started.
-  const SparseMatrix k_g = assemble_geometric_stiffness(model_, assembler_, u, &stress_scale);
+  // Buckling eigenproblem of the current design, warm started; a temperature
+  // field prestresses the design with its thermal stress.
+  const Vector& temperature = model_.load_case_data(load_case).temperature;
+  const Vector* thermal = temperature.size() > 0 ? &temperature : nullptr;
+  const SparseMatrix k_g =
+      assemble_geometric_stiffness(model_, assembler_, u, &stress_scale, thermal);
   const FreeSolve solve = [&](const Vector& b) {
     return dofs.restrict_to_free(objective.solve_adjoint(dofs.expand(b)));
   };
@@ -148,7 +152,6 @@ BucklingEvaluation BucklingConstraint::evaluate(ComplianceObjective& objective,
   const Vector dk = simp_stiffness_derivatives(rho, objective.simp());
   const Vector dg = buckling_stress_derivatives(rho, penalty);
   const Element& element = model_.element();
-  const Matrix& d = model_.constitutive();
   out.dg_dphysical.setZero(ne);
   Vector ue(edofs);
   Vector pe(edofs);
@@ -163,12 +166,16 @@ BucklingEvaluation BucklingConstraint::evaluate(ComplianceObjective& objective,
       const Index* nodes = mesh.element_nodes(e);
       dofs.gather(nodes, npe, phi, pe);
       Vector& g = ge[static_cast<std::size_t>(e)];
-      g = element.geometric_stiffness_derivative(mesh.element_coordinates(e), d, pe, 1.0,
-                                                 model_.thickness(), model_.integration());
+      g = element.geometric_stiffness_derivative(model_.element_geometry(e),
+                                                 model_.constitutive_of(e), pe, 1.0,
+                                                 model_.thickness_of(e), model_.integration());
       dofs.scatter_add(nodes, npe, g, rhs, stress_scale(e));
     }
     const Vector adjoint = objective.solve_adjoint(
         rhs, kAdjointSlotBase + static_cast<int>(64 * load_case) + static_cast<int>(i));
+    // a^T d f / d rho where the load follows the design (zero otherwise).
+    const Vector load_term =
+        objective.design_loads().contract(load_case, rho, objective.simp(), adjoint);
     Vector dlambda(ne);
     for (Index e = 0; e < ne; ++e) {
       const Index* nodes = mesh.element_nodes(e);
@@ -177,10 +184,16 @@ BucklingEvaluation BucklingConstraint::evaluate(ComplianceObjective& objective,
       dofs.gather(nodes, npe, adjoint, ae);
       const Matrix& ke = assembler_.element_stiffness(e);
       const Scalar elastic = pe.dot(ke * pe);
-      const Scalar geometric = ge[static_cast<std::size_t>(e)].dot(ue);
+      // phi_e^T K_G,e phi_e at unit stress scale: g_e . u_e for a mechanical
+      // prestress (K_G is linear in u), the element's own with a thermal one.
+      const Scalar geometric =
+          thermal != nullptr && model_.material_of(e).thermal_expansion() != 0.0
+              ? pe.dot(element_geometric_stiffness(model_, e, ue, 1.0, thermal) * pe)
+              : ge[static_cast<std::size_t>(e)].dot(ue);
+      // a^T (d K / d rho_e u - d f / d rho_e): the prestress's change through u.
       const Scalar implicit = ae.dot(ke * ue);
       dlambda(e) = lambda * dk(e) * elastic + lambda * lambda * dg(e) * geometric -
-                   lambda * lambda * dk(e) * implicit;
+                   lambda * lambda * dk(e) * implicit + lambda * lambda * load_term(e);
     }
     // d r_i / d rho = -lambda_req / lambda_i^2 d lambda_i / d rho.
     out.dg_dphysical -= (w(i) * options_.min_load_factor / (lambda * lambda)) * dlambda;

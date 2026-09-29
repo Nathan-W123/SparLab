@@ -306,9 +306,10 @@ exactly - that needs a quadratic displacement - so a free Hex8 or Q4 part in
 a gradient shows a small spurious stress that vanishes under refinement; the
 Tet10 represents it exactly. In the non-linear analysis the thermal stretch
 `1 + alpha dT` splits off multiplicatively (Saint Venant-Kirchhoff only),
-with the same temperature-independent constants. Topology optimisation does
-not take body loads, temperatures or several materials yet (`sparlab_topopt`
-refuses them).
+with the same temperature-independent constants. Topology optimisation takes
+body loads and uniform or regional temperatures (next section), but not a
+conducted temperature field, whose conduction path the design would change,
+nor several materials (`sparlab_topopt` refuses both).
 
 **Linear elements, and one quadratic element.** The four-node
 quadrilateral, the three-node triangle, the eight-node hexahedron and the
@@ -420,6 +421,26 @@ filter radius and the robust formulation impose a minimum *length scale*,
 which is a geometric property, not a process. Without these options the
 designs are load-path guidance for a designer, not parts; with them they
 are still not certified parts.
+
+**Loads that follow the design are interpolated, and the compliance still
+decides.** Self-weight, body forces and the centrifugal load scale with
+`gamma(rho)`, which is the element's volume fraction at and above
+`topology.simp.body_load_threshold` (0.1) and falls like `rho^p` below it, so
+that near-void material cannot sag without bound under its own weight; below
+the threshold the load is therefore smaller than a graded material's would
+be. A 0/1 design, and every element at or above the threshold, carries its
+physical load. Thermal loads scale with the stiffness factor `E(rho)/E_0` -
+the SIMP material expands with the solid's coefficient - and the temperature
+field is fixed: a conducted field is refused, because the design would
+change it. The objective is still the compliance `f^T u` of the whole load.
+Under a temperature field the thermal compliance of a graded design falls
+with its stiffness, so the minimum-compliance design can use less than its
+volume allowance and stay grey, down to no element at the interpretation
+threshold and so no part to export. The run warns of both; the projection sharpens such a design, and a stress constraint bounds
+what the heating does to the material that remains, but compliance is not a
+strength criterion for a thermal load. The body-load interpolation and the
+gradients are verified (`docs/verification.md`, section 29); no optimised
+design under these loads is compared with another code or an experiment.
 
 **The optimum is local.** SIMP with `p > 1` is non-convex; a different starting
 design, penalty schedule or mesh can converge to a different local optimum. The

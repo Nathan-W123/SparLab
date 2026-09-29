@@ -2,6 +2,7 @@
 
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
+#include "sparlab/fem/Loads.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -118,7 +119,10 @@ StressEvaluation StressConstraint::evaluate(ComplianceObjective& objective,
   out.solid_von_mises.setZero(ne);
   out.relaxed_von_mises.setZero(ne);
 
-  // Solid-material stress at each element centre and its relaxed ratio.
+  // Solid-material stress at each element centre and its relaxed ratio; with a
+  // temperature field, of the strain less the free thermal strain.
+  const Vector& temperature = model_.load_case_data(load_case).temperature;
+  const NaturalPoint centre = model_.element().reference_centroid();
   Vector ue(edofs);
   std::vector<Vector> sigma(static_cast<std::size_t>(ne));
   Vector s(ne);
@@ -126,6 +130,10 @@ StressEvaluation StressConstraint::evaluate(ComplianceObjective& objective,
     dofs.gather(mesh.element_nodes(e), npe, u, ue);
     const Matrix& db = uniform_ ? db_uniform_ : db_at_centre(e);
     sigma[static_cast<std::size_t>(e)] = db * ue;
+    if (temperature.size() > 0 && model_.material_of(e).thermal_expansion() != 0.0) {
+      sigma[static_cast<std::size_t>(e)] -=
+          model_.constitutive_of(e) * element_thermal_strain(model_, e, centre, temperature);
+    }
     const Vector& sig = sigma[static_cast<std::size_t>(e)];
     const Scalar vm = std::sqrt(std::max(sig.dot(v_ * sig), 0.0));
     out.solid_von_mises(e) = vm;
@@ -170,13 +178,17 @@ StressEvaluation StressConstraint::evaluate(ComplianceObjective& objective,
   // Adjoint solve with the factorisation of the current SIMP stiffness.
   const Vector lambda = objective.solve_adjoint(psi, static_cast<int>(load_case));
   const Vector dfactor = simp_stiffness_derivatives(rho, objective.simp());
+  // lambda^T d f / d rho where the load follows the design (zero otherwise).
+  const Vector load_term =
+      objective.design_loads().contract(load_case, rho, objective.simp(), lambda);
 
   Vector dgpn(ne);
   Vector le(edofs);
   for (Index e = 0; e < ne; ++e) {
     dofs.gather(mesh.element_nodes(e), npe, u, ue);
     dofs.gather(mesh.element_nodes(e), npe, lambda, le);
-    const Scalar implicit = -dfactor(e) * le.dot(assembler_.element_stiffness(e) * ue);
+    const Scalar implicit =
+        -dfactor(e) * le.dot(assembler_.element_stiffness(e) * ue) + load_term(e);
     dgpn(e) = explicit_term(e) + implicit;
   }
   out.dg_dphysical = scale * dgpn;

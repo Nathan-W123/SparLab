@@ -8,7 +8,7 @@ or read from a mesh file:
 
 ```
   min over x      c(x) = sum_l  w_l  f_l^T u_l
-  subject to      K(rho_bar(x)) u_l = f_l            for every load case l
+  subject to      K(rho_bar(x)) u_l = f_l(rho_bar(x))   for every load case l
                   g(x) = rho_bar^T v - nu V  <=  0
                   0 <= x_e <= 1                      (tightened on passive elements)
 
@@ -17,7 +17,9 @@ or read from a mesh file:
 
 The optional last line is the aggregated stress constraint of section 5c; it
 needs the MMA update of section 5b, since optimality criteria can carry only
-the volume constraint.
+the volume constraint. The load `f_l` is fixed for point loads, tractions and
+pressures; self-weight, body forces, a rotation and a temperature field follow
+the material the design places (section 2b).
 
 where
 
@@ -84,6 +86,92 @@ This is why SparLab additionally reports, per mode, the fraction of modal
 kinetic energy carried by elements below density 0.3: it is the diagnostic for
 exactly this artefact. `docs/limitations.md` explains why the *headline* modal
 comparison uses the explicitly extracted solid sub-mesh instead.
+
+## 2b. Design-dependent loads
+
+Self-weight, a body force density and the centrifugal load of a rotation act
+on the material present; a temperature field loads the material through its
+thermal strain against its own stiffness. So each load case splits into a
+fixed part and parts that follow the design (`topopt/DesignLoads.cpp`):
+
+```
+  f(rho) = f_mech + sum_e gamma(rho_e) f_e^b + sum_e E(rho_e)/E_0 f_e^th
+```
+
+with `f_e^b` and `f_e^th` element `e`'s body and thermal loads at full density
+(`element_body_loads`, `element_thermal_loads` in `fem/Loads.cpp`). At
+`rho = 1` everywhere this is the model's own load vector, to round-off.
+
+**Body loads: `gamma(rho)`.** A graded element weighs its volume fraction,
+`gamma = rho`, and that is what SparLab applies at and above a threshold
+`rho_t` (`topology.simp.body_load_threshold`, default 0.1). Against the
+penalised stiffness `rho^p` the ratio load / stiffness of `rho` alone grows
+without bound as `rho -> 0`: a near-void element sags under its own weight
+with nothing to stop it, and the compliance of a design with near-void
+regions blows up - the parasitic effect of Bruyneel and Duysinx (2005). Below
+the threshold the load therefore follows
+
+```
+  gamma(rho) = rho_t [ p x^p - (p - 1) x^(p+1) ],      x = rho / rho_t
+```
+
+which meets `rho` at `rho_t` with the same value and slope (`C^1`), increases,
+and vanishes like `rho^p`: an element's load is at most `p rho_t^(1-p)` times
+its stiffness's share of the solid's (300 at `p = 3`, `rho_t = 0.1`), however
+empty it is. At `p = 1` it is `rho` everywhere. Every element at or above the
+threshold - and every element of a 0/1 design - carries its physical weight,
+so the thresholded part's re-solve (section 10) applies exactly the loads the
+design was optimised for. Measured on a cantilever whose outer half is near
+void (`sparlab_verify --study design-loads`): with the threshold the
+compliance stays within 0.35 % of the solid half alone at void densities of
+`1e-2` to `1e-3`; with `gamma = rho` it is 4.9, 13.6 and 20.5 times that at
+`1e-2`, `3e-3` and `1e-3`.
+
+**Thermal loads: `E(rho)/E_0`.** A SIMP element is a material of stiffness
+`E(rho)` and the solid's expansion coefficient, so its thermal load
+`int B^T D(rho) eps_0 dV` is the full-density load times the stiffness factor:
+the thermal stress coefficient `E alpha` interpolated with the stiffness, so a
+graded element expands freely without stress, as a porous version of the
+material would. The temperature field itself is the load case's and fixed: a
+uniform or regional field; a conducted field, whose conduction path the design
+would change, is refused.
+
+**Gradients.** With `K u = f(rho)` the compliance gradient gains the load's
+own derivative,
+
+```
+  dc/drho_e = sum_l w_l [ 2 u_{l,e}^T df_{l,e}/drho_e  -  u_{l,e}^T dK_e/drho_e u_{l,e} ]
+```
+
+and every adjoint `lambda` of another response (the stress aggregate of
+section 5c, each buckling load factor of section 5d) gains
+`+ lambda_e^T df_e/drho_e`. The first term is positive wherever an element adds
+more load than stiffness, so the gradient can have either sign: optimality
+criteria, which needs `dc/drho <= 0`, is refused for such a run and MMA
+carries it, and the heuristic sensitivity filter, which assumes the
+non-positive gradient of fixed loads, is refused too (the density filter's
+chain rule is exact). With a temperature field the stress of section 5c is that of the
+strain less the free thermal strain, `D (B u - eps_0)`, and the prestress of
+section 5d the same scaled stress, as in the linear buckling analysis. Every
+one of these gradients is checked against central differences (`tests/
+test_design_loads.cpp`, `sparlab_verify --study design-loads`).
+
+**What such a design does.** The compliance `f^T u` stays the work of the
+whole load. Under self-weight, material adds load as well as stiffness, so the
+optimum need not use the whole volume allowance; under a temperature field
+the thermal compliance of a uniformly graded design falls with its stiffness
+(`u_th` does not change, `f_th` scales with `E(rho)`), so less and greyer
+material can be optimal - a property of the compliance objective, not of the
+interpolation. The optimiser warns when the volume constraint ends inactive
+and reports the grey level; the Heaviside projection (section 3b) drives the
+design towards 0 and 1, and a stress constraint bounds what a thermal load
+does to the material that remains. When no element reaches the interpretation
+threshold, `sparlab_topopt` records that there is no part to export instead of
+failing the run.
+
+The objective needs homogeneous supports: with a non-zero prescribed
+displacement `f^T u` is not self-adjoint and none of the gradients above hold,
+so such a model is refused (for any load).
 
 ## 3. Filtering
 
@@ -340,7 +428,7 @@ is not.
 ## 4. Sensitivity analysis
 
 Compliance is self-adjoint. Differentiating `K u = f` with `f` independent of the
-design,
+design (section 2b adds the load's own derivative when it is not),
 
 ```
   dK/drho_e u + K du/drho_e = 0    =>    du/drho_e = -K^{-1} (dK/drho_e) u
@@ -361,7 +449,8 @@ Three consequences:
   optimisation affordable;
 * `dc/drho_e <= 0` always, since `u_e^T K_e^0 u_e >= 0` and the SIMP derivative
   is non-negative: adding material never increases compliance. The code warns if
-  a positive entry ever appears;
+  a positive entry ever appears - unless a load follows the design (section
+  2b), where positive entries are expected;
 * with the density filter, `grad_x c = Hhat^T grad_rho c`, and
   `grad_x g = Hhat^T v`; with the projection on, each is multiplied
   element-wise by `d rho_bar / d rho_tilde` before `Hhat^T` (section 3b).

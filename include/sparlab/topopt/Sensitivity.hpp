@@ -24,6 +24,21 @@
 /// design-variable gradient follows from the filter chain rule,
 /// \f$ \nabla_x c = \hat{H}^T \nabla_{\tilde\rho} c \f$.
 ///
+/// **Design-dependent loads.** Self-weight, body forces, rotation and thermal
+/// loads follow the material (DesignLoads.hpp), \f$f = f(\tilde\rho)\f$, and
+/// the gradient gains \f$2\,u_{l,e}^T\,\partial f_{l,e}/\partial\tilde\rho_e\f$
+/// per case - positive where an element adds more load than stiffness, so
+/// such runs need MMA. With a temperature field the compliance \f$f^T u\f$ is
+/// still the work of the whole load (mechanical and thermal) on the
+/// displacement, \f$u^T K u\f$; the element energy reported is the elastic
+/// strain energy of the thermoelastic state,
+/// \f$\tfrac12\int(\varepsilon-\varepsilon_0)^T D(\tilde\rho)
+/// (\varepsilon-\varepsilon_0)\,dV\f$.
+///
+/// The objective needs homogeneous supports: with a non-zero prescribed
+/// displacement \f$f^T u\f$ is not self-adjoint and the gradient above is
+/// wrong, so such a model is refused.
+///
 /// **Volume constraint.** \f$ g(x) = \tilde\rho^T v - \nu V \f$ with
 /// \f$ \nabla_x g = \hat{H}^T v \f$.
 ///
@@ -37,6 +52,7 @@
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
+#include "sparlab/topopt/DesignLoads.hpp"
 #include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/Projection.hpp"
 #include "sparlab/topopt/SimpInterpolation.hpp"
@@ -65,8 +81,13 @@ struct ObjectiveEvaluation {
   Vector dc_dphysical;            ///< \f$\partial c/\partial\tilde\rho\f$ [J]
   Vector dc_dx;                   ///< \f$\partial c/\partial x\f$ [J]
   Vector dv_dx;                   ///< \f$\partial g/\partial x\f$ [m^3]
-  Vector element_strain_energy;   ///< per element, summed over weighted cases [J]
+  /// Per element, summed over weighted cases [J]: the elastic strain energy
+  /// (of the thermoelastic state where a case carries a temperature).
+  Vector element_strain_energy;
   std::vector<Vector> displacements;  ///< one per load case [m]
+  /// The load vectors of this design, one per case [N] (the model's own when
+  /// no load depends on the design).
+  std::vector<Vector> loads;
   Scalar max_scaled_residual = 0.0;
   Scalar solve_seconds = 0.0;
   Scalar assemble_seconds = 0.0;
@@ -158,6 +179,9 @@ class ComplianceObjective {
   const FemModel& model() const { return model_; }
   const Assembler& assembler() const { return assembler_; }
   const DensityFilter& filter() const { return filter_; }
+  /// The loads as functions of the design; the constraints' adjoints need
+  /// their derivative.
+  const DesignLoads& design_loads() const { return loads_; }
 
  private:
   const FemModel& model_;
@@ -166,6 +190,7 @@ class ComplianceObjective {
   const DesignDomain& domain_;
   SimpOptions simp_;
   StaticAnalysisOptions analysis_options_;
+  DesignLoads loads_;
   std::vector<Scalar> weights_;
   bool projection_ = false;
   Scalar beta_ = 1.0;

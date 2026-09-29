@@ -21,10 +21,17 @@ ComplianceObjective::ComplianceObjective(const FemModel& model,
       domain_(domain),
       simp_(simp),
       analysis_options_(analysis_options),
+      loads_(model),
       weights_(model.normalised_weights()) {
   simp_.validate();
   if (filter_.num_elements() != model_.mesh().num_elements()) {
     throw ConfigError("the filter was built for a different mesh than the model");
+  }
+  if (model_.dofs().has_nonzero_prescribed()) {
+    throw ConfigError(
+        "topology optimisation needs homogeneous supports: with a non-zero prescribed "
+        "displacement the compliance f^T u is not self-adjoint and its gradient "
+        "-u^T dK u does not hold; apply the action as a load instead");
   }
   // The SIMP stiffness floor keeps K_ff positive definite everywhere, so the
   // rigid-body diagnostics are run once by the caller on the solid model
@@ -136,7 +143,17 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
   previous_displacements_.resize(model_.load_vectors().size());
 
   timer.reset();
-  const std::vector<Vector>& loads = model_.load_vectors();
+  // The loads of this design: the model's own unless a body or thermal load
+  // follows the material.
+  if (loads_.design_dependent()) {
+    out.loads.reserve(loads_.num_cases());
+    for (std::size_t l = 0; l < loads_.num_cases(); ++l) {
+      out.loads.push_back(loads_.load(l, out.physical_density, simp_));
+    }
+  } else {
+    out.loads = model_.load_vectors();
+  }
+  const std::vector<Vector>& loads = out.loads;
   out.displacements.reserve(loads.size());
   out.load_case_compliance.reserve(loads.size());
 
@@ -170,6 +187,20 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
           weights_[l] * 0.5 * out.stiffness_factors(e) * quad;
       if (need_gradients) dc_dphys(e) -= weights_[l] * dfactor(e) * quad;
     }
+    if (loads_.has_thermal(l)) {
+      // The elastic energy of the thermoelastic state, 1/2 s (u^T K0 u) -
+      // s u^T f_th0 + s W0: the strain less the free thermal strain.
+      const Vector work = loads_.thermal_work(l, u);
+      const Vector& self = loads_.thermal_self_energy(l);
+      for (Index e = 0; e < ne; ++e) {
+        out.element_strain_energy(e) +=
+            weights_[l] * out.stiffness_factors(e) * (self(e) - work(e));
+      }
+    }
+    if (need_gradients && loads_.design_dependent()) {
+      // The load's own dependence on the design: 2 u_e^T d f_e / d rho_e.
+      dc_dphys += (2.0 * weights_[l]) * loads_.contract(l, out.physical_density, simp_, u);
+    }
   }
   out.solve_seconds = timer.elapsed_seconds();
 
@@ -188,7 +219,7 @@ ObjectiveEvaluation ComplianceObjective::evaluate(const Vector& x, bool need_gra
       out.dv_dx = filter_.pull_back(domain_.element_volumes());
     }
 
-    if (out.dc_dx.maxCoeff() > 0.0) {
+    if (!loads_.design_dependent() && out.dc_dx.maxCoeff() > 0.0) {
       // For minimum compliance the gradient must be non-positive everywhere.
       // A positive entry indicates a bug or a pathological filter; report it
       // rather than clipping silently.

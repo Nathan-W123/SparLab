@@ -70,28 +70,33 @@ SparseMatrix assemble_geometric_stiffness(const FemModel& model, const Assembler
   }
   const int npe = mesh.nodes_per_elem();
   const int edofs = npe * model.dofs_per_node();
-  const Element& element = model.element();
-  const std::vector<IntegrationPoint> rule = element.integration_rule(model.integration());
   return assembler.assemble_elementwise([&](Index e) -> Matrix {
     const Scalar s = stress_scale != nullptr ? (*stress_scale)(e) : 1.0;
     if (s == 0.0) return Matrix::Zero(edofs, edofs);
     const Vector ue = model.dofs().gather(mesh.element_nodes(e), npe, displacement);
-    const Matrix coords = model.element_geometry(e);
-    if (temperature == nullptr || model.material_of(e).thermal_expansion() == 0.0) {
-      return element.geometric_stiffness(coords, model.constitutive_of(e), ue, s,
-                                         model.thickness_of(e), model.integration());
-    }
-    // Thermal prestress: sigma = s D (B u - eps0) at each point.
-    std::vector<Vector> stresses;
-    stresses.reserve(rule.size());
-    for (const IntegrationPoint& ip : rule) {
-      const StrainOperator op = element.strain_operator(coords, ip.point);
-      const Vector eps0 = element_thermal_strain(model, e, ip.point, *temperature);
-      stresses.push_back(s * (model.constitutive_of(e) * (op.b * ue - eps0)));
-    }
-    return element.geometric_stiffness_of_stress(coords, stresses, model.thickness(),
-                                                 model.integration());
+    return element_geometric_stiffness(model, e, ue, s, temperature);
   });
+}
+
+Matrix element_geometric_stiffness(const FemModel& model, Index e, const Vector& ue,
+                                   Scalar scale, const Vector* temperature) {
+  const Element& element = model.element();
+  const Matrix coords = model.element_geometry(e);
+  if (temperature == nullptr || model.material_of(e).thermal_expansion() == 0.0) {
+    return element.geometric_stiffness(coords, model.constitutive_of(e), ue, scale,
+                                       model.thickness_of(e), model.integration());
+  }
+  // Thermal prestress: sigma = s D (B u - eps0) at each point.
+  const std::vector<IntegrationPoint> rule = element.integration_rule(model.integration());
+  std::vector<Vector> stresses;
+  stresses.reserve(rule.size());
+  for (const IntegrationPoint& ip : rule) {
+    const StrainOperator op = element.strain_operator(coords, ip.point);
+    const Vector eps0 = element_thermal_strain(model, e, ip.point, *temperature);
+    stresses.push_back(scale * (model.constitutive_of(e) * (op.b * ue - eps0)));
+  }
+  return element.geometric_stiffness_of_stress(coords, stresses, model.thickness(),
+                                               model.integration());
 }
 
 BucklingResult solve_buckling(const FemModel& model, const Assembler& assembler,

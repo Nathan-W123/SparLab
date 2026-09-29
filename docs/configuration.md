@@ -1036,6 +1036,21 @@ its nodes, the snapshot frequencies and warnings.
 | `emin_ratio` | number | `1e-9` | `E_min/E_0`, in `(0, 1)` |
 | `mass_floor` | number | `1e-9` | mass floor for `penalty_matched` |
 | `mass_interpolation` | string | `penalty_matched` | or `linear` |
+| `body_load_threshold` | number | `0.1` | `rho_t` in `[0, 1)`: below it an element's self-weight, body force and centrifugal load fall like `rho^p` instead of `rho`, so near-void material carries a bounded load (`docs/topology_optimization.md`, section 2b); `0` keeps `rho` at every density |
+
+**Loads that follow the design.** A topology deck's load cases may carry
+`gravity`, `body_forces`, `centrifugal` and a `temperature` field (uniform or
+regional): the body loads scale with each element's `gamma(rho)`, the thermal
+load with its stiffness factor `E(rho)/E_0`, and the compliance, stress and
+buckling gradients carry their derivatives (`docs/topology_optimization.md`,
+section 2b). Such a run needs `optimizer.method = "mma"` - the gradient can
+be positive, which optimality criteria cannot follow - and the density
+filter (or none), not the heuristic sensitivity filter; it refuses a
+`conduction` temperature (it would depend on the design), a second material
+(`material_regions`) and non-zero prescribed displacements. Under these loads
+the optimum need not use the whole `volume_fraction`; the run warns when it
+does not, and when no element reaches `interpretation_threshold` it reports
+that there is no part to export instead of failing.
 
 **`filter`**
 
