@@ -51,7 +51,9 @@
 /// +\tfrac{I_z}{A}\theta_z'^2]\,dx'\f$ - the continuum's
 /// \f$\int\sigma_{xx} u_{k,x} u_{k,x}\,dV\f$ of a uniform axial stress, the
 /// bending stresses' part (lateral-torsional buckling) left out. All are
-/// integrated exactly (4 Gauss points) and turned to global axes.
+/// integrated exactly (4 Gauss points) and turned to global axes. The
+/// lumped mass puts rho A L / 2 on each node's translations and half the
+/// sections' rotary-inertia tensor on its rotations (`lumped_mass`).
 ///
 /// **Geometry input.** A 14 x 2 matrix (`geometry`): the nodal coordinates
 /// in rows 0-2, the orientation vector in rows 3-5 (zero for the default),

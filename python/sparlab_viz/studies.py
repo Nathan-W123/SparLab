@@ -943,7 +943,10 @@ def plot_cross_validation(directory: str, path: str) -> str:
     # neither, a downward triangle, set below, for the transient history and a
     # pentagon for the harmonic response; on a contact deck, compared through
     # its non-linear analysis alone, a hexagon for the final contact state.
-    code_names = ["scikit-fem", "calculix", "numpy mitc4"]
+    # The two NumPy implementations (the MITC4 shell and the Timoshenko beam)
+    # share a colour: they are one kind of reference, and a scatter figure
+    # takes three colours at most.
+    code_names = ["scikit-fem", "calculix", "numpy"]
     st.require_scatter_series(len(code_names), "codes")
     kinds_of = {
         "scikit-fem": [
@@ -959,9 +962,13 @@ def plot_cross_validation(directory: str, path: str) -> str:
             ("scikit-fem contact", "h", 0.0, "contact",
              "scikit-fem, contact (its own semismooth Newton solve)"),
         ],
-        "numpy mitc4": [
+        "numpy": [
             ("numpy mitc4", "o", 0.0, "shell",
              "NumPy MITC4, shells (an independent implementation of the element)"),
+            ("numpy timoshenko", "s", 0.0, "beam",
+             "NumPy Timoshenko, beams (an independent implementation of the element)"),
+            ("numpy timoshenko harmonic", "p", -0.22, "beam harmonic response",
+             "NumPy Timoshenko, harmonic response (a direct complex solve)"),
         ],
         "calculix": [
             ("calculix", "o", 0.0, "linear", None),
@@ -973,6 +980,8 @@ def plot_cross_validation(directory: str, path: str) -> str:
              "calculix, transient (*DYNAMIC, DIRECT)"),
             ("calculix contact", "h", 0.0, "contact",
              "calculix, contact (dual mortar, LINMORTAR)"),
+            ("calculix u1", "P", 0.22, "Euler-Bernoulli beam",
+             "calculix, U1 beam in its Euler-Bernoulli limit (7 printed digits)"),
         ],
     }
     present = [code for code in code_names
@@ -996,7 +1005,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
     # backward-stable solutions of it can differ by up to about that much.
     round_off = [(results[code]["round_off_scale"], position)
                  for position, (_c, _e, _l, results) in zip(y, rows)
-                 for code in ("scikit-fem", "numpy mitc4")
+                 for code in ("scikit-fem", "numpy mitc4", "numpy timoshenko")
                  if "round_off_scale" in results.get(code, {})]
     if round_off:
         ax.plot([r for r, _p in round_off], [p for _r, p in round_off], "|",
@@ -1051,7 +1060,8 @@ def plot_cross_validation(directory: str, path: str) -> str:
     tol_lines = [
         ("skfem", "scikit-fem tolerance", 0, "--", "scikit-fem"),
         ("calculix_solid", "CalculiX tolerance", 1, "--", "calculix"),
-        ("shell_numpy", "NumPy MITC4 tolerance", 2, "-.", "numpy mitc4"),
+        ("shell_numpy", "NumPy MITC4 tolerance", 2, "-.", "numpy"),
+        ("beam_numpy", "NumPy Timoshenko tolerance", 2, ":", "numpy"),
     ]
     for key, label, slot, style, code in tol_lines:
         value = tolerances.get(key)
@@ -1077,7 +1087,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
         fig, "Cross-validation: nodal displacements vs independent codes",
         f"{len(rows)} load cases, {len(present)} "
         f"code{'s' if len(present) != 1 else ''}; linear, large-deflection, "
-        f"elastoplastic, transient, harmonic, contact and shells; {verdict}",
+        f"elastoplastic, transient, harmonic, contact, shells and beams; {verdict}",
     )
     handles, labels = ax.get_legend_handles_labels()
     legend_ax.legend(handles, labels, loc="center", ncol=2, fontsize=7.4, frameon=False,
@@ -1796,27 +1806,38 @@ def plot_tet10_part_study(directory: str, path: str) -> str:
 def plot_buckling_cross_validation(directory: str, path: str) -> str:
     """Buckling load factors against scikit-fem and CalculiX *BUCKLE."""
     summary = load_json(os.path.join(directory, "summary.json"))
-    codes = [("scikit-fem buckling", "scikit-fem (same K_G, dense eigensolve)"),
-             ("calculix buckling", "CalculiX *BUCKLE")]
+    codes = [(["scikit-fem buckling"], "scikit-fem (same K_G, dense eigensolve)"),
+             (["calculix buckling"], "CalculiX *BUCKLE"),
+             (["numpy mitc4 buckling", "numpy timoshenko buckling"],
+              "NumPy MITC4 / Timoshenko (the same K_G, Lanczos)")]
     rows = []
     for case in summary.get("cases", []):
         for load_case in case.get("load_cases", []):
-            if any(code in load_case["codes"] for code, _ in codes):
+            if any(key in load_case["codes"] for keys, _ in codes for key in keys):
                 rows.append((case["case"], case.get("element_type", ""),
                              load_case["load_case"], load_case["codes"]))
     if not rows:
         raise ValueError("cross-validation summary has no buckling comparisons")
     fig, ax = st.figure(7.4, 0.5 * len(rows) + 3.3)
     y = np.arange(len(rows))[::-1]
-    for slot, (code, label) in enumerate(codes):
-        xs, ys = [], []
+    for slot, (keys, label) in enumerate(codes):
+        xs, ys, info_x, info_y = [], [], [], []
         for position, (*_rest, results) in zip(y, rows):
-            entry = results.get(code)
-            if entry is not None:
-                xs.append(entry["max_rel_diff"])
-                ys.append(position)
+            for key in keys:
+                entry = results.get(key)
+                if entry is None:
+                    continue
+                # A comparison between two models (CalculiX's shell and beam
+                # expansions into solids) is recorded, not judged: hollow.
+                target = (info_x, info_y) if entry.get("passed") is None else (xs, ys)
+                target[0].append(entry["max_rel_diff"])
+                target[1].append(position)
         if xs:
             ax.plot(xs, ys, "o", color=st.series_color(slot), markersize=7, label=label)
+        if info_x:
+            ax.plot(info_x, info_y, "o", color=st.series_color(slot), markersize=7,
+                    markerfacecolor="none", markeredgewidth=1.5,
+                    label=f"{label}: a different model (S4, B31 expansions), not judged")
     tolerances = summary.get("tolerances", {})
     for slot, key, label in ((0, "skfem_buckling", "scikit-fem tolerance"),
                              (1, "calculix_buckling", "CalculiX tolerance")):
@@ -1825,15 +1846,16 @@ def plot_buckling_cross_validation(directory: str, path: str) -> str:
             ax.axvline(value, color=st.series_color(slot), linewidth=1.0, linestyle="--",
                        label=f"{label} {value:g}")
     ax.set_xscale("log")
-    ax.set_xlim(1.0e-12, 1.0e-2)
+    ax.set_xlim(1.0e-13, 1.0)
     ax.set_yticks(y)
     ax.set_yticklabels([f"{c} ({e}), '{l}'" for c, e, l, _r in rows], fontsize=8.0)
     ax.set_ylim(-0.7, len(rows) - 0.3)
     ax.set_xlabel("max over the reported modes of |lambda_ref - lambda| / lambda [-]")
     st.title(ax, "Cross-validation: linear buckling load factors",
-             "scikit-fem assembles the geometric stiffness from its own static solution at "
-             "the same quadrature points (the same discrete problem); CalculiX runs "
-             "*BUCKLE on the exported deck with its own stress-stiffness evaluation")
+             "scikit-fem and the NumPy shell and beam assemble the geometric stiffness from "
+             "their own static solutions (the same discrete problem); CalculiX runs *BUCKLE "
+             "on the exported deck with its own stress-stiffness evaluation - for a shell or "
+             "a beam on its expansion into solids, another model (hollow)")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, fontsize=8,
               frameon=False)
     st.annotate_note(
@@ -3044,9 +3066,10 @@ def plot_shell_eigen(directory: str, path: str) -> str:
     st.annotate_note(
         fig,
         "Simply supported square plate a = 1 m, t = 0.01 m, E = 70 GPa, nu = 0.3, "
-        "rho = 2700 kg/m^3, hard supports. Mass: consistent, or lumped by scaling the diagonal to each "
-        "element's total per DOF component (Hinton-Rock-Zienkiewicz); the rotations about "
-        "the normal carry none. The exact values come from the 3 x 3 problem of each "
+        "rho = 2700 kg/m^3, hard supports. Mass: consistent, or lumped - the translations' "
+        "diagonal scaled to each element's mass (Hinton-Rock-Zienkiewicz) and the same share "
+        "of its rotary-inertia tensor on each node's rotations; the rotations about the "
+        "normal carry none. The exact values come from the 3 x 3 problem of each "
         "trigonometric mode (w, psi_1, psi_2) of the Reissner-Mindlin plate - with its rotary "
         "inertia for the frequencies and the harmonic response (the series over the odd "
         "modes a uniform pressure excites, m, n <= 401, loss factor on the stiffness), and "
@@ -3054,6 +3077,142 @@ def plot_shell_eigen(directory: str, path: str) -> str:
         "(t^2 / 12) N psi_a,x^2 to N w_,x^2. k is the computed load in units of "
         "pi^2 D / a^2; the equal biaxial load's Rayleigh quotient on the mode (1, 1) is half "
         "the uniaxial one's, on the continuum and the mesh alike.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_beam_verification(directory: str, path: str) -> str:
+    """The Timoshenko beam against the exact solutions of its model: the
+    simply supported beam's frequencies and harmonic response, the columns'
+    buckling loads and the quarter-circle cantilever's tip displacements."""
+    modes = load_csv(os.path.join(directory, "beam_modes.csv"))
+    harmonic = load_csv(os.path.join(directory, "beam_harmonic.csv"))
+    buckling = load_csv(os.path.join(directory, "beam_buckling.csv"))
+    curved = load_csv(os.path.join(directory, "beam_curved.csv"))
+    exact = load_csv(os.path.join(directory, "beam_exact.csv"))
+    fig, axes = st.figure(11.5, 9.0, nrows=2, ncols=2)
+    axes = np.asarray(axes).ravel()
+    styles = {"consistent": ("-", "o"), "lumped": ("--", "s")}
+
+    def log2_axis(ax, ns, label):
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xticks(sorted(ns))
+        ax.set_xticklabels([str(int(n)) for n in sorted(ns)])
+        ax.set_xlabel(label)
+
+    # The frequencies, one colour per kind of mode (its lowest and highest
+    # of the twelve drawn).
+    ax = axes[0]
+    kinds = ["bending y'", "bending z'", "torsion", "axial"]
+    for slot, kind in enumerate(kinds):
+        of_kind = modes[modes["kind"].str.startswith(kind)]
+        shown = sorted(of_kind["mode"].unique())
+        shown = [shown[0], shown[-1]] if len(shown) > 1 else shown
+        for mode in shown:
+            for mass, (line, marker) in styles.items():
+                rows = modes[(modes["mass"] == mass) & (modes["mode"] == mode)].sort_values("n")
+                name = rows["kind"].iloc[0]
+                ax.plot(rows["n"], rows["relative_error[-]"], line + marker,
+                        color=st.series_color(slot), markersize=3.5,
+                        alpha=1.0 if mode == shown[-1] else 0.55,
+                        label=f"{name} ({float(rows['exact[Hz]'].iloc[0]):.0f} Hz)"
+                        if mass == "consistent" else None)
+    ax.plot([], [], "-", color=st.INK_MUTED, label="consistent mass")
+    ax.plot([], [], "--", color=st.INK_MUTED, label="lumped mass")
+    _order_guide(ax, modes["n"].unique(), 0.4 * float(modes["relative_error[-]"].min()), 2.0)
+    log2_axis(ax, modes["n"].unique(), "elements, n [-]")
+    ax.set_ylim(top=30.0 * float(modes["relative_error[-]"].max()))
+    ax.set_ylabel("|f - f_exact| / f_exact [-]")
+    st.title(ax, "Simply supported beam: natural frequencies",
+             "the lowest and highest of each kind among the twelve lowest, against the exact "
+             "Timoshenko frequencies with rotary inertia; consistent mass above, lumped "
+             "below, by the same amount", wrap=56)
+    st.legend(ax, loc="upper right", fontsize=6.8, ncol=2)
+
+    ax = axes[1]
+    damped = harmonic[np.isclose(harmonic["loss_factor"], 0.05)
+                      & (harmonic["frequency[Hz]"] > 0.0)]
+    for slot, frequency in enumerate(sorted(damped["frequency[Hz]"].unique())):
+        for direction, (line, marker) in (("y", ("-", "o")), ("z", (":", "^"))):
+            rows = damped[(damped["mass"] == "consistent") & (damped["direction"] == direction)
+                          & np.isclose(damped["frequency[Hz]"], frequency)].sort_values("n")
+            ax.plot(rows["n"], rows["relative_error[-]"], line + marker,
+                    color=st.series_color(slot), markersize=3.5,
+                    label=f"{frequency:g} Hz" if direction == "y" else None)
+    ax.plot([], [], "-", color=st.INK_MUTED, label="deflection along y'")
+    ax.plot([], [], ":", color=st.INK_MUTED, label="deflection along z'")
+    _order_guide(ax, damped["n"].unique(), 0.4 * float(damped["relative_error[-]"].min()), 2.0)
+    log2_axis(ax, damped["n"].unique(), "elements, n [-]")
+    ax.set_ylim(top=30.0 * float(damped["relative_error[-]"].max()))
+    ax.set_ylabel("|v - v_exact| / |v_exact| at midspan [-]")
+    static = harmonic[np.isclose(harmonic["frequency[Hz]"], 0.0)]
+    finest = harmonic[harmonic["n"] == harmonic["n"].max()]
+    spread = float(np.abs(finest[finest["mass"] == "lumped"]["relative_error[-]"].to_numpy()
+                          - finest[finest["mass"] == "consistent"]["relative_error[-]"]
+                          .to_numpy()).max())
+    st.title(ax, "Simply supported beam: harmonic response",
+             "a uniform load in both planes, loss factor 0.05, consistent mass (the lumped "
+             f"mass's errors within {_sci(spread)} of these at {int(harmonic['n'].max())} "
+             "elements); at 0 Hz exact to "
+             f"{_sci(float(static['relative_error[-]'].max()))}; at 1000 Hz the modes nearly "
+             "cancel along y'", wrap=56)
+    st.legend(ax, loc="upper right", fontsize=6.8, ncol=2)
+
+    ax = axes[2]
+    # One colour per kind of mode: both columns' four lowest are y' 1 to 3
+    # and z' 1, in different orders.
+    ordinary = buckling[buckling["support"].isin(["pinned", "cantilever"])]
+    colour = {kind: slot for slot, kind in enumerate(sorted(ordinary["kind"].unique()))}
+    for slot, support in enumerate(("pinned", "cantilever")):
+        sub = buckling[buckling["support"] == support]
+        for mode in sorted(sub["mode"].unique()):
+            rows = sub[sub["mode"] == mode].sort_values("n")
+            kind = rows["kind"].iloc[0]
+            ax.plot(rows["n"], rows["relative_error[-]"], ("-" if slot == 0 else "--") + "o",
+                    color=st.series_color(colour[kind]), markersize=3.5,
+                    label=kind if slot == 0 else None)
+    ax.plot([], [], "-", color=st.INK_MUTED, label="pinned")
+    ax.plot([], [], "--", color=st.INK_MUTED, label="cantilever")
+    _order_guide(ax, ordinary["n"].unique(), 0.4 * float(ordinary["relative_error[-]"].min()), 2.0)
+    log2_axis(ax, ordinary["n"].unique(), "elements, n [-]")
+    ax.set_ylim(top=30.0 * float(ordinary["relative_error[-]"].max()))
+    ax.set_ylabel("|P - P_exact| / P_exact [-]")
+    torsion = buckling[buckling["kind"] == "torsion"]
+    st.title(ax, "Columns: buckling loads",
+             "the four lowest, against the exact loads of the model (Euler's less the shear "
+             "deformation and the rotations' term); order 3 falling to 2 as the elements "
+             "grow shorter than the depth. Torsional buckling G J A / I_p: within "
+             f"{_sci(float(torsion['relative_error[-]'].max()))} on every mesh", wrap=56)
+    st.legend(ax, loc="upper right", fontsize=6.8, ncol=2)
+
+    ax = axes[3]
+    for slot, (load, component) in enumerate(curved[["load", "component"]].drop_duplicates()
+                                             .itertuples(index=False)):
+        rows = curved[(curved["load"] == load) & (curved["component"] == component)].sort_values("n")
+        ax.plot(rows["n"], rows["relative_error[-]"], "-o", color=st.series_color(slot),
+                markersize=3.5, label=f"{load}: {component}")
+    _order_guide(ax, curved["n"].unique(), 0.4 * float(curved["relative_error[-]"].min()), 2.0)
+    log2_axis(ax, curved["n"].unique(), "straight elements on the quarter circle, n [-]")
+    ax.set_ylabel("|u - u_exact| / |u_exact| at the tip [-]")
+    st.title(ax, "Quarter-circle cantilever",
+             "against Castigliano's curved beam (bending, torsion, stretching, shear); the "
+             "polygon of chords converges to the arc at order 2. Exactness on straight "
+             f"members: within {_sci(float(exact.iloc[:, 3:].to_numpy().max()))} on 1 to 16 "
+             "elements", wrap=56)
+    st.legend(ax, loc="upper right", fontsize=7.0)
+
+    st.annotate_note(
+        fig,
+        "Steel (E = 210 GPa, nu = 0.3, rho = 7850 kg/m^3), rectangle 40 mm (along y') x "
+        "100 mm (along z'), Cowper's shear coefficient; beams and columns 1 m long, the "
+        "quarter circle of radius 1 m. Exact references: each simply supported mode "
+        "v = V sin(kx), theta = Theta cos(kx) of the Timoshenko beam - a 2 x 2 problem with "
+        "the rotary inertia for the frequencies (and the series over the odd modes for the "
+        "harmonic response), with the geometric stiffness N [v'^2 + (I/A) theta'^2] for "
+        "buckling (k = (2j - 1) pi / 2L for the cantilever); Saint-Venant torsion with the "
+        "polar inertia rho I_p; Castigliano for the curved cantilever. Lumped mass: rho A L "
+        "/ 2 and half the sections' inertia tensor per node.",
     )
     return st.save_figure(fig, path)
 

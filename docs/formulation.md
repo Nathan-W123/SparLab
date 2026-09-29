@@ -1472,10 +1472,16 @@ semi-definite: the rotation of a node about its director carries no inertia,
 as it moves no material. The modal solver takes such a pencil through
 `M y = mu K y` with `K` positive definite, whose largest `mu` are
 `1 / lambda` of the lowest modes and whose zero `mu` are the massless
-directions. The lumped mass scales each element's diagonal to the element's
-total in each DOF component (Hinton, Rock and Zienkiewicz), rotary inertia
-included; a component the element gives no inertia - the drilling rotation
-of a flat element normal to a global axis - stays massless. The harmonic
+directions. The lumped mass scales the translations' diagonal to each
+element's mass (Hinton, Rock and Zienkiewicz) and gives each node the same
+share of the element's rotary-inertia tensor - the consistent rotational
+blocks summed over all node pairs, `int rho z^2 (|d|^2 I - d d^T) dV` - as a
+3 x 3 block on its rotations: on a flat element `rho t^3 / 12` per unit area
+about the in-plane axes and nothing about the normal, in any orientation.
+(Scaling the rotational diagonal per global component instead drops the
+tensor's off-diagonal terms: an inclined element then gets a spurious
+inertia about its normal and too little about its plane's axes. On the flat
+plates of the verification both give the same matrix.) The harmonic
 response solves `[K (1 + i eta) - omega^2 M + i omega C] U = f` and needs no
 inverse of `M`, so it takes a shell as it stands. A transient would need
 the initial accelerations from `M`, which that singular mass does not
@@ -1505,6 +1511,124 @@ from `1e-3` to `1e-4`).
 It is not free of membrane locking: bending-dominated curved shells converge
 slowly on coarse meshes (the pinched cylinder reaches 0.38, 0.75, 0.93, 0.99 of
 its reference on 4 ... 32 cells a side).
+
+## 7h. Beams (Timoshenko)
+
+A beam mesh (`frame`, or B31 elements or 2-node lines with `mesh.beam` in a
+file) is made of two-node Timoshenko beam elements in space
+(`src/elements/Beam2.cpp`) with six DOFs per node, the translations and the
+rotations about the global axes. Its analyses are linear: static, modal,
+the harmonic response, transient and buckling (`docs/verification.md`,
+section 28).
+
+**Axes and kinematics.** `x'` runs from the element's first node to its
+second; `y'` is the component normal to `x'` of the section's orientation
+vector, or by default `y' = z' x x'` with `z'` the projection of global Z
+(of global X for an element within 0.1 degree of vertical); `z' = x' x y'`.
+The section's centroid lies on the axis and `y'`, `z'` are its principal
+axes. A point `(y', z')` of the section moves by
+
+```
+  u_x = u - y' theta_z + z' theta_y,   u_y = v - z' theta_x,   u_z = w + y' theta_x
+```
+
+(local components), so the generalised strains are the stretch `u'`, the
+shears `gamma_y = v' - theta_z`, `gamma_z = w' + theta_y`, the twist rate
+`theta_x'` and the curvatures `theta_y'`, `theta_z'`, with the stiffnesses
+`EA`, `k_y G A`, `k_z G A`, `G J`, `E I_y`, `E I_z` (`I_y = int z'^2 dA`
+resists bending in the `x'-z'` plane). Torsion is Saint-Venant's: the
+section warps freely.
+
+**Interpolation.** `u` and `theta_x` are linear. Each bending plane takes
+the interdependent interpolation (Reddy 1997): with
+`Phi = 12 E I / (k G A L^2)`, `mu = 1 / (1 + Phi)` and `xi = x' / L`,
+
+```
+  v     = mu [1 - 3xi^2 + 2xi^3 + Phi (1 - xi)] v_0 + mu L [xi - 2xi^2 + xi^3 + Phi/2 (xi - xi^2)] theta_0
+        + mu [3xi^2 - 2xi^3 + Phi xi] v_1       + mu L [-xi^2 + xi^3 - Phi/2 (xi - xi^2)] theta_1,
+  theta = 6mu/L (xi^2 - xi) v_0 + mu [1 - 4xi + 3xi^2 + Phi (1 - xi)] theta_0
+        + 6mu/L (xi - xi^2) v_1 + mu [3xi^2 - 2xi + Phi xi] theta_1,
+```
+
+the deflection cubic, the rotation quadratic and the shear strain constant:
+the solution of the homogeneous Timoshenko equations. Two consequences
+follow. The element has no shear locking, and the nodal values of any
+straight member under nodal loads and uniform loads are the Timoshenko
+beam's on every mesh, one element included (the interpolation contains the
+Green's functions; Tong 1969): measured within 2.2e-12 on 1 to 16 elements
+per member. A section without shear deformation (`"shear_deformation":
+false`) has `Phi = 0` and the element is the Euler-Bernoulli beam with
+Hermite cubics.
+
+**Sections.** A rectangle `b x h` (the width along `y'`), a solid circle, a
+circular tube, or a general section stating `A`, `I_y`, `I_z`, `J` and the
+shear coefficients. A shape's shear coefficients are Cowper's (1966), which
+depend on Poisson's ratio: `10 (1 + nu) / (12 + 11 nu)` for a rectangle,
+`6 (1 + nu) / (7 + 6 nu)` for a circle,
+`6 (1 + nu)(1 + m^2)^2 / ((7 + 6 nu)(1 + m^2)^2 + (20 + 12 nu) m^2)` for a
+tube of radius ratio `m`. The torsion constant is `pi r^4 / 2` for a circle,
+`pi (r_o^4 - r_i^4) / 2` for a tube, and for a rectangle `a x b`, `a >= b`,
+the series `a b^3 / 3 [1 - 192 b / (pi^5 a) sum_odd tanh(n pi a / 2b) / n^5]`
+(0.140577 a^4 for a square).
+
+**Matrices.** Stiffness `int B^T D B dx'` and consistent mass
+`int H^T diag(rho A, rho A, rho A, rho I_p, rho I_y, rho I_z) H dx'`, the
+rotary inertia included (`I_p = I_y + I_z`) - Przemieniecki's closed forms of
+the Timoshenko beam, which the NumPy cross-check's own integration of the
+interpolation meets to 5.3e-16; and the geometric stiffness of
+the element's axial force `N = E A (u_1 - u_0) / L`,
+
+```
+  K_G = N int [u'^2 + v'^2 + w'^2 + (I_p/A) theta_x'^2 + (I_y/A) theta_y'^2 + (I_z/A) theta_z'^2] dx',
+```
+
+the continuum's `int sigma_xx u_k,x u_k,x dV` of a uniform axial stress.
+The stresses of bending are left out, so the element has no lateral-torsional
+buckling. With Saint-Venant torsion the twist's geometric term is
+proportional to its stiffness, so every twist buckles at `P = G J A / I_p`,
+the classical torsional buckling load of a section without warping stiffness.
+All are integrated exactly (four Gauss points) and turned to global axes.
+The lumped mass puts `rho A L / 2` on each node's translations and half the
+sections' rotary inertia, `rho L / 2 R^T diag(I_p, I_y, I_z) R`, on its
+rotations: a 3 x 3 block, the inertia tensor about the local axes turned to
+global ones, which no diagonal holds for an inclined member. Both masses are
+positive definite, so a beam also takes the transient analysis.
+
+**Loads.** Point forces and moments act on a node's six DOFs. A line load is
+a force per unit length (global components) on the elements a region
+selects, with the consistent nodal forces `int H^T q dx'` - moments included,
+`q L^2 / 12` at the ends of a uniform load, and exact nodal values as above.
+Self-weight and uniform body forces act as the line load `A (rho g + b)`. A
+beam refuses tractions and pressures (it has no faces), centrifugal loads
+(they vary over the section), temperatures (no thermal strain), plasticity,
+contact, the non-linear analysis and topology optimisation, each with its
+reason.
+
+**Resultants.** The end resultants of each element in its own axes,
+`N, Q_y, Q_z, T, M_y, M_z` (`M_y > 0` stretches the fibres at `z' > 0`,
+`M_z > 0` compresses those at `y' > 0`): `K_e u_e - f_q`, the start's
+negated, the exact end forces of the element in equilibrium with its load.
+The normal stress of an end section is `|N|/A + |M_y| c_z / I_y +
+|M_z| c_y / I_z` over the extreme fibres `c_y`, `c_z` - a rectangle's exact
+maximum, a bound for a section inside that box - or
+`|N|/A + sqrt(M_y^2 + M_z^2) r / I` for a round one; each element reports
+the larger of its two ends (under a uniform load a moment's extreme may lie
+inside the element).
+
+**Convergence.** Frequencies and buckling loads converge at `O(h^2)` once
+the elements are shorter than the section is deep (`Phi > 1`): the
+interpolated rotation is then nearly linear. On longer elements the
+Hermite-like interpolation converges faster: the verification columns'
+buckling loads in the shallow direction converge at order 3.1 between 4 and
+8 elements and 2.16 between 16 and 32 (in the deep direction, where `Phi` is
+6.25 times larger, already at 2.3 between 4 and 8). A curved member is a
+polygon of chords, which converges to the arc at `O(h^2)`.
+
+**Known limits of the element.** Saint-Venant torsion only (no warping
+restraint, so an open thin-walled section's torsion is too soft near a
+restrained end); no lateral-torsional buckling; principal axes through the
+centroid (no product of inertia, no shear-centre offset); no end releases,
+offsets or tapers; curved members as chords.
 
 ## 8. Topology optimisation
 

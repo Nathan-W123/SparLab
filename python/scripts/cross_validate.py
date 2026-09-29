@@ -114,6 +114,7 @@ import numpy as np
 
 import contact_xval
 import dynamics_xval
+import beam_xval
 import shell_xval
 
 from sparlab_viz.loaders import Mesh, ResultError, load_case
@@ -1285,6 +1286,13 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
         return shell_xval.shell_case_report(case, case_dir, tolerances, skip_calculix,
                                             run_calculix, parse_frd_displacements, _safe,
                                             run_calculix_buckling)
+    if summary["mesh"]["element_type"] == "Beam2":
+        # A beam run: an independent Timoshenko frame in NumPy, CalculiX's U1
+        # for the Euler-Bernoulli beam and its B31 for information
+        # (beam_xval.py).
+        return beam_xval.beam_case_report(case, case_dir, tolerances, skip_calculix,
+                                          run_calculix, parse_frd_displacements, _safe,
+                                          run_calculix_buckling)
     material = summary["material"]
     thickness = float(summary["mesh"].get("thickness_m", 1.0))
     stress_state = material["stress_state"]
@@ -1858,6 +1866,15 @@ def main(argv=None) -> int:
                              "rotations")
     parser.add_argument("--tol-shell-numpy-eigen", type=float, default=1e-7,
                         help="shell runs: its frequencies and buckling factors")
+    parser.add_argument("--tol-beam-numpy", type=float, default=1e-9,
+                        help="beam runs: the independent NumPy Timoshenko frame's "
+                             "displacements, rotations and end resultants")
+    parser.add_argument("--tol-beam-numpy-eigen", type=float, default=1e-9,
+                        help="beam runs: its frequencies, buckling factors and harmonic "
+                             "monitors")
+    parser.add_argument("--tol-beam-calculix-u1", type=float, default=2e-6,
+                        help="beam runs without shear deformation: CalculiX's U1 "
+                             "(Euler-Bernoulli limit) printed to 7 digits")
     parser.add_argument("--skfem-buckling-max-dofs", type=int, default=6000,
                         help="largest free-DOF count for the dense buckling eigensolve")
     args = parser.parse_args(argv)
@@ -1884,6 +1901,9 @@ def main(argv=None) -> int:
                   "calculix_contact": args.tol_calculix_contact,
                   "shell_numpy": args.tol_shell_numpy,
                   "shell_numpy_eigen": args.tol_shell_numpy_eigen,
+                  "beam_numpy": args.tol_beam_numpy,
+                  "beam_numpy_eigen": args.tol_beam_numpy_eigen,
+                  "beam_calculix_u1": args.tol_beam_calculix_u1,
                   "skfem_buckling_max_dofs": args.skfem_buckling_max_dofs}
     import skfem
     summary = {
@@ -1901,13 +1921,21 @@ def main(argv=None) -> int:
             "numpy mitc4": {"note": "an independent MITC4 shell written in NumPy "
                                     "(shell_xval.py) solving the same discrete shell "
                                     "problem; round_off_scale as for scikit-fem"},
+            "numpy timoshenko": {"note": "an independent Timoshenko frame written in NumPy "
+                                         "(beam_xval.py) solving the same discrete frame "
+                                         "problem; its stiffness and consistent mass are "
+                                         "checked against Przemieniecki's closed forms"},
             "calculix": {"version": None if args.skip_calculix else calculix_version(),
                          "note": "C3D8, C3D4 and C3D10 are the same elements as "
                                  "SparLab's Hex8, Tet4 and Tet10; CPS4/CPS3 (CPE4/CPE3) are plane elements "
                                  "CalculiX expands through the thickness, a different "
-                                 "discretisation of the plane problem, and S4 a shell it "
+                                 "discretisation of the plane problem, S4 a shell it "
                                  "expands into incompatible-mode solids, a different "
-                                 "discretisation of the shell. Nodal results are "
+                                 "discretisation of the shell, and B31 a beam it expands "
+                                 "into bricks over the rectangle, a different model of "
+                                 "the member; U1 is its Timoshenko beam, compared in the "
+                                 "Euler-Bernoulli limit only (see beam_xval.py). Nodal "
+                                 "results are "
                                  "read from the .frd file, which carries six significant "
                                  "digits, so differences below 5e-6 relative are its "
                                  "rounding, not a disagreement"},

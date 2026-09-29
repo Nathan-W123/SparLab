@@ -143,6 +143,11 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
                       "densities, filters and sensitivities are those of continuum cells, "
                       "and a shell's design variable would be its thickness");
   }
+  if (model.is_beam()) {
+    throw ConfigError("topology optimisation of a beam model is not supported: the "
+                      "densities, filters and sensitivities are those of continuum cells, "
+                      "and a beam's design variable would be its section");
+  }
   options_.simp.validate();
   if (options_.max_iterations < 1) {
     throw ConfigError("optimizer.max_iterations must be at least 1");

@@ -309,9 +309,14 @@ int main(int argc, char** argv) {
           }
           if (!dynamic.load_cases.empty()) transient_export = &dynamic;
         }
-        const std::vector<std::string> decks = write_calculix_decks(
-            model, writer.file("calculix"), config.name, nonlinear_export, transient_export);
-        for (const std::string& deck : decks) log::info("wrote CalculiX deck ", deck);
+        const std::string beam_obstacle = calculix_beam_obstacle(model);
+        if (!beam_obstacle.empty()) {
+          log::warn("the model is not exported to CalculiX: ", beam_obstacle);
+        } else {
+          const std::vector<std::string> decks = write_calculix_decks(
+              model, writer.file("calculix"), config.name, nonlinear_export, transient_export);
+          for (const std::string& deck : decks) log::info("wrote CalculiX deck ", deck);
+        }
       }
     }
 

@@ -175,26 +175,14 @@ struct BeamSet {
   Vector3 direction = Vector3::Zero();
 };
 
-/// \throws IoError for a section CalculiX's linear beam cannot take: it
-///         expands a B31 element into bricks over a rectangle; a circle needs
-///         its quadratic beam, a general section has no shape to expand, and
-///         the bricks deform in shear whatever the section says.
+/// \throws IoError for a model calculix_beam_obstacle refuses.
 std::vector<BeamSet> write_beam_sets(std::ostream& out, const FemModel& model) {
+  const std::string obstacle = calculix_beam_obstacle(model);
+  if (!obstacle.empty()) throw IoError(obstacle);
   std::vector<BeamSet> sets;
   std::vector<std::vector<Index>> members;
   for (Index e = 0; e < model.mesh().num_elements(); ++e) {
     const BeamSection section = model.section_of(e);
-    if (section.shape != BeamSectionShape::Rectangle) {
-      throw IoError("beam section '" + section.name + "' is a " + to_string(section.shape) +
-                    ": CalculiX expands its linear beam (B31) into bricks over a rectangle "
-                    "only (a circle needs its quadratic beam, a general section has no "
-                    "shape), so only rectangular sections are exported");
-    }
-    if (!section.shear_deformation) {
-      throw IoError("beam section '" + section.name + "' has no shear deformation: CalculiX's "
-                    "expanded beam deforms in shear as a solid, so it would not be the same "
-                    "model");
-    }
     const int m = model.element_material(e);
     const Vector3 y = Beam2Element::frame(model.element_geometry(e)).y_axis();
     std::size_t k = 0;
@@ -778,6 +766,23 @@ std::string calculix_element_type(const FemModel& model) {
       return "B31";
   }
   throw IoError("no CalculiX element type for this mesh");
+}
+
+std::string calculix_beam_obstacle(const FemModel& model) {
+  if (!model.is_beam()) return "";
+  for (const BeamSection& section : model.sections()) {
+    if (section.shape != BeamSectionShape::Rectangle) {
+      return "beam section '" + section.name + "' is a " + to_string(section.shape) +
+             ": CalculiX expands its linear beam (B31) into bricks over a rectangle only (a "
+             "circle needs its quadratic beam, a general section has no shape), so only "
+             "rectangular sections are exported";
+    }
+    if (!section.shear_deformation) {
+      return "beam section '" + section.name + "' has no shear deformation: CalculiX's "
+             "expanded beam deforms in shear as a solid, so it would not be the same model";
+    }
+  }
+  return "";
 }
 
 std::string calculix_transient_obstacle(const FemModel& model, std::size_t l,

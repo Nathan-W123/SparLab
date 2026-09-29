@@ -740,8 +740,9 @@ StudyOutcome study_shell_plate_modes(const std::string& out_dir, json::Value& su
                 "the shear factor 5/6 (the smallest root of the 3 x 3 modal problem in "
                 "W sin sin, psi cos sin, sin cos). The rotations about the normal carry no "
                 "mass; the eigensolver treats that semi-definite mass. Consistent mass and "
-                "the lumped one (Hinton-Rock-Zienkiewicz: per DOF component the diagonal "
-                "scaled to the element's total, rotary inertia included)."));
+                "the lumped one (Hinton-Rock-Zienkiewicz: the translations' diagonal scaled "
+                "to the element's mass, and the same share of its rotary-inertia tensor on "
+                "each node's rotations)."));
   block.set("largest_error_at_64_consistent", json::Value::make_number(worst_fine));
   block.set("largest_error_at_64_lumped", json::Value::make_number(worst_lumped));
   summary.set("shell_plate_modes", block);

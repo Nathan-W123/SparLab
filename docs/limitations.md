@@ -6,12 +6,14 @@ says what would be needed to lift it.
 
 ## Physics and idealisation
 
-**Plane, solid and shell models; no beams.** Plane stress (default), plane
-strain, three-dimensional solids on hexahedral or tetrahedral meshes, and
-four-node MITC4 shells for linear statics, natural frequencies, the
-harmonic response and linear buckling (below). There are no beam elements,
-and no model mixes element types, so a stiffened panel is either all shell
-- the stiffeners as shell walls - or a solid mesh. A plane model cannot
+**Plane, solid, shell and beam models, one kind at a time.** Plane stress
+(default), plane strain, three-dimensional solids on hexahedral or
+tetrahedral meshes, four-node MITC4 shells for linear statics, natural
+frequencies, the harmonic response and linear buckling, and two-node
+Timoshenko beams in space for the same and the transient analysis (below).
+No model mixes element types, so a stiffened panel is either all shell -
+the stiffeners as shell walls - or a solid mesh, and a frame cannot carry a
+shell deck or be tied to a solid. A plane model cannot
 buckle out of its plane, so plate buckling of a thin lightened web - which
 can govern it - stays invisible to the 2-D decks; a shell model of the web
 shows it, and a solid mesh does if it is fine enough to bend.
@@ -160,7 +162,7 @@ do:
   constraint (it cannot be on two slave surfaces, or on a slave and a master
   one), and there is no self-contact detection. No tied (bonded) interfaces,
   adhesion, cohesive zones, wear or thermal contact conductance, and no
-  contact of shells (refused) or beams (which do not exist here);
+  contact of shells or beams (both refused);
 * two mortar surfaces that start a gap apart transmit friction across it, as
   the small-sliding model on the reference geometry does in every code: the
   couple of that force pair (the gap times the tangential force) remains in
@@ -227,6 +229,54 @@ exact plate, shell and ring solutions and the MacNeal-Harder benchmarks
   which stiffen its model where rotations are held (tenfold on a quarter of
   the Scordelis-Lo roof). The export is a starting point for a CalculiX
   model, not the same discrete problem.
+
+**Beams: two-node Timoshenko, linear, Saint-Venant torsion.** The beam
+element uses the interdependent interpolation, exact for nodal and uniform
+loads on straight members and free of shear locking (`docs/formulation.md`,
+section 7h), verified against the exact solutions of its model
+(`docs/verification.md`, section 28). What it does not do:
+
+* linear only: static, modal, harmonic response, transient and linear
+  buckling. The non-linear analysis (large rotations, plasticity), contact,
+  temperatures, the centrifugal load, tractions and pressures (a beam has no
+  faces) and topology optimisation are refused, each with its reason;
+* torsion is Saint-Venant's: the section warps freely, so an open
+  thin-walled section (a channel, an I) twists too easily near a restrained
+  end, where its warping stiffness carries part of the torque; the torsion
+  constant of a rectangle comes from its series, of a general section from
+  the deck;
+* the geometric stiffness is that of the axial force alone
+  (`N int [u'^2 + v'^2 + w'^2 + (I/A) theta'^2]`, the element's mean axial
+  force): the bending stresses' part is left out, so there is no
+  lateral-torsional buckling, and every twist buckles at `G J A / I_p`
+  (without warping stiffness, the classical torsional buckling load);
+* the section's axes are principal and its centroid, shear centre and
+  reference axis coincide: no products of inertia, no offsets or
+  eccentric connections, no end releases (hinges) - every joint is rigid -
+  no tapered members, and a curved member is a polygon of chords (the
+  quarter-circle study converges to the arc at second order);
+* shapes are the rectangle, the solid circle and the circular tube, with
+  Cowper's shear coefficients; anything else is a general section whose
+  properties the deck states;
+* the normal stress is `|N|/A + |M_y| c_z / I_y + |M_z| c_y / I_z` at the
+  extreme fibres of each element end - exact for a rectangle, a bound for a
+  section inside that box - or with `sqrt(M_y^2 + M_z^2)` for a round
+  section; shear stresses are not reported, and under a uniform load the
+  moment's extreme may lie inside an element, not at its ends;
+* frequencies and buckling loads converge at `O(h^2)` once the elements
+  are shorter than the section is deep: model a stocky member with as many
+  elements as a slender one needs for the same accuracy;
+* CalculiX's `B31`, which the exporter writes for rectangular sections, is
+  a different model: it expands each element into bricks over its
+  rectangle and joins members at a node through a rigid knot. Its
+  displacements come out smaller than the centre-line beam's, and more so
+  once members meet: 0.5 % on a lone clamped column, 3.2 % on a portal of
+  two columns and a beam (1.8 % against the Euler-Bernoulli limit of the
+  same portal, so not the shear deformation), 5.4 % on the space frame of
+  the cross-validation. Its `U1` beam is
+  the Timoshenko beam in statics, but version 2.21's shear term stiffens it
+  (the deflection falls below Euler-Bernoulli's as the shear coefficient
+  falls), so it is compared in the Euler-Bernoulli limit only.
 
 **Body loads: self-weight, force densities and steady rotation.** Gravity,
 uniform body force densities on element regions and the centrifugal load of a
@@ -580,15 +630,18 @@ values, which are what the CSV tables and the reported peaks use, are unaffected
 ## Verification and validation
 
 **Verification is strong; validation is narrow.** The implementation is
-verified against exact answers on all six element types. The patch tests
+verified against exact answers on all seven element types. The patch tests
 pass to 4e-15 (Q4), 2e-15 (Hex8), 9e-15 (Tri3 and Tet4) and 1.3e-12 (the
 MITC4 shell, membrane and bending states on distorted meshes in a turned
 plane), and the Tet10 passes the quadratic (pure-bending) patch test to
 1.2e-14. The shell converges at second order to the exact Reissner-Mindlin
 deflection, frequencies, harmonic response and buckling loads of a plate,
 without shear locking from `t / a = 1e-1` to `1e-4`, and to the exact state
-of a thick ring. The sparse and
-dense solvers agree to 9e-12, and multigrid CG agrees with Cholesky to
+of a thick ring. The Timoshenko beam is exact for end loads and uniform loads
+on straight members, one element per member included (2.2e-12), and
+converges at second order to the exact frequencies, harmonic response and
+buckling loads of its model and, through its chords, to a curved member. The
+sparse and dense solvers agree to 9e-12, and multigrid CG agrees with Cholesky to
 4e-12. The compliance gradient matches central differences to 2e-8 on Q4
 and Hex8, and to 1e-7 through the Heaviside projection on Q4 and Tet4; the
 buckling constraint's gradient to 1.7e-6 and the overhang filter's to
@@ -609,7 +662,10 @@ responses on two and contact states on six; and the shell's displacements,
 rotations, frequencies and buckling factors on four decks against an
 independent MITC4 written in NumPy, to 6.2e-9 or better but for the
 rotations of the worst-conditioned deck, 2.6e-7, below its round-off
-scale. scikit-fem agrees to solver round-off, displacements and
+scale; and the beam's displacements, rotations, end resultants,
+frequencies, buckling factors and harmonic response on three decks against
+an independent Timoshenko frame written in NumPy, to 1.3e-10 or better.
+scikit-fem agrees to solver round-off, displacements and
 load factors alike: every linear difference lies below the round-off scale
 of its system (its condition number times eps), 1.5e-10 or better except on
 the three worst-conditioned systems - a plane-strain strip and two slender
@@ -630,7 +686,10 @@ reproduce Prager's rule), and neither are its plane elements in dynamics
 (their `*DYNAMIC` response contradicts CalculiX's own `*FREQUENCY`); its
 buckling factors differ by up to 8.3e-5 for a reason not identified, and
 its shell (`S4`, solids over its own normals, rotations held through rigid
-knots) is a different discretisation, recorded and not judged.
+knots) and its linear beam (`B31`, a brick over the rectangle) are
+different discretisations, recorded and not judged; its `U1` beam, in its
+Euler-Bernoulli limit, agrees with the Euler-Bernoulli frame to 9.1e-8, at
+the seven digits it prints.
 Validation against independent theory covers exactly these references:
 Euler-Bernoulli and Timoshenko cantilever deflection, Euler-Bernoulli
 bending frequencies, fixed-free rod axial frequencies, the Euler-Engesser

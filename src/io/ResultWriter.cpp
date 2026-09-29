@@ -1828,7 +1828,11 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
   }
   out.set("load_cases", cases);
 
-  if (modal != nullptr) out.set("modal", modal_json(*modal));
+  if (modal != nullptr) {
+    json::Value block = modal_json(*modal);
+    block.set("mass_type", json::Value::make_string(to_string(config.modal.options.mass_type)));
+    out.set("modal", block);
+  }
   out.set("timings_s", timings_json(timings));
   return out;
 }

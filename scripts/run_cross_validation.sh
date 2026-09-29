@@ -31,7 +31,9 @@
 # block with friction, a rigid sphere indenting a Hex8 block with friction,
 # a cylinder cap on a Q4 block) - and the shell decks (a simply supported
 # plate, the Scordelis-Lo roof, the pinched hemisphere, a box beam read from
-# an S4R file) - with sparlab_solve (exporting CalculiX decks), then
+# an S4R file) - and the beam decks (a space frame of rectangles, a tied tube
+# arch with an Euler-Bernoulli tie, an Euler-Bernoulli tube Z-frame) - with
+# sparlab_solve (exporting CalculiX decks), then
 # compares the nodal displacements node by node, the conducted
 # temperatures, the buckling load factors mode by mode, the final non-linear
 # states and the transient histories and harmonic responses, with CalculiX
@@ -40,9 +42,11 @@
 # load vector, with the loads integrated by scikit-fem, an independent total
 # Lagrangian solve, an independent J2 solve, small strain or finite, an
 # independent HHT-alpha integration, a direct complex harmonic solve and an
-# independent contact solve, an independent MITC4 in NumPy), and for the
-# solid contact decks CalculiX's linear dual mortar contact (LINMORTAR); the
-# shells' CalculiX S4 results are recorded for information.
+# independent contact solve, an independent MITC4 and an independent
+# Timoshenko frame in NumPy), and for the solid contact decks CalculiX's
+# linear dual mortar contact (LINMORTAR), and for the Euler-Bernoulli frame
+# CalculiX's U1 beam; the shells' CalculiX S4 results and the beams' B31
+# results are recorded for information.
 # Exits non-zero if any comparison exceeds its documented tolerance.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -73,13 +77,15 @@ contact_cap_q4_nonlinear"
 # The shell decks.
 SHELL_CASES="shell_plate_analysis shell_scordelis_lo_analysis shell_hemisphere_analysis \
 shell_box_beam_analysis"
+# The beam decks.
+BEAM_CASES="beam_space_frame_analysis beam_tube_arch_analysis beam_bernoulli_frame_analysis"
 
 banner "cross-validation: solving the reference decks"
 for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
             block_tet_analysis lug_bracket_nu0_analysis engine_mount_tet10_analysis \
             column_hex_buckling_analysis column_tet4_buckling_analysis \
             column_tet10_buckling_analysis $LOAD_CASES $NONLINEAR_CASES $PLASTIC_CASES \
-            $DYNAMIC_CASES $CONTACT_CASES $SHELL_CASES; do
+            $DYNAMIC_CASES $CONTACT_CASES $SHELL_CASES $BEAM_CASES; do
   "$BIN_DIR/sparlab_solve" --config "$SPARLAB_ROOT/configs/verification/$case.json" \
                            --output "$RESULTS/$case" --export-calculix
 done
@@ -97,7 +103,7 @@ for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
             engine_mount_3d_analysis engine_mount_tet10_analysis \
             column_hex_buckling_analysis column_tet4_buckling_analysis \
             column_tet10_buckling_analysis $LOAD_CASES $NONLINEAR_CASES $PLASTIC_CASES \
-            $DYNAMIC_CASES $CONTACT_CASES $SHELL_CASES; do
+            $DYNAMIC_CASES $CONTACT_CASES $SHELL_CASES $BEAM_CASES; do
   CASES+=(--case "$RESULTS/$case")
 done
 "$PYTHON" python/scripts/cross_validate.py "${CASES[@]}" --output "$RESULTS/cross_validation"

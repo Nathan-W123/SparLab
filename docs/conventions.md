@@ -139,6 +139,22 @@ longitude turns about `+z` from `+x`, and its polar angle is measured from
 `+z`. A shell read from a file keeps its cells' node order, and so their
 normals: shell cells are never reoriented.
 
+### Beam meshes
+
+A beam mesh is a frame of two-node elements in 3-D. A `frame` mesh numbers
+its points' nodes first, in the order the deck lists them, then each
+member's interior nodes from its `from` end, member by member; each element
+runs from its node nearer `from` to the next, so its `x'` axis points along
+the member from `from` to `to`. A beam read from a file keeps its elements'
+node order, which sets their `x'` axes: beams are never reoriented. The
+local axes of an element are `x'` from its first node to its second; `y'`
+the component normal to `x'` of the section's orientation vector, or by
+default `y' = z' x x'` with `z'` the projection of global Z onto the plane
+normal to `x'` (of global X for an element within 0.1 degree of vertical);
+and `z' = x' x y'`. A horizontal element's `z'` is up: along x, `y'` is `+y`;
+along y, `y'` is `-x`; a vertical element has `z' = +x` and `y' = -y` (going
+up).
+
 ### Meshes read from a file
 
 Nodes keep the order of the file, renumbered consecutively from 0 after the
@@ -171,7 +187,8 @@ The rotations are small (the shell is linear). In a deck they are `rx`,
 `ry` and `rz`; in the result files the columns `rx[rad]`, `ry[rad]`,
 `rz[rad]` follow the translations. The component of a node's rotation along
 its director moves no material: it has no mass, and only the drilling
-penalty gives it stiffness.
+penalty gives it stiffness. A beam node has the same six DOFs, all of them
+with stiffness and inertia (the section's rotary inertia).
 
 ## Signs
 
@@ -252,6 +269,19 @@ penalty gives it stiffness.
   stretches the top face along `e1`; `Q13`, `Q23` [N/m] the transverse
   shear forces. The face stresses are `N / t +- 6 M / t^2` on the top
   (`zeta = +1`) and bottom faces.
+* Beams: a line load `[q_x, q_y, q_z]` [N/m] is a force per unit length of
+  the elements in global components; a nodal moment acts on the rotations,
+  positive by the right-hand rule. The end resultants are given in each
+  element's local axes: `N` [N] the axial force, tension positive; `Q_y`,
+  `Q_z` [N] the shear forces along `y'` and `z'`; `T` [N m] the torque
+  about `x'`; `M_y`, `M_z` [N m] the moments about `y'` and `z'`. Each is
+  the resultant the part of the element beyond the section (towards larger
+  `x'`) exerts on the part before it, at both ends alike (`R(0) = -f_0`,
+  `R(L) = f_1` of the element's end forces `K_e u_e - f_q`), so a cantilever
+  along `+x` loaded at its free end carries `N`, `Q_y`, `Q_z` equal to the
+  end load's components all along it. `M_y > 0` stretches the fibres at
+  `z' > 0` and `M_z > 0` compresses those at `y' > 0` (the normal stress is
+  `N / A + M_y z' / I_y - M_z y' / I_z`).
 * A build direction `+y` means the part grows along `+y` from a plate at the
   low-`y` end of the domain; `-y` from a plate at the high end. Layer 0 is
   the layer on the plate.

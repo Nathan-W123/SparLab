@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 296 cases, 21 038 assertions (GCC)
+make test              # the Catch2 suite: 309 cases, 21 249 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -57,7 +57,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Thick tube to plastic collapse vs the exact limit load (Q4, Hex8, Tet10; mean dilatation and locking) | verification | largest collapse-pressure error of the default elements, finest mesh (order `>= 1.8` and the fully plastic stress field also required) | `4.82e-04` | `1e-3` | PASS |
 | Pure bending: moment-curvature and residual stress vs exact (plane-stress Q4) | verification | largest moment error over `M_p` on the loading branch, finest mesh (order, residual moment and residual stress also required) | `6.17e-04` | `1e-3` | PASS |
 | Uniaxial cycle with combined hardening vs exact (distorted Hex8) | verification | largest stress error over `sigma_y` along the cycle | `1.98e-14` | `1e-9` | PASS |
-| HHT-alpha transient vs the exact discrete modal solution (Q4, Hex8; consistent and lumped mass) | verification | largest relative displacement difference over the steps, models, masses and cases (trapezoidal energy balance `<= 1e-10` and positive numerical dissipation also required) | `3.28e-10` | `1e-9` | PASS |
+| HHT-alpha transient vs the exact discrete modal solution (Q4, Hex8, a Timoshenko L-frame; consistent and lumped mass) | verification | largest relative displacement difference over the steps, models, masses and cases (trapezoidal energy balance `<= 1e-10` and positive numerical dissipation also required) | `3.28e-10` | `1e-9` | PASS |
 | Harmonic response of a rod vs the exact discrete and continuum solutions (Q4, Hex8) | verification | largest relative difference to the exact discrete solution (continuum order `>= 1.9` on the finest pair also required) | `2.94e-10` | `1e-9` | PASS |
 | Transient of a rod under a ramped end force vs the exact continuum solution (Q4, Hex8) | verification | smallest observed convergence order, `h` and `dt` halved together | `2.004` | `>= 1.9` | PASS |
 | Non-linear oscillators, finite-strain elastic and elastoplastic, vs exact motion (Q4, Hex8) | verification | largest relative difference to the scalar HHT-alpha recursion (order `>= 1.8` to the exact motion also required) | `1.74e-11` | `1e-9` | PASS |
@@ -74,6 +74,11 @@ All numbers in this document come from `results/verification/summary.json`,
 | Pinched cylinder with end diaphragms: displacement under the load | validation | `|value / reference - 1|` at 64 x 64 | `6.45e-03` | `1e-2` | PASS |
 | Pinched hemisphere with an 18 degree hole: displacement under a load | validation | `|value / reference - 1|` at 64 x 64 | `5.26e-03` | `1e-2` | PASS |
 | Box-section cantilever: bending vs beam theory, torsion vs Bredt, walls meeting at folds | validation | largest gap at 8 cells per wall (a change `<= 1e-2` for drilling factors `1e-5 ... 1e-2` also required) | `2.71e-03` | `2e-2` | PASS |
+| Timoshenko beam exactness: an inclined cantilever under end forces, end moments and a uniform load along all three axes, and an L-frame in bending and torsion, on 1 to 16 elements per member | verification | largest relative error of the nodal displacements and rotations and of the end resultants | `2.22e-12` | `1e-10` | PASS |
+| Beam: the twelve lowest frequencies of a simply supported beam (bending in both planes, torsion, stretching) vs the exact Timoshenko ones (rotary inertia), consistent and lumped mass | verification | largest error at 128 elements, consistent mass (lumped `<= 2e-4`, order `>= 1.9` for both and every error below half the smallest gap between exact frequencies also required) | `1.57e-04` | `2e-4` | PASS |
+| Beam: harmonic response to a uniform load in both planes vs the exact series, 0 to 1000 Hz, undamped and `eta = 0.05`, consistent and lumped mass | verification | largest relative error of the complex midspan amplitude at 128 elements (order `>= 1.9` and the series against the closed form `<= 1e-9` also required) | `7.16e-04` | `1e-3` | PASS |
+| Beam buckling: pinned and cantilever columns vs the exact loads of the model, and torsional buckling at `G J A / I_p` | verification | largest critical-load error at 32 elements (order `>= 1.9` and the torsional load `<= 1e-10` on every mesh also required) | `2.48e-04` | `3e-4` | PASS |
+| Beam: a quarter-circle cantilever of straight elements vs Castigliano (bending, torsion, stretching, shear) | verification | largest tip-displacement error at 128 elements (order `>= 1.9` also required) | `6.69e-05` | `1e-4` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -103,6 +108,10 @@ Supporting measurements from the same runs:
 | Shell plate buckling at 64 x 64, in `pi^2 D / a^2` | `k = 3.9984` (uniaxial), `1.9992` (biaxial); the model's exact values `3.9971`, `1.9985` |
 | MacNeal-Harder benchmarks on 4 ... 64 cells a side, over the reference | Scordelis-Lo `0.943 -> 0.997`; pinched cylinder `0.379 -> 1.006`; pinched hemisphere `1.025 -> 0.995` |
 | Box beam on 8 cells per wall; the drilling factor | bending `0.99729`, torsion `0.99940` of the theory; `<= 1.7e-4` change over `1e-6 ... 1e-2`, the twist `0.99776` at `1e-1` |
+| Beam frequencies at 128 elements; observed orders | first bending mode `1.01e-07`, third torsion mode `1.57e-04` (consistent above, lumped below); `2.00` to `2.01` (64 -> 128) |
+| Beam harmonic response: static midspan amplitude; the series against the closed form | exact to `2.4e-11`; `1.2e-14` |
+| Beam buckling: first pinned and cantilever loads (Euler's pinned load); their errors on 32 elements | `1.0995e6` N (`1.1054e6` N) and `2.7598e5` N; `3.3e-06` and `2.1e-07`; order `3.1` (4 -> 8) falling to `2.03` to `2.16` (16 -> 32) |
+| Beam L-frame transient vs the exact discrete modal solution; its trapezoidal energy balance | `<= 1.90e-11` (consistent and lumped mass, five cases); `<= 3.86e-12` |
 
 And from the cross-validation against two independent codes (section 14):
 
@@ -674,6 +683,22 @@ node (`python/scripts/cross_validate.py`, `make cross-validation`):
   node by node (translations and rotations), mode by mode and factor by
   factor. CalculiX's `S4` is a different discretisation of the shell, and
   its rows are informational (section 27).
+* **An independent Timoshenko frame in NumPy**
+  (`python/scripts/beam_xval.py`) solves the beam decks: the local axes, the
+  interdependent interpolation and from it the stiffness, the consistent
+  mass and the geometric stiffness integrated anew (its stiffness and mass
+  meet Przemieniecki's closed forms to `5.3e-16`), the lumped mass, the line
+  loads and the end resultants, compared node by node (translations and
+  rotations), element by element (the end resultants), mode by mode, factor
+  by factor and frequency by frequency (the harmonic monitors). CalculiX's
+  `B31` expands each beam into bricks over its rectangle, a 3-D model of the
+  member, and its rows are informational; its `U1` beam element, the
+  Timoshenko beam for statics, stiffens instead of softening with shear
+  deformation in version 2.21 (the deflection of a one-element cantilever
+  falls from `4.762e-4` m at a shear coefficient of `1e6` to `4.089e-4` m at
+  `0.1`, where Timoshenko's is `5.07e-4` m), so it is compared in its
+  Euler-Bernoulli limit (a coefficient of `1e12`) on the deck without shear
+  deformation (section 28).
 
 **Buckling load factors.** Where the run computed them (the three column
 decks, `sparlab_solve` with a `buckling` section), the lowest four load
@@ -712,11 +737,11 @@ non-linear states, transient and harmonic responses) and `1e-5` for CalculiX
 displacements, linear, non-linear and transient, `1e-4` for its load
 factors, all recorded in the summary with the `.frd` floor. The comparison
 exits non-zero if any judged pair exceeds its tolerance, or if a non-linear
-run stopped short of its load. Of the 230 comparisons on 48 decks and 75
-load cases, 215 pass and 15 are informational. CI runs the scikit-fem half -
-displacements, load factors, the dead-load non-linear states, the
-elastoplastic states and the transient and harmonic responses - on every
-push.
+run stopped short of its load. Of the 251 comparisons on 51 decks and 80
+load cases, 232 pass and 19 are informational. CI runs the half that needs no
+CalculiX - scikit-fem's displacements, load factors, dead-load non-linear
+states, elastoplastic states, transient and harmonic responses and contact
+states, and the NumPy shell and frame - on every push.
 
 ## 15. The linear simplices (Tri3, Tet4)
 
@@ -837,7 +862,7 @@ iteration; the growth limit is judged over the multi-level meshes only
 `docs/benchmarks.md`: for one solve at these sizes Jacobi CG is about as fast
 as multigrid, because its cheap iterations cost about what the multigrid
 setup does; the direct solver is about 50 times slower at 47 775 Hex8 DOFs
-(36.2 s against 0.745 s in the run behind `docs/results`; wall-clock times
+(35.9 s against 0.758 s in the run behind `docs/results`; wall-clock times
 vary from run to run on a shared machine, the iteration counts do not).
 
 ## 18. The Heaviside projection
@@ -2022,7 +2047,7 @@ computed in `apps/verify_shell.cpp` from their series or their 3 x 3 modal
 problems; the curved-shell benchmarks of MacNeal and Harder (1985) and the
 box beam are validations against thin-shell and beam theory.
 
-**Unit tests** (`tests/test_shell.cpp`, 12 cases, 500 assertions):
+**Unit tests** (`tests/test_shell.cpp`, 13 cases, 523 assertions):
 
 * *the element*: the stiffness is symmetric and leaves exactly the six
   rigid-body motions free on a flat cell, a warped cell and a warped cell
@@ -2032,7 +2057,13 @@ box beam are validations against thin-shell and beam theory.
   each direction and `rho t^3 A / 12` in each rotation about an in-plane
   axis (`1e-13`), and on a warped cell `rho` times the volume its directors
   sweep, measured independently by central differences of the position on a
-  6 x 6 x 6 Gauss grid (`1e-8`). A uniform pressure on a warped cell sums to
+  6 x 6 x 6 Gauss grid (`1e-8`). The lumped mass puts the HRZ-scaled
+  diagonal on each node's translations (`rho t A` in all, `1e-13`) and the
+  same share of the element's rotary-inertia tensor on its rotations: in the
+  x-y plane exactly what scaling each rotational component's diagonal gave
+  (`1e-12`); turned out of every coordinate plane, each node's 3 x 3 block
+  turns with the cell and holds no inertia about the normal (`1e-12` of the
+  in-plane one). A uniform pressure on a warped cell sums to
   `-p` times its vector area (`1e-12`), an edge traction to itself times the
   edge's length and thickness. The geometric stiffness gives
   `sigma t A / a^2` on a uniform slope (`1e-12`), and its derivative in `u`
@@ -2135,8 +2166,9 @@ against the exact Reissner-Mindlin ones with the rotary inertia
 193.346 and 241.594 Hz (twice) - on consistent and on lumped mass. The
 consistent mass converges from above, its errors at 64 x 64 `2.69e-04`
 (mode (1, 1)), `9.72e-04`, `1.07e-03` and `2.41e-03` (modes (1, 3) and
-(3, 1); tolerance `3e-3`). The lumped mass (each element's diagonal scaled
-to its total per DOF component, rotary inertia included) lowers them: mode
+(3, 1); tolerance `3e-3`). The lumped mass (the translations' diagonal
+scaled to each element's mass, and the same share of its rotary-inertia
+tensor on each node's rotations) lowers them: mode
 (1, 1) converges from below (`1.33e-04`), and in the modes (1, 2) and
 (2, 1) its error and the stiffness's nearly cancel on the coarse meshes
 (`4.3e-04` on both 8 x 8 and 16 x 16), leaving `3.3e-05` at 64 x 64; its
@@ -2330,6 +2362,214 @@ What the cross-validation found, and how it was resolved:
   from run to run in the thirteenth digit, ARPACK drawing a new random start
   vector each time; a fixed seeded one makes them repeat bit for bit.
 
+## 28. Beams
+
+The two-node Timoshenko beam (`docs/formulation.md`, section 7h) in linear
+statics, modal analysis, the harmonic response, the transient and linear
+buckling. Its exact references are solutions of the beam model it
+discretises - the Timoshenko beam with Cowper's shear coefficient, the
+rotary inertia `rho I`, Saint-Venant torsion and the geometric stiffness
+`N [v'^2 + (I/A) theta'^2]` of the axial force - computed in
+`apps/verify_beam.cpp` from closed forms, Castigliano's theorem, and the
+2 x 2 problems of the simply supported modes `v = V sin(kx)`,
+`theta = Theta cos(kx)` (or `V (1 - cos(kx))`, `Theta sin(kx)` for a
+cantilever column, the same problem with `k = (2j - 1) pi / 2L`). Unless
+stated otherwise: steel (`E = 210 GPa`, `nu = 0.3`, `rho = 7850 kg/m^3`), a
+rectangle 40 mm wide along `y'` by 100 mm deep along `z'` (Cowper's
+`k = 0.8497`), members 1 m long.
+
+**Unit tests** (`tests/test_beam.cpp`, 12 cases, 188 assertions):
+
+* *the element*: the stiffness equals Przemieniecki's closed form of the
+  Timoshenko beam at `L = 0.05`, `0.4` and `3 m` (`1e-12`) and leaves
+  exactly the six rigid-body motions free on an inclined, oriented element;
+  without shear deformation it is the Euler-Bernoulli element. The
+  consistent mass holds `rho A L` in each direction, `rho I_p L` in the
+  twist, and `rho (A L^3 / 3 + I L)` in a rotation about either transverse
+  axis through a node (`1e-13`), positive definite; the lumped mass puts
+  `rho A L / 2` on each node's translations and `rho L / 2 diag(I_p, I_y,
+  I_z)` in the element's axes on its rotations, a 3 x 3 block that is not
+  diagonal in global axes for an inclined element (`1e-14`). The geometric
+  stiffness gives `N L`, `N I_p / (A L)` and `N / L` on a uniform stretch, a
+  uniform twist and a uniform slope, and its derivative reproduces it. A
+  uniform line load gives `q L / 2` and `q L^2 / 12` at the ends whatever
+  `Phi`;
+* *axes*: along x, `y' = y` and `z' = z`; along y, `y' = -x`; vertical,
+  `z' = x` and `y' = -y`; an inclined element's `z'` points up; an
+  orientation vector fixes `y'`; a zero length and an orientation along the
+  axis are refused;
+* *sections*: a square's torsion constant `0.140577 a^4`, a thin strip's
+  `b t^3 / 3`, Cowper's coefficients, a tube; non-positive dimensions, an
+  inner radius not below the outer, a coefficient outside `(0, 1]` and a
+  general section without coefficients refused with the key;
+* *one element* of an inclined cantilever under an end force and torque is
+  exact: `P L^3 / (3 E I_z) + P L / (k G A)`, `T L / (G J)`,
+  `P L^2 / (2 E I_z)`, and its end forces balance the load;
+* *decks*: a frame deck solves a cantilever's tip load, torque and uniform
+  load exactly (`1e-11`), recovers the clamp's resultants and
+  extreme-fibre stress, writes `beam_<case>.csv`, VTK lines and the
+  `mesh.json` beam block; refused with the reason: the non-linear analysis,
+  topology, a thickness, a key that does not belong to the shape, a
+  negative width, an unknown point, tractions, a missing or partial set of
+  sections, a section selecting nothing, line loads on a solid and the stress
+  state `beam` on a solid mesh;
+* *files*: B31 and B31H elements read as beams with their sets; a Gmsh
+  frame of 2-node lines read with `mesh.beam`, its physical curve an
+  element set and its physical point a node set; trusses, three-node beams,
+  a mix of beams and trusses and a triangle file read as a frame refused;
+* *the CalculiX export*: `B31` with a `RECT` section per `y'` axis (the side
+  along `y'` first), moments on DOFs 4 to 6, the results at the beam's own
+  nodes (`OUTPUT=2D`); a tube and a section without shear deformation are
+  refused with the reason.
+
+**Exactness** (`beam-exact`). An inclined cantilever 1.3 m long - its axis
+along `(2, 1, 1.5)`, its `y'` set by an orientation vector - under an end
+force `(N, P_y, P_z)`, an end moment `(T, M_y, M_z)`, a uniform load along
+all three local axes and both together, on 1, 2, 4, 8 and 16 elements,
+against the closed-form Timoshenko field at every node (bending with shear
+in both planes, torsion, stretching) and the statics at both ends of every
+element; and an L-frame (arms 1.2 m along x and 0.8 m along y) under a
+downward tip load that bends both arms and twists the first, against
+Castigliano's tip displacement and rotations and the clamp's resultants.
+Every displacement, rotation and end resultant is exact on every mesh, one
+element per member included - the interpolation holds the beam's Green's
+functions:
+
+| Model and loads | Largest relative error, 1 to 16 elements |
+|-----------------|----------------------------------------:|
+| Inclined cantilever, end forces and moments | `1.18e-12` |
+| Inclined cantilever, uniform load | `1.52e-12` |
+| Inclined cantilever, both | `1.03e-12` |
+| L-frame, tip load | `2.22e-12` |
+
+**Natural frequencies** (`beam-modes`). The beam simply supported
+(`v = w = 0` at both ends; `u` and the twist held at `x = 0`), its twelve
+lowest frequencies - bending in the `x'-y'` plane (`I_z`) with 1 to 5
+half-waves, in the `x'-z'` plane (`I_y`) with 1 to 3, three fixed-free
+torsion modes and the first axial one, from 93.564 Hz to 2575.951 Hz, the
+closest two 6.96 % apart - against the exact frequencies, on 16, 32, 64 and
+128 elements with consistent and lumped mass. Both converge at order 2.00 to
+2.01 between 64 and 128 elements, the consistent mass from above and the
+lumped one from below by nearly the same amount: the torsion and the
+stretch are interpolated linearly, and with elements shorter than the
+section is deep (`Phi = 12 E I / (k G A L^2)` from 1.3 to 500 on these
+meshes) the interpolated rotation is nearly linear too. At 128 elements the
+largest error is `1.57e-04` for both masses (the third torsion mode;
+tolerance `2e-4`); the first bending mode's is `1.01e-07`.
+
+**Harmonic response** (`beam-harmonic`). The simply supported beam under
+a uniform load of `(0, 1, 2) kN/m` in both planes, `cos(omega t)`, at 0, 60,
+400 and 1000 Hz - static, below the lowest resonance the load excites (the
+first `x'-y'` bending mode at 93.6 Hz), between the first `x'-z'` mode
+(230.7 Hz) and the third `x'-y'` one (824.9 Hz), and between that one and
+the third `x'-z'` (1860 Hz) - undamped and with the loss factor 0.05, on
+consistent and lumped mass, against the exact midspan amplitude: the series
+over the odd modes (`n <= 40001`) of each plane's 2 x 2 problem, which
+meets the closed-form static deflection `5 q L^4 / (384 E I) +
+q L^2 / (8 k G A)` to `1.2e-14`. At 0 Hz the nodal values are exact
+(`2.4e-11`); at the other frequencies the error falls at order 2.00 to 2.01
+to `7.16e-04` at 128 elements (tolerance `1e-3`) - at 1000 Hz along `y'`,
+where the modes nearly cancel at midspan and the amplitude is 1/1700 of the
+static one; everywhere else `<= 2.33e-06`.
+
+**Buckling** (`beam-buckling`). The column compressed by an end force,
+pinned (`v = w = 0` at both ends) and as a cantilever, on 4, 8, 16 and 32
+elements, the four lowest loads against the exact loads of the model
+(Euler's less the shear deformation and the rotations' geometric term):
+`1.0995e6` N for the first pinned mode (Euler's `1.1054e6` N) and
+`2.7598e5` N for the first cantilever mode. The error at 32 elements is at
+most `2.48e-04` (the third pinned `x'-y'` mode; tolerance `3e-4`), the first
+modes' `3.3e-06` and `2.1e-07`; the order falls from up to 3.1 between 4 and
+8 elements to 2.03 to 2.16 between 16 and 32 as the elements grow shorter
+than the depth. The same pinned column with a torsion constant of `1e-9 m^4`
+buckles in twist first, at `G J A / I_p = 83 554.38` N - the load of every
+twist, since the twist's geometric term is proportional to its stiffness -
+within `4.7e-15` on every mesh.
+
+**A curved cantilever** (`beam-curved`). A quarter circle of radius 1 m in
+the x-y plane, clamped at `(1, 0, 0)`, of 4 to 128 straight elements with
+their nodes on the circle, under a tip load of 1 kN out of the plane (it
+bends about the radius and twists) and one in the plane along `-x` (it
+bends, stretches and shears), against Castigliano's curved beam:
+`P R^3 pi / (4 E I_y) + P R^3 (3 pi / 4 - 2) / (G J) + P R pi / (2 k G A)`
+out of the plane; `P R^3 (3 pi / 4 - 2) / (E I_z) + P R pi / (4 E A) +
+P R pi / (4 k G A)` along the in-plane load and
+`-P R^3 / (2 E I_z) + P R / (2 E A) - P R / (2 k G A)` across it. The
+polygon of chords converges to the arc at order 2.00; at 128 elements the
+largest error is `6.69e-05` (out of the plane; tolerance `1e-4`).
+
+**Transient** (`transient-modal`, section 25). An L-frame of beams - 0.6 m
+along x, 0.4 m along y, 10 elements each, a 0.1 x 0.05 m rectangle -
+clamped under a tip load `(20, -100, -50)` N, integrated by HHT-alpha with
+consistent and lumped mass (the nodal inertia tensors), undamped and with
+Rayleigh damping, sudden, harmonic and released loads: every run equals the
+exact solution of its discrete equations by modal superposition to
+`1.9e-11` or better, and the trapezoidal rule's energy balance closes to
+`3.9e-12`.
+
+**The decks and the cross-validation** (section 14's codes, three decks,
+`configs/verification/beam_*.json`). scikit-fem has no beam element, so the
+independent solution is a Timoshenko frame written in NumPy
+(`python/scripts/beam_xval.py`) from the beam's equations - its own local
+axes, Reddy's interdependent interpolation and from it, by 6-point Gauss
+integration, the stiffness, the consistent mass and the geometric stiffness
+(the stiffness and mass meet Przemieniecki's closed forms to `5.3e-16`),
+the lumped mass by its definition and each element's distributed load -
+with the sections SparLab used (`mesh.json`). It solves the same discrete
+problem, so everything must agree to round-off:
+
+| Deck | Elements | Comparison | Max relative difference | `kappa_1 eps` | Tolerance |
+|------|---------:|------------|------------------------:|--------------:|----------:|
+| A one-storey space frame of rectangles: four columns turned by an orientation vector, four edge beams, a brace | 70 | the frame's weight and 5 kN/m on the edge beams: displacements and rotations / end resultants | `2.86e-13` / `3.46e-14` | `2.0e-10` | `1e-9` |
+| | | a lateral force at one head and a torque at another | `2.27e-13` / `1.13e-13` | `2.0e-10` | `1e-9` |
+| | | eight frequencies (consistent mass) / three buckling factors of the weight case | `4.47e-12` / `3.42e-13` | - | `1e-9` |
+| A tied semicircular tube arch, its tie a general section without shear deformation | 32 | a crown load / snow on the arch: displacements and rotations | `4.77e-13` / `6.46e-13` | `5.1e-09` | `1e-9` |
+| | | the end resultants of the two | `1.18e-13` / `1.71e-13` | - | `1e-9` |
+| | | six frequencies (lumped mass) / three buckling factors of the snow / three harmonic monitors at 40 frequencies | `2.48e-11` / `1.23e-12` / `1.39e-12` | - | `1e-9` |
+| A Z-frame of Euler-Bernoulli tubes in space, one member turned | 18 | an end force and moment: displacements and rotations / end resultants | `1.13e-11` / `4.97e-11` | `1.2e-09` | `1e-9` |
+| | | six frequencies (consistent mass) | `1.27e-10` | - | `1e-9` |
+| | | CalculiX `U1` at a shear coefficient of `1e12`: translations / rotations | `9.14e-08` / `8.90e-08` | - | `2e-6` |
+
+The fields are judged as the shells' are (section 27): translations within
+the tolerance, rotations within the larger of the tolerance and
+`10 kappa_1 eps`, and SparLab's solution must satisfy the NumPy system to a
+backward error of `1e-13` (at most `2.7e-14` here). The end resultants are
+relative to the largest end force or moment of the case. `U1` is printed to
+seven significant digits, and its tolerance is a few units in the last of
+them.
+
+CalculiX's `B31` on the space frame, for information: `6.14e-02` (the weight
+case) and `5.37e-02` (lateral) of the largest displacement; its eight
+frequencies lie 1.6 % to 4.3 % above SparLab's, and its buckling factors
+differ by up to `0.146` - the first 10 % above SparLab's, the second and
+third 13 % and 12 % below. CalculiX expands each `B31` element into one
+incompatible-mode brick (`C3D8I`) over the rectangle - a solid model of
+the member with one element across the section, with no shear coefficient
+and a torsion of its own - so its rows are recorded, not judged.
+
+What comparing with CalculiX required:
+
+* **CalculiX's Timoshenko beam.** Its `U1` element (static analysis only;
+  area, two moments of inertia and one shear coefficient, the torsion
+  constant taken as `I_y + I_z`) stiffens as the shear coefficient falls
+  (section 14), the opposite of shear deformation. It is compared in its
+  Euler-Bernoulli limit on a frame of tubes without shear deformation,
+  whose torsion constant is `I_y + I_z`, and agrees there to the digits it
+  prints.
+* **The sections CalculiX can take.** Its linear beam expands over a
+  rectangle only - a circle needs its quadratic `B32` - so the export writes
+  rectangles and refuses a tube, a general section or a section without
+  shear deformation with the reason. Such a refusal first failed the whole
+  `sparlab_solve --export-calculix` run; the run now warns and writes no
+  deck.
+* **The axes of a rectangle.** CalculiX's `RECT` card gives the thickness
+  along the section's 1-direction first, then that direction, which is `-z`
+  when omitted: the export writes the width along `y'` and `y'` itself on
+  every card (a unit test checks the card).
+* **Results at the beam's nodes.** As for the shells, without `OUTPUT=2D`
+  its result file holds the expanded bricks' nodes; the export asks for the
+  beam's own.
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
@@ -2342,11 +2582,16 @@ Stated plainly, since the absence matters as much as the presence:
   states of four, eight comparisons in all, the final elastoplastic states
   of ten, fifteen comparisons, the transient histories of five, nine
   comparisons (two of the decks non-linear), the harmonic responses of
-  two, the final contact states of six, nine comparisons, and the shell
-  decks, four: their displacements and rotations in six load cases, their
+  two, the final contact states of six, nine comparisons, the shell decks,
+  four: their displacements and rotations in six load cases, their
   frequencies and buckling load factors in three each, against an
   independent MITC4 (fourteen comparisons) and, for information, CalculiX's
-  `S4` (nine). Stresses, the continuum elements' natural frequencies, the
+  `S4` (nine), and the beam decks, three: their displacements, rotations and
+  end resultants in five load cases, their frequencies in three, buckling
+  load factors in two and a harmonic response in one, against an
+  independent Timoshenko frame (sixteen comparisons), CalculiX's `U1` on the
+  Euler-Bernoulli frame (one) and, for information, its `B31` (four).
+  Stresses, the continuum elements' natural frequencies, the
   non-linear static load paths (only the final states are compared) and the
   optimised designs are not compared with another code, and CalculiX's
   `*BUCKLE` factors for `C3D8` and `C3D10` differ from SparLab's by up to
@@ -2422,6 +2667,17 @@ Stated plainly, since the absence matters as much as the presence:
   in NumPy - an independent implementation of the same equations, which
   verifies the implementation, not the formulation - since CalculiX's `S4`
   is a different discretisation;
+* beams are verified against exact solutions of the Timoshenko beam model -
+  straight members in statics, frequencies, harmonic response and buckling,
+  a curved member of chords in statics - not against a 3-D solid model of a
+  member, so what the model leaves out (warping torsion, the bending
+  stresses' part of the geometric stiffness and with it lateral-torsional
+  buckling, the flexibility of a joint) is not measured by the suite;
+  CalculiX's `B31`, one brick across the section, differs from it by 4 to
+  15 % on the space frame and is not judged. The stresses are checked only
+  as the end resultants and the extreme-fibre stress of the unit tests, and
+  the cross-validation's independent code for beams is a frame written for
+  it in NumPy, which verifies the implementation, not the formulation;
 * the overhang filter and check are verified for the 3- and 5-element
   stencils of structured square and cubic grids; the robust formulation for
   uniform erosion and dilation only. Neither is a process simulation;

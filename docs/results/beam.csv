@@ -1,0 +1,73 @@
+study,case,finest_mesh,error_or_value,observed_order,note
+beam-exact,"inclined cantilever, end forces and moments",1 to 16 elements,1.18e-12,,"displacements, rotations and end resultants"
+beam-exact,"inclined cantilever, uniform load",1 to 16 elements,1.52e-12,,"displacements, rotations and end resultants"
+beam-exact,"inclined cantilever, both",1 to 16 elements,1.03e-12,,"displacements, rotations and end resultants"
+beam-exact,"L-frame, tip load",1 to 16 elements,2.22e-12,,"displacements, rotations and end resultants"
+beam-modes,"consistent mass, mode 1 (bending y' 1), 93.564 Hz",128 elements,1.007e-07,2.011,
+beam-modes,"consistent mass, mode 2 (bending z' 1), 230.735 Hz",128 elements,6.084e-07,2.002,
+beam-modes,"consistent mass, mode 3 (bending y' 2), 371.322 Hz",128 elements,1.582e-06,2.01,
+beam-modes,"consistent mass, mode 4 (torsion 1), 515.193 Hz",128 elements,6.275e-06,2.0,
+beam-modes,"consistent mass, mode 5 (bending y' 3), 824.891 Hz",128 elements,7.775e-06,2.01,
+beam-modes,"consistent mass, mode 6 (bending z' 2), 882.279 Hz",128 elements,8.782e-06,2.002,
+beam-modes,"consistent mass, mode 7 (axial 1), 1293.057 Hz",128 elements,6.275e-06,2.0,
+beam-modes,"consistent mass, mode 8 (bending y' 4), 1441.561 Hz",128 elements,2.362e-05,2.01,
+beam-modes,"consistent mass, mode 9 (torsion 2), 1545.658 Hz",128 elements,5.648e-05,2.0,
+beam-modes,"consistent mass, mode 10 (bending z' 3), 1860.324 Hz",128 elements,3.847e-05,2.001,
+beam-modes,"consistent mass, mode 11 (bending y' 5), 2205.799 Hz",128 elements,5.499e-05,2.01,
+beam-modes,"consistent mass, mode 12 (torsion 3), 2576.355 Hz",128 elements,0.0001569,2.0,
+beam-modes,"lumped mass, mode 1 (bending y' 1), 93.564 Hz",128 elements,1.007e-07,2.011,
+beam-modes,"lumped mass, mode 2 (bending z' 1), 230.735 Hz",128 elements,6.085e-07,2.002,
+beam-modes,"lumped mass, mode 3 (bending y' 2), 371.321 Hz",128 elements,1.582e-06,2.011,
+beam-modes,"lumped mass, mode 4 (torsion 1), 515.187 Hz",128 elements,6.275e-06,2.0,
+beam-modes,"lumped mass, mode 5 (bending y' 3), 824.878 Hz",128 elements,7.777e-06,2.011,
+beam-modes,"lumped mass, mode 6 (bending z' 2), 882.263 Hz",128 elements,8.783e-06,2.002,
+beam-modes,"lumped mass, mode 7 (axial 1), 1293.040 Hz",128 elements,6.275e-06,2.0,
+beam-modes,"lumped mass, mode 8 (bending y' 4), 1441.493 Hz",128 elements,2.363e-05,2.011,
+beam-modes,"lumped mass, mode 9 (torsion 2), 1545.483 Hz",128 elements,5.647e-05,2.0,
+beam-modes,"lumped mass, mode 10 (bending z' 3), 1860.180 Hz",128 elements,3.848e-05,2.002,
+beam-modes,"lumped mass, mode 11 (bending y' 5), 2205.556 Hz",128 elements,5.502e-05,2.012,
+beam-modes,"lumped mass, mode 12 (torsion 3), 2575.547 Hz",128 elements,0.0001569,2.0,
+beam-harmonic,"consistent mass, loss factor 0, 0 Hz, along y'",128 elements,3.187e-12,,exact nodal values
+beam-harmonic,"consistent mass, loss factor 0, 0 Hz, along z'",128 elements,4.398e-12,,exact nodal values
+beam-harmonic,"consistent mass, loss factor 0, 60 Hz, along y'",128 elements,1.409e-07,2.011,
+beam-harmonic,"consistent mass, loss factor 0, 60 Hz, along z'",128 elements,8.871e-08,2.002,
+beam-harmonic,"consistent mass, loss factor 0, 400 Hz, along y'",128 elements,2.121e-07,2.013,
+beam-harmonic,"consistent mass, loss factor 0, 400 Hz, along z'",128 elements,1.751e-06,2.001,
+beam-harmonic,"consistent mass, loss factor 0, 1000 Hz, along y'",128 elements,0.0007157,2.01,
+beam-harmonic,"consistent mass, loss factor 0, 1000 Hz, along z'",128 elements,2.32e-06,2.003,
+beam-harmonic,"consistent mass, loss factor 0.05, 0 Hz, along y'",128 elements,2.377e-11,,exact nodal values
+beam-harmonic,"consistent mass, loss factor 0.05, 0 Hz, along z'",128 elements,6.4e-12,,exact nodal values
+beam-harmonic,"consistent mass, loss factor 0.05, 60 Hz, along y'",128 elements,1.403e-07,2.012,
+beam-harmonic,"consistent mass, loss factor 0.05, 60 Hz, along z'",128 elements,8.858e-08,2.002,
+beam-harmonic,"consistent mass, loss factor 0.05, 400 Hz, along y'",128 elements,2.139e-07,2.013,
+beam-harmonic,"consistent mass, loss factor 0.05, 400 Hz, along z'",128 elements,1.751e-06,2.001,
+beam-harmonic,"consistent mass, loss factor 0.05, 1000 Hz, along y'",128 elements,0.0004028,2.01,
+beam-harmonic,"consistent mass, loss factor 0.05, 1000 Hz, along z'",128 elements,2.322e-06,2.003,
+beam-harmonic,"lumped mass, loss factor 0, 0 Hz, along y'",128 elements,3.187e-12,,exact nodal values
+beam-harmonic,"lumped mass, loss factor 0, 0 Hz, along z'",128 elements,4.398e-12,,exact nodal values
+beam-harmonic,"lumped mass, loss factor 0, 60 Hz, along y'",128 elements,1.409e-07,2.011,
+beam-harmonic,"lumped mass, loss factor 0, 60 Hz, along z'",128 elements,8.871e-08,2.002,
+beam-harmonic,"lumped mass, loss factor 0, 400 Hz, along y'",128 elements,2.119e-07,2.01,
+beam-harmonic,"lumped mass, loss factor 0, 400 Hz, along z'",128 elements,1.751e-06,2.002,
+beam-harmonic,"lumped mass, loss factor 0, 1000 Hz, along y'",128 elements,0.0007159,2.011,
+beam-harmonic,"lumped mass, loss factor 0, 1000 Hz, along z'",128 elements,2.32e-06,2.001,
+beam-harmonic,"lumped mass, loss factor 0.05, 0 Hz, along y'",128 elements,2.377e-11,,exact nodal values
+beam-harmonic,"lumped mass, loss factor 0.05, 0 Hz, along z'",128 elements,6.4e-12,,exact nodal values
+beam-harmonic,"lumped mass, loss factor 0.05, 60 Hz, along y'",128 elements,1.404e-07,2.01,
+beam-harmonic,"lumped mass, loss factor 0.05, 60 Hz, along z'",128 elements,8.858e-08,2.002,
+beam-harmonic,"lumped mass, loss factor 0.05, 400 Hz, along y'",128 elements,2.137e-07,2.01,
+beam-harmonic,"lumped mass, loss factor 0.05, 400 Hz, along z'",128 elements,1.751e-06,2.002,
+beam-harmonic,"lumped mass, loss factor 0.05, 1000 Hz, along y'",128 elements,0.0004029,2.011,
+beam-harmonic,"lumped mass, loss factor 0.05, 1000 Hz, along z'",128 elements,2.321e-06,2.001,
+beam-buckling,"pinned, mode 1 (bending y' 1), 1.09953e+06 N",32 elements,3.328e-06,2.155,
+beam-buckling,"pinned, mode 2 (bending y' 2), 4.32964e+06 N",32 elements,5.16e-05,2.15,
+beam-buckling,"pinned, mode 3 (bending z' 1), 6.6869e+06 N",32 elements,1.91e-05,2.026,
+beam-buckling,"pinned, mode 4 (bending y' 3), 9.49821e+06 N",32 elements,0.0002484,2.143,
+beam-buckling,"cantilever, mode 1 (bending y' 1), 275980 N",32 elements,2.096e-07,2.157,
+beam-buckling,"cantilever, mode 2 (bending z' 1), 1.71291e+06 N",32 elements,1.251e-06,2.027,
+beam-buckling,"cantilever, mode 3 (bending y' 2), 2.4577e+06 N",32 elements,1.663e-05,2.153,
+beam-buckling,"cantilever, mode 4 (bending y' 3), 6.6876e+06 N",32 elements,0.0001231,2.147,
+beam-buckling,"torsional, G J A / I_p = 83554.4 N",4 to 32 elements,4.702e-15,,every mesh
+beam-curved,out of plane (-z): -u_z,128 chords,6.69e-05,2.0,
+beam-curved,in plane (-x): -u_x,128 chords,8.83e-06,2.0,
+beam-curved,in plane (-x): u_y,128 chords,6.268e-06,2.0,

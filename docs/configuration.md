@@ -49,11 +49,18 @@ reports its line and column.
 "mesh": { "type": "structured_shell", "shape": "cylinder", "axis": "x", "radius": 25.0,
           "length": 50.0, "origin": [-25.0, 0.0, 0.0], "angles": [50.0, 130.0],
           "n_around": 24, "n_along": 24 }
+
+"mesh": { "type": "frame",
+          "points": [ { "name": "A", "position": [0, 0, 0] }, { "name": "B", "position": [4, 0, 0] },
+                      { "name": "C", "position": [4, 0, 3] } ],
+          "members": [ { "name": "girder", "from": "A", "to": "B", "elements": 8 },
+                       { "name": "arch", "from": "B", "to": "C", "elements": 12,
+                         "arc": { "centre": [4, 0, 0], "axis": [0, 1, 0] } } ] }
 ```
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `type` | string | `structured_quad` | `structured_quad` (plane, Q4), `structured_tri` (plane, Tri3: each cell split into two triangles), `structured_hex` (solid, Hex8), `structured_tet` (solid, Tet4: each cell split into six Kuhn tetrahedra), `structured_shell` (a surface of MITC4 shells, below), or `file` (read from a mesh file) |
+| `type` | string | `structured_quad` | `structured_quad` (plane, Q4), `structured_tri` (plane, Tri3: each cell split into two triangles), `structured_hex` (solid, Hex8), `structured_tet` (solid, Tet4: each cell split into six Kuhn tetrahedra), `structured_shell` (a surface of MITC4 shells, below), `frame` (members of Timoshenko beams, below), or `file` (read from a mesh file) |
 | `nx`, `ny` | integer | required for the structured types | elements per direction, `>= 1` |
 | `nz` | integer | required for `structured_hex` / `structured_tet` | elements through the third direction |
 | `lx`, `ly` | number | required for the structured types | domain extents [m], `> 0` |
@@ -83,6 +90,19 @@ Every cell's nodes run so that its normal `g_1 x g_2` points along +z on a
 plate and away from the axis or the centre on a cylinder or a sphere - the
 side a positive pressure presses on.
 
+**Frames** (`"type": "frame"`) are made of two-node Timoshenko beam elements
+in 3-D (formulation section 7h), members joined rigidly at shared points:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `points` | array | required | `{ "name":, "position": [x, y, z] }`; each point is a node, and a node set of its name |
+| `members` | array | required | `{ "name":, "from":, "to":, "elements": n, "arc": {...} }`: a member between two points in `n` elements (`>= 1`), an element set of its name |
+| `arc` | object | none | a circular member about `centre` (`[x, y, z]`), turning counter-clockwise about `axis` (`[x, y, z]`, right-hand rule; default `[0, 0, 1]`) from `from` to `to`; both points must lie on one circle about the axis, and `from` = `to` closes a full circle (at least 3 elements). Its nodes lie on the circle at equal angles and its elements are the chords |
+
+Each element's `x'` axis runs from the member's `from` end towards its `to`
+end; a wrong point name, a straight member from a point to itself or an arc
+whose ends are off its circle is an error with the deck's key.
+
 The mesh type fixes the dimension of the whole deck: a solid mesh has three
 displacement components per node, regions may use `zmin`/`zmax` and
 `sphere`, boundary conditions may fix `"z"`, forces and tractions carry three
@@ -100,6 +120,7 @@ components, `model.thickness` must be absent (a solid has none) and
 | `merge_duplicate_nodes` | bool | `false` | merge coincident nodes instead of only reporting them |
 | `duplicate_tolerance` | number [m] | `0` | distance below which two nodes coincide, after scaling; `0` means `1e-9` times the bounding-box diagonal |
 | `shell` | bool | `false` | read the file's quadrilaterals as MITC4 shell cells in 3-D (an `.inp` file's S4, S4R and S4R5 cells are shells without it) |
+| `beam` | bool | `false` | read the file's 2-node lines as Timoshenko beams in 3-D (a Gmsh frame; an `.inp` file's B31 and B31H elements are beams without it) |
 
 Gmsh MSH 2.2 and 4.1 ASCII and Abaqus / CalculiX `.inp` files are read. The
 cells of the highest dimension in the file become the mesh: linear triangles
@@ -117,7 +138,9 @@ when it holds boundary elements. Inverted or mirrored cells are re-ordered
 and counted, nodes no cell uses are dropped, coincident nodes are reported,
 a plane mesh must lie in `z = 0` (a shell mesh anywhere in space, its cells'
 node order - their normals - kept as the file gives it; S3 and eight-node
-shells are refused), and a domain larger than 20 m or smaller
+shells are refused; a beam mesh anywhere in space, each element's node
+order its `x'` axis; B32, B33, the planar B2x beams, trusses and connectors
+are refused as cells), and a domain larger than 20 m or smaller
 than 0.1 mm draws a warning about units. Boundary conditions, loads and
 materials in an `.inp` file are not imported, and the report names every
 ignored keyword. What was read and done is recorded under `mesh.file` in
@@ -218,14 +241,15 @@ its interpolation is written for one solid material.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `thickness` | number [m] | `1.0`; required on a shell mesh | out-of-plane thickness of a plane mesh, or the thickness of a shell, `> 0`; a solid mesh rejects the key |
-| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh, `shell` on a shell mesh) | `plane_stress`, `plane_strain`, `three_dimensional` or `shell`; the plane idealisations need a plane mesh (Q4 or Tri3), `three_dimensional` a solid one (Hex8, Tet4 or Tet10) and `shell` a shell mesh |
+| `thickness` | number [m] | `1.0`; required on a shell mesh | out-of-plane thickness of a plane mesh, or the thickness of a shell, `> 0`; a solid or beam mesh rejects the key |
+| `stress_state` | string | `plane_stress` (`three_dimensional` on a solid mesh, `shell` on a shell mesh, `beam` on a beam mesh) | `plane_stress`, `plane_strain`, `three_dimensional`, `shell` or `beam`; the plane idealisations need a plane mesh (Q4 or Tri3), `three_dimensional` a solid one (Hex8, Tet4 or Tet10), `shell` a shell mesh and `beam` a beam mesh |
 | `integration.stiffness_points` | integer | `2` | Gauss points per direction for `K_e`, 1-4 (2x2 for the Q4, 2x2x2 for the Hex8); the linear simplices have a constant strain and integrate exactly with one point whatever is set here |
 | `integration.mass_points` | integer | `3` | Gauss points per direction for `M_e`, 1-4; the simplices use the exact closed-form consistent mass instead |
 | `integration.face_points` | integer | `2` | Gauss points per direction on a loaded edge or face, 1-4; `edge_points` is accepted as a synonym |
 | `shell.sections` | array | `[]` | shell meshes: `{ "name":, "region": {...}, "thickness": t }` - the elements a region selects (at their centroids, or an element set) take the thickness `t`; later sections win |
 | `shell.drilling_stiffness` | number | `1e-3` | shell meshes: the drilling penalty over `G t` (formulation 7g; `docs/verification.md` section 27 measures the answer's insensitivity to it) |
 | `shell.fold_angle` | number [deg] | `20` | shell meshes without exact normals: element normals at a node within this angle of one another are averaged into one director; beyond it the node is a fold and each element keeps its own. In `(0, 90)` |
+| `beam.sections` | array | required on a beam mesh | the cross-sections, below; a section without a `region` covers every element, and later sections win where regions overlap. Every element must end up with one |
 
 A shell mesh's integration is fixed by its element (2 x 2 x 2 points for the
 stiffness, `mass_points` x `mass_points` x 3 for the mass), and a shell model
@@ -282,6 +306,49 @@ A degenerate box such as `{"xmax": 0.0}` reliably captures the line of nodes at
 element centroid. Naming two primitives in one region object without `any_of` is
 an error, as is a region that selects nothing.
 
+**Beam sections** (`model.beam.sections`), formulation section 7h:
+
+```json
+"beam": { "sections": [
+  { "name": "girder", "shape": "rectangle", "width": 0.15, "height": 0.3 },
+  { "name": "column", "shape": "rectangle", "width": 0.3, "height": 0.2,
+    "orientation": [0, 1, 0], "region": { "group": "columns" } },
+  { "name": "pipe", "shape": "tube", "radius": 0.08, "inner_radius": 0.07,
+    "region": { "group": "arch" } },
+  { "name": "tie", "shape": "general", "area": 5e-4, "iy": 2e-8, "iz": 2e-8,
+    "torsion": 4e-8, "shear_deformation": false, "extreme_fibres": [0.0126, 0.0126],
+    "region": { "group": "tie" } } ] }
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | auto | diagnostics |
+| `shape` | string | required | `rectangle`, `circle`, `tube` or `general` |
+| `width`, `height` | number [m] | required for a rectangle | its sides along `y'` and `z'` |
+| `radius` | number [m] | required for a circle or a tube | the (outer) radius |
+| `inner_radius` | number [m] | required for a tube | below `radius` |
+| `area`, `iy`, `iz`, `torsion` | number [m^2], [m^4] | required for a general section | `A`, `I_y = int z'^2 dA`, `I_z = int y'^2 dA` (principal, about the centroid) and the Saint-Venant torsion constant `J` |
+| `extreme_fibres` | `[c_y, c_z]` [m] | none | a general section's largest `|y'|` and `|z'|`, for its normal stress (without them it is not reported) |
+| `shear_coefficients` | `[k_y, k_z]` | Cowper's for a shape | the shear areas `k A` along `y'` and `z'`, in `(0, 1]`; required for a general section with shear deformation |
+| `shear_deformation` | bool | `true` | `false`: the Euler-Bernoulli beam (no shear coefficients then) |
+| `orientation` | `[x, y, z]` | none | a vector whose component normal to the element's axis is its `y'` axis; by default `z'` is the projection of global Z (of global X for an element within 0.1 degree of vertical) and `y' = z' x x'` |
+| `region` | object | every element | element region (centroids, or an element set such as a frame member's name) |
+
+A shape's properties follow from its dimensions: the torsion constant is
+Saint-Venant's (a rectangle's by its series), the shear coefficients Cowper's
+for the element's own Poisson ratio. A non-positive dimension or property, an
+inner radius not below the outer one, a coefficient outside `(0, 1]` or a key
+that does not belong to the shape is an error naming the key.
+
+A beam model refuses what it cannot represent: the non-linear analysis (its
+rotations are small), contact, plasticity, temperatures, a centrifugal load
+(it varies over the section), tractions and pressures (a beam has no faces:
+load it with `line_loads` or point loads) and topology optimisation, each
+with its reason. The modal analysis, the harmonic response, the transient
+analysis (its consistent and lumped masses are positive definite) and linear
+buckling take a beam model; the harmonic response's and the transient's
+field files and monitors carry the translations only.
+
 ## `boundary_conditions`
 
 ```json
@@ -294,9 +361,9 @@ an error, as is a region that selects nothing.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `name` | string | auto | diagnostics |
-| `fix` | array of `"x"` / `"y"` (/ `"z"` on a solid or shell mesh; `"rx"`, `"ry"`, `"rz"` on a shell mesh) | required, non-empty | which components to prescribe; `rx`, `ry` and `rz` are the rotations about the global axes |
+| `fix` | array of `"x"` / `"y"` (/ `"z"` on a solid, shell or beam mesh; `"rx"`, `"ry"`, `"rz"` on a shell or beam mesh) | required, non-empty | which components to prescribe; `rx`, `ry` and `rz` are the rotations about the global axes |
 | `value` | `[u_x, u_y(, u_z)]` [m] | zeros | prescribed displacement |
-| `rotation` | `[r_x, r_y, r_z]` [rad] | zeros | shell meshes: prescribed rotations |
+| `rotation` | `[r_x, r_y, r_z]` [rad] | zeros | shell and beam meshes: prescribed rotations |
 | `region` | object | required | node region |
 
 Non-zero values are handled by static condensation, not by modifying the load
@@ -327,6 +394,7 @@ vector, so the reactions stay exact.
 | `point_loads` | array | `[]` | concentrated nodal forces |
 | `tractions` | array | `[]` | distributed edge loads |
 | `pressures` | array | `[]` | normal pressures on boundary edges or faces |
+| `line_loads` | array | `[]` | beam meshes: forces per unit length along the elements a region selects |
 | `gravity` | `[g_x, g_y(, g_z)]` [m/s^2] | none | uniform acceleration of the whole model: the self-weight `rho g` of every element |
 | `body_forces` | array | `[]` | uniform force densities on element regions |
 | `centrifugal` | object | none | steady rotation about an axis |
@@ -338,7 +406,7 @@ vector, so the reactions stay exact.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `force` | `[F_x, F_y(, F_z)]` [N] | required (optional with a `moment`) | see `distribution` |
-| `moment` | `[M_x, M_y, M_z]` [N m] | none | shell meshes: a nodal moment about the global axes, distributed like the force |
+| `moment` | `[M_x, M_y, M_z]` [N m] | none | shell and beam meshes: a nodal moment about the global axes, distributed like the force |
 | `distribution` | `"total"` / `"per_node"` | `"total"` | `total` divides the resultant among the selected nodes, so the total force is mesh independent; `per_node` applies `force` to each node |
 | `region` | object | required | node region |
 
@@ -376,6 +444,18 @@ geometry - it follows the curvature, and its resultant on a closed surface is
 zero to round-off. On a curved six-node face it is integrated with three
 points per direction, exact for the degree-4 integrand.
 
+**Line load** (beam meshes)
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `force_per_length` | `[q_x, q_y, q_z]` [N/m] | required | a uniform force per unit length of the elements, in **global** components |
+| `region` | object | required | element region (centroids, or an element set such as a frame member's name); selecting nothing is an error |
+
+The consistent nodal forces `int H^T q dx'` carry end moments (`q L^2 / 12`
+for a load normal to an element), and the nodal displacements of a straight
+member under a uniform load are exact on any mesh. A curved member's load is
+per unit length of its chords.
+
 **Body force**
 
 | Key | Type | Default | Meaning |
@@ -402,7 +482,8 @@ position - self-weight, a uniform body force and the centrifugal load - on
 straight and curved cells alike (`include/sparlab/fem/Loads.hpp`). On a shell
 mesh self-weight and body forces act through the shell's volume the same way
 (the nodal rotations of `b` zero), exactly; a shell refuses the centrifugal
-load, which varies through the thickness.
+load, which varies through the thickness. On a beam mesh they act as the line
+load `A (rho g + b)`; a beam refuses the centrifugal load too.
 
 **Temperature**
 
@@ -1149,6 +1230,25 @@ resultants. `--export-calculix` writes S4 decks: a `*SHELL SECTION` per
 material and thickness, a pressure as `P` on the elements (with its sign
 flipped: CalculiX's shell `P` acts along the element's normal), and the
 results at the shell's own nodes (`OUTPUT=2D`).
+
+A beam run writes, per load case, `displacement_<case>.csv` with the three
+rotations after the translations, `reactions_<case>.csv` with the reaction
+moments, and `beam_<case>.csv`: per element, its nodes, length, section
+(`A`, `I_y`, `I_z`, `J`) and local `x'` and `y'` axes, the end resultants
+`N Q_y Q_z` [N] and `T M_y M_z` [N m] at its start (`0`) and end (`1`) in
+its own axes, the normal stress at the extreme fibres (the larger of the
+two ends; empty for a general section without `extreme_fibres`) and the
+strain energy. `fields_<case>.vtk` holds the displacements, rotations and
+nodal normal stress on the line cells, and the resultants per cell.
+`mesh.json` carries every element's section, orientation vector and moduli,
+and each case's distributed load per element with its nodal loads apart;
+`summary.json` the beam's element lengths and areas (`mesh.beam`) and each
+case's largest resultants and normal stress. `--export-calculix` writes B31
+decks with a `*BEAM SECTION, SECTION=RECT` per material, rectangle and `y'`
+axis (CalculiX expands each element into bricks over its rectangle, a
+different model of the member); a model with a circle, a tube, a general
+section or a section without shear deformation has no CalculiX counterpart
+and is not exported (a warning says why).
 
 ## Command-line overrides
 

@@ -1464,6 +1464,104 @@ def shell_decks_table(results_dir: str) -> Optional[str]:
                              "directors"], rows) if rows else None)
 
 
+#: Rows of docs/results/beam.csv, collected by the beam tables.
+_BEAM_FRAMES: List[Dict] = []
+
+#: The beam decks (configs/verification/beam_*.json).
+BEAM_CASES = ["beam_space_frame_analysis", "beam_tube_arch_analysis",
+              "beam_bernoulli_frame_analysis"]
+
+
+def beam_verification_table(results_dir: str) -> Optional[str]:
+    """The beam studies at their finest meshes: errors against the exact
+    solutions of the model and their observed orders."""
+    rows = []
+
+    def record(study: str, case: str, finest: str, error, order, note: str = "") -> None:
+        _BEAM_FRAMES.append({"study": study, "case": case, "finest_mesh": finest,
+                             "error_or_value": error, "observed_order": order, "note": note})
+        rows.append([study, case, finest, _fmt(error, 3),
+                     _fmt(order, 3) if order is not None else "-", note])
+
+    exact = _verification_csv(results_dir, "beam_exact.csv")
+    if exact is not None:
+        for (model, loads), sub in exact.groupby(["model", "loads"], sort=False):
+            worst = float(sub[["translation_error[-]", "rotation_error[-]", "force_error[-]",
+                               "moment_error[-]"]].to_numpy().max())
+            record("beam-exact", f"{model}, {loads}",
+                   f"{int(sub['elements_per_member'].min())} to "
+                   f"{int(sub['elements_per_member'].max())} elements", worst, None,
+                   "displacements, rotations and end resultants")
+    modes = _verification_csv(results_dir, "beam_modes.csv")
+    if modes is not None:
+        finest = modes[modes["n"] == modes["n"].max()]
+        for _, r in finest.iterrows():
+            record("beam-modes", f"{r['mass']} mass, mode {int(r['mode'])} ({r['kind']}), "
+                   f"{float(r['frequency[Hz]']):.3f} Hz", f"{int(r['n'])} elements",
+                   float(r["relative_error[-]"]), float(r["observed_order"]))
+    harmonic = _verification_csv(results_dir, "beam_harmonic.csv")
+    if harmonic is not None:
+        finest = harmonic[harmonic["n"] == harmonic["n"].max()]
+        for _, r in finest.iterrows():
+            order = r["observed_order"]
+            record("beam-harmonic", f"{r['mass']} mass, loss factor "
+                   f"{float(r['loss_factor']):g}, {float(r['frequency[Hz]']):g} Hz, "
+                   f"along {r['direction']}'", f"{int(r['n'])} elements",
+                   float(r["relative_error[-]"]),
+                   float(order) if float(r["frequency[Hz]"]) > 0.0 else None,
+                   "exact nodal values" if float(r["frequency[Hz]"]) == 0.0 else "")
+    buckling = _verification_csv(results_dir, "beam_buckling.csv")
+    if buckling is not None:
+        ordinary = buckling[buckling["kind"] != "torsion"]
+        finest = ordinary[ordinary["n"] == ordinary["n"].max()]
+        for _, r in finest.iterrows():
+            record("beam-buckling", f"{r['support']}, mode {int(r['mode'])} ({r['kind']}), "
+                   f"{float(r['critical_force[N]']):.6g} N", f"{int(r['n'])} elements",
+                   float(r["relative_error[-]"]), float(r["observed_order"]))
+        torsion = buckling[buckling["kind"] == "torsion"]
+        if not torsion.empty:
+            record("beam-buckling", "torsional, G J A / I_p = "
+                   f"{float(torsion['exact[N]'].iloc[0]):.6g} N",
+                   f"{int(torsion['n'].min())} to {int(torsion['n'].max())} elements",
+                   float(torsion["relative_error[-]"].max()), None, "every mesh")
+    curved = _verification_csv(results_dir, "beam_curved.csv")
+    if curved is not None:
+        finest = curved[curved["n"] == curved["n"].max()]
+        for _, r in finest.iterrows():
+            record("beam-curved", f"{r['load']}: {r['component']}", f"{int(r['n'])} chords",
+                   float(r["relative_error[-]"]), float(r["observed_order"]))
+    return (_markdown_table(["study", "case", "finest mesh", "error", "observed order", "note"],
+                            rows) if rows else None)
+
+
+def beam_decks_table(results_dir: str) -> Optional[str]:
+    """The beam decks: what each solved."""
+    rows = []
+    for deck in BEAM_CASES:
+        path = os.path.join(results_dir, deck, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        s = load_json(path)
+        modal = s.get("modal") or {}
+        buckling = (s.get("buckling") or {}).get("load_cases") or []
+        for lc in s.get("load_cases", []):
+            factors = [b for b in buckling if b.get("load_case") == lc["name"]]
+            beam = lc.get("beam", {})
+            rows.append([deck, lc["name"], str(s["mesh"]["num_elements"]),
+                         _fmt(lc["max_displacement_magnitude_m"], 4),
+                         _fmt(beam.get("max_abs_bending_moment_Nm"), 4),
+                         _fmt(lc.get("max_normal_stress_Pa"), 4),
+                         _fmt(lc["equilibrium"]["relative_force_error"], 2),
+                         (", ".join(f"{f:.4g}" for f in (modal.get("frequencies_hz") or [])[:4])
+                          + f" ({modal.get('mass_type', 'consistent')})")
+                         if lc is s["load_cases"][0] and modal else "",
+                         ", ".join(f"{f:.4g}" for f in factors[0]["load_factors"][:2])
+                         if factors else ""])
+    return (_markdown_table(["deck", "load case", "elements", "max |u|", "max |M| [N m]",
+                             "max normal stress [Pa]", "force balance", "f_1.. [Hz]",
+                             "lambda_1, lambda_2"], rows) if rows else None)
+
+
 #: Rows of docs/results/contact.csv, collected by the contact tables.
 _CONTACT_FRAMES: List[Dict] = []
 
@@ -1823,6 +1921,25 @@ def main(argv=None) -> int:
          "stress of an element's faces and mid-surface (at its centre), the relative force "
          "balance, the lowest frequencies and buckling load factors, and where the directors "
          "came from."),
+        ("Beam verification", beam_verification_table(args.results),
+         "From `results/verification/beam_*.csv` (`sparlab_verify --study beam-...`): the "
+         "two-node Timoshenko beam against exact solutions of the beam model it discretises, "
+         "at the finest mesh of each study, with the order observed from the last refinement. "
+         "beam-exact: an inclined cantilever under end forces, end moments and a uniform load "
+         "along all three axes, and an L-frame whose tip load bends one arm and twists the "
+         "other, on 1 to 16 elements per member - the largest relative error of the nodal "
+         "displacements, rotations and end resultants. beam-modes, -harmonic and -buckling: "
+         "a simply supported steel beam (a 40 x 100 mm rectangle, 1 m) against the exact "
+         "Timoshenko frequencies with rotary inertia, the exact harmonic series of a uniform "
+         "load, and the exact buckling loads of pinned and cantilever columns (with the "
+         "rotations' geometric term), and a section of small torsion constant buckling at "
+         "G J A / I_p. beam-curved: a quarter-circle cantilever of chords against "
+         "Castigliano."),
+        ("Beam decks", beam_decks_table(args.results),
+         "Each `configs/verification/beam_*.json` deck solved by `sparlab_solve` "
+         "(`results/<deck>/summary.json`): the largest displacement, bending moment and "
+         "extreme-fibre normal stress, the relative force balance, the lowest frequencies "
+         "(with the mass used) and buckling load factors."),
         ("Cross-validation against independent codes", cross_validation_table(args.results),
          "Generated from `results/cross_validation/summary.json` by "
          "`python/scripts/cross_validate.py`: node-by-node comparison of the "
@@ -1878,7 +1995,15 @@ def main(argv=None) -> int:
          "backward error in the NumPy system, `sparlab_backward_error`), `numpy mitc4 loads` "
          "with the pressure and self-weight integrated in NumPy, `numpy mitc4 buckling` and "
          "`modal` the load factors and frequencies; `calculix` is CalculiX's S4, a different "
-         "discretisation (a layer of incompatible-mode solids), INFO."),
+         "discretisation (a layer of incompatible-mode solids), INFO. The beam decks (Beam2) "
+         "are compared with an independent Timoshenko frame written in NumPy "
+         "(`python/scripts/beam_xval.py`): `numpy timoshenko` the displacements and "
+         "rotations, judged as the shells' are, `end forces` each element's end resultants "
+         "over the largest end force or moment, `modal`, `buckling` and `harmonic` the "
+         "frequencies (with the run's mass), load factors and complex monitors; `calculix` "
+         "is CalculiX's B31, one incompatible-mode brick over the rectangle per element - a "
+         "different model, INFO - and `calculix u1` its U1 beam at a shear coefficient of "
+         "1e12, the Euler-Bernoulli beam, judged at the seven digits it prints."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
@@ -1978,6 +2103,8 @@ def main(argv=None) -> int:
                                              index=False)
     if _SHELL_FRAMES:
         pd.DataFrame(_SHELL_FRAMES).to_csv(os.path.join(args.output, "shell.csv"), index=False)
+    if _BEAM_FRAMES:
+        pd.DataFrame(_BEAM_FRAMES).to_csv(os.path.join(args.output, "beam.csv"), index=False)
 
     lines = [
         "# SparLab result tables",

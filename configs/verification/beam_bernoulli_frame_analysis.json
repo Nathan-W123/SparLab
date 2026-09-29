@@ -1,0 +1,51 @@
+{
+  // ---------------------------------------------------------------------------
+  // A Z-shaped cantilever frame of Euler-Bernoulli tubes (no shear
+  // deformation) in space: 1 m along x from the clamp, 1 m along y, 1 m up
+  // along z, 6 elements each, the middle member's y' axis set by an
+  // orientation vector. A force and a moment at the free end bend every
+  // member about both axes, stretch and twist them. Static - cross-validated
+  // by an independent frame in NumPy and by CalculiX's U1 beam element with a
+  // shear coefficient of 1e12 (its Euler-Bernoulli limit; a tube's torsion
+  // constant is I_y + I_z, U1's), to the 7 digits CalculiX prints.
+  // ---------------------------------------------------------------------------
+  "name": "beam_bernoulli_frame_analysis",
+  "description": "Euler-Bernoulli tube Z-frame in space: bending, torsion and stretching",
+  "units": "SI (m, N, Pa, kg)",
+  "mesh": {
+    "type": "frame",
+    "points": [
+      { "name": "A", "position": [0.0, 0.0, 0.0] }, { "name": "B", "position": [1.0, 0.0, 0.0] },
+      { "name": "C", "position": [1.0, 1.0, 0.0] }, { "name": "D", "position": [1.0, 1.0, 1.0] }
+    ],
+    "members": [
+      { "name": "AB", "from": "A", "to": "B", "elements": 6 },
+      { "name": "BC", "from": "B", "to": "C", "elements": 6 },
+      { "name": "CD", "from": "C", "to": "D", "elements": 6 }
+    ]
+  },
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.33, "density": 2700.0 },
+  "model": {
+    "beam": {
+      "sections": [
+        { "name": "tube", "shape": "tube", "radius": 0.03, "inner_radius": 0.025,
+          "shear_deformation": false },
+        { "name": "turned", "shape": "tube", "radius": 0.03, "inner_radius": 0.025,
+          "shear_deformation": false, "orientation": [1.0, 0.0, 1.0],
+          "region": { "group": "BC" } }
+      ]
+    }
+  },
+  "boundary_conditions": [
+    { "name": "clamp", "fix": ["x", "y", "z", "rx", "ry", "rz"], "region": { "group": "A" } }
+  ],
+  "load_cases": [
+    { "name": "end_load",
+      "point_loads": [
+        { "force": [100.0, -200.0, 300.0], "moment": [10.0, 20.0, -30.0], "region": { "group": "D" } }
+      ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 6 },
+  "output": { "csv": true, "vtk": true }
+}

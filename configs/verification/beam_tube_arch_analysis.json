@@ -1,0 +1,73 @@
+{
+  // ---------------------------------------------------------------------------
+  // A tied arch of Timoshenko beams: a semicircular tube arch of radius 2 m in
+  // the x-z plane (two circular members meeting at the crown, 12 elements
+  // each), its springings joined by a slender tie of a general section
+  // without shear deformation (the Euler-Bernoulli beam). One springing is
+  // pinned, the other slides along x; the twist of the springing line is
+  // held. Load cases: a crown load, and a snow load of 2 kN/m on the arch.
+  // Static, modal with the lumped mass (nodal inertia tensors on inclined
+  // elements), buckling of the snow case and the harmonic response to the
+  // crown load - cross-validated by an independent Timoshenko frame in NumPy.
+  // CalculiX's linear beam takes rectangles only: no CalculiX deck.
+  // ---------------------------------------------------------------------------
+  "name": "beam_tube_arch_analysis",
+  "description": "Tied tube arch of Timoshenko beams with an Euler-Bernoulli tie",
+  "units": "SI (m, N, Pa, kg, s)",
+  "mesh": {
+    "type": "frame",
+    "points": [
+      { "name": "left", "position": [-2.0, 0.0, 0.0] },
+      { "name": "crown", "position": [0.0, 0.0, 2.0] },
+      { "name": "right", "position": [2.0, 0.0, 0.0] }
+    ],
+    "members": [
+      { "name": "arch_left", "from": "left", "to": "crown", "elements": 12,
+        "arc": { "centre": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0] } },
+      { "name": "arch_right", "from": "crown", "to": "right", "elements": 12,
+        "arc": { "centre": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0] } },
+      { "name": "tie", "from": "left", "to": "right", "elements": 8 }
+    ]
+  },
+  "material": { "name": "steel", "youngs_modulus": 210.0e9, "poisson_ratio": 0.3, "density": 7850.0 },
+  "model": {
+    "beam": {
+      "sections": [
+        { "name": "tube", "shape": "tube", "radius": 0.08, "inner_radius": 0.07 },
+        { "name": "tie", "shape": "general", "area": 5.0e-4, "iy": 2.0e-8, "iz": 2.0e-8,
+          "torsion": 4.0e-8, "shear_deformation": false, "extreme_fibres": [0.0126, 0.0126],
+          "region": { "group": "tie" } }
+      ]
+    }
+  },
+  "boundary_conditions": [
+    { "name": "pin", "fix": ["x", "y", "z", "rx"], "region": { "group": "left" } },
+    { "name": "slide", "fix": ["y", "z"], "region": { "group": "right" } }
+  ],
+  "load_cases": [
+    { "name": "crown",
+      "point_loads": [ { "force": [0.0, 0.0, -5.0e3], "region": { "group": "crown" } } ] },
+    { "name": "snow",
+      "line_loads": [
+        { "force_per_length": [0.0, 0.0, -2.0e3],
+          "region": { "any_of": [ { "group": "arch_left" }, { "group": "arch_right" } ] } }
+      ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 6, "mass_type": "lumped" },
+  "buckling": { "enabled": true, "num_modes": 3, "load_cases": ["snow"] },
+  "frequency_response": {
+    "enabled": true,
+    "load_cases": ["crown"],
+    "frequencies": { "start": 2.0, "end": 200.0, "count": 40, "spacing": "log" },
+    "mass": "consistent",
+    "damping": { "structural": 0.02, "mass": 0.5, "stiffness": 1.0e-5 },
+    "snapshot_frequencies": [20.0, 90.0],
+    "monitors": [
+      { "name": "crown_uz", "component": "z", "region": { "group": "crown" } },
+      { "name": "slide_ux", "component": "x", "region": { "group": "right" } },
+      { "name": "pin_reaction_z", "component": "z", "quantity": "reaction", "region": { "group": "left" } }
+    ]
+  },
+  "output": { "csv": true, "vtk": true, "mode_shapes": true }
+}

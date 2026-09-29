@@ -463,8 +463,9 @@ ContactProblem::ContactProblem(const FemModel& model, const ContactOptions& opti
   const Mesh& mesh = model.mesh();
   const int dim = mesh.dim();
   if (model.dofs_per_node() != dim) {
-    throw ConfigError("contact is formulated between continuum bodies; a shell model takes "
-                      "no contact (its faces are the two sides of a mid-surface)");
+    throw ConfigError("contact is formulated between continuum bodies; a shell or beam "
+                      "model takes no contact (a shell's faces are the two sides of a "
+                      "mid-surface, a beam has none)");
   }
   if (mesh.element_type() == ElementType::Tet10) {
     throw ConfigError("contact needs linear elements (Q4, Tri3, Hex8, Tet4): the dual basis "

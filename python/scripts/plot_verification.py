@@ -137,6 +137,9 @@ def main(argv=None) -> int:
         ("Shell benchmarks and folds",
          lambda: studies.plot_shell_benchmarks(
              args.verification, figure("verify_shell_benchmarks.png"))),
+        ("Timoshenko beam",
+         lambda: studies.plot_beam_verification(
+             args.verification, figure("verify_beam.png"))),
     ]
 
     for label, task in tasks:

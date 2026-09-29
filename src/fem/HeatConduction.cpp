@@ -49,7 +49,8 @@ ConductionResult solve_conduction(const FemModel& model, const ConductionSpec& s
                                   const LinearSolverOptions& linear_in) {
   if (model.dofs_per_node() != model.dim()) {
     throw ConfigError("the conduction solve is formulated for continuum meshes; a shell "
-                      "or beam model takes its temperature from regions or a uniform value");
+                      "or beam model takes no temperature field (neither element has a "
+                      "thermal strain)");
   }
   const Mesh& mesh = model.mesh();
   const Index nn = mesh.num_nodes();

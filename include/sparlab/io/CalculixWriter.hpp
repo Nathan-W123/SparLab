@@ -131,6 +131,13 @@ struct CalculixNonlinearExport {
 /// curved rigid obstacle), or an empty string when it can.
 std::string calculix_contact_obstacle(const FemModel& model, const ContactOptions& contact);
 
+/// Why a beam model cannot go out to CalculiX, or an empty string when it
+/// can: CalculiX expands its linear beam (B31) into bricks over a
+/// rectangle, so a circle, a tube or a general section has no counterpart
+/// (a circle needs its quadratic beam), and neither has a section without
+/// shear deformation (the bricks deform in shear as a solid).
+std::string calculix_beam_obstacle(const FemModel& model);
+
 /// The transient decks to write beside the linear ones (`*DYNAMIC, DIRECT`).
 struct CalculixTransientExport {
   std::vector<std::size_t> load_cases;  ///< indices of the cases to export
@@ -151,8 +158,9 @@ std::string calculix_transient_obstacle(const FemModel& model, std::size_t l,
 /// \return the paths written, in load-case order.
 /// \throws IoError when a file cannot be written, for a thermal case whose
 ///         materials have different reference temperatures (CalculiX measures
-///         thermal strain from the initial nodal temperature), or for a
-///         transient that calculix_transient_obstacle refuses.
+///         thermal strain from the initial nodal temperature), for a
+///         transient that calculix_transient_obstacle refuses, or for a beam
+///         model that calculix_beam_obstacle refuses.
 std::vector<std::string> write_calculix_decks(const FemModel& model, const std::string& stem,
                                               const std::string& case_name,
                                               const CalculixNonlinearExport* nonlinear = nullptr,
