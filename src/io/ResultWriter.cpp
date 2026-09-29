@@ -1620,9 +1620,9 @@ json::Value nonlinear_json(const std::vector<NonlinearResult>& results,
                "of each step; the pressure condensed and the contact status found by a "
                "semismooth Newton (primal-dual active set) method"));
     ct.set("note", json::Value::make_string(
-                       "only the non-linear analysis models contact; the linear static, "
-                       "modal and buckling results of the run are those of the model without "
-                       "it"));
+                       "only the non-linear static analysis models contact; the linear "
+                       "static, modal, buckling, transient and frequency-response results of "
+                       "the run are those of the model without it"));
     ct.set("complementarity", json::Value::make_number(options.contact.complementarity));
     ct.set("search_factor", json::Value::make_number(options.contact.search_factor));
     json::Value pairs = json::Value::make_array();

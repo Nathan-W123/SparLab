@@ -990,6 +990,8 @@ Configuration parse_configuration(const json::Value& document, const std::string
     o.enabled = ct.boolean_or("enabled", false);
     o.complementarity = ct.number_or("complementarity", o.complementarity);
     o.search_factor = ct.number_or("search_factor", o.search_factor);
+    // The symmetric contact steps are solved like a static solve.
+    o.solver = config.analysis.linear;
     int index = 0;
     for (const ConfigNode& p : ct.array("pairs")) {
       ContactPairSpec pair;

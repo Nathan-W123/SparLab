@@ -506,6 +506,7 @@ TEST_CASE("CSV and VTK writers produce well-formed files", "[io][writers]") {
       csv.row(0, {1.5, -2.5});
       csv.row({3.0, 4.0, 5.0});
       csv.raw_row({"x", "y", "z"});
+      csv.raw_row({"plane, gap", "say \"hi\"", "w"});
       REQUIRE_THROWS_AS(csv.row({1.0}), IoError);
       REQUIRE_THROWS_AS(csv.row(1, {1.0}), IoError);
       REQUIRE_THROWS_AS(csv.raw_row({"only_one"}), IoError);
@@ -522,6 +523,9 @@ TEST_CASE("CSV and VTK writers produce well-formed files", "[io][writers]") {
     REQUIRE(line == "3,4,5");
     std::getline(in, line);
     REQUIRE(line == "x,y,z");
+    // A field holding a separator or a quote is quoted, its quotes doubled.
+    std::getline(in, line);
+    REQUIRE(line == "\"plane, gap\",\"say \"\"hi\"\"\",w");
     std::remove(path.c_str());
   }
 

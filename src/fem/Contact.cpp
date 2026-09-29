@@ -740,13 +740,15 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
                                                         const Vector& residual,
                                                         const SparseMatrix& tangent,
                                                         const Vector& u_start,
-                                                        Scalar lambda_start) const {
+                                                        Scalar lambda_start,
+                                                        bool assemble_matrix) const {
   const DofManager& dofs = model_.dofs();
   const int dim = model_.dim();
   const std::vector<Index>& free_dofs = dofs.free_dofs();
   const Index nf = static_cast<Index>(free_dofs.size());
   using RowMajor = Eigen::SparseMatrix<Scalar, Eigen::RowMajor>;
-  const RowMajor kr(detail::free_block(tangent, free_dofs));
+  const RowMajor kr = assemble_matrix ? RowMajor(detail::free_block(tangent, free_dofs))
+                                      : RowMajor(nf, nf);
 
   // Every free row is a combination of rows of K_ff plus explicit entries.
   struct Recipe {
@@ -891,6 +893,7 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
   for (Index r = 0; r < nf; ++r) {
     const Recipe& rc = recipe[static_cast<std::size_t>(r)];
     out.rhs(r) = rc.rhs;
+    if (!assemble_matrix) continue;
     for (const auto& [src, coef] : rc.rows) {
       for (RowMajor::InnerIterator it(kr, src); it; ++it) {
         triplets.emplace_back(r, it.col(), coef * it.value());
@@ -901,6 +904,128 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
   out.matrix.resize(nf, nf);
   out.matrix.setFromTriplets(triplets.begin(), triplets.end());
   out.matrix.makeCompressed();
+  return out;
+}
+
+ContactProblem::NullSpace ContactProblem::null_space(const Vector& u, Scalar lambda,
+                                                     const std::vector<ContactStatus>& status,
+                                                     const Vector& u_start,
+                                                     Scalar lambda_start) const {
+  const DofManager& dofs = model_.dofs();
+  const int dim = model_.dim();
+  const Index nf = dofs.num_free();
+  const auto red = [&](Index node, int comp) { return dofs.reduced_index(node * dim + comp); };
+  NullSpace out;
+  // Each dependent free increment: its coefficients on the other free
+  // increments (all independent - slave and master nodes are distinct) and
+  // its constant part.
+  struct Dependent {
+    std::vector<std::pair<Index, Scalar>> terms;  ///< (free row, coefficient)
+    Scalar constant = 0.0;
+  };
+  std::map<Index, Dependent> dependent;
+  for (std::size_t i = 0; i < nodes_.size(); ++i) {
+    if (status[i] == ContactStatus::Open) continue;
+    const Node& n = nodes_[i];
+    const Scalar d = n.weight;
+    const bool stick = n.friction > 0.0;
+    if (stick && status[i] == ContactStatus::Slip) return out;  // not symmetric
+    // The constraint rows over the node's free components (the gap, then
+    // with friction the slip along each tangent): C du_j,F = rhs + master
+    // terms, C = d [nu_F^T; t_k^T] restricted to F.
+    std::vector<Vector3> directions{n.normal};
+    std::vector<Scalar> values{-weighted_gap(i, u, lambda)};
+    if (stick) {
+      const Eigen::Vector2d s = weighted_slip(n, u, lambda, u_start, lambda_start);
+      for (std::size_t k = 0; k < n.tangents.size(); ++k) {
+        directions.push_back(n.tangents[k]);
+        values.push_back(-s(static_cast<Eigen::Index>(k)));
+      }
+    }
+    // The dependent components: all free ones when sticking (the tangents
+    // span the free directions normal to the free normal, so the rows are
+    // as many), else the free one most along the normal.
+    std::vector<int> solved;
+    if (stick) {
+      if (directions.size() != n.free.size()) return out;
+      solved = n.free;
+    } else {
+      int best = n.free.front();
+      for (int comp : n.free) {
+        if (std::abs(n.normal(comp)) > std::abs(n.normal(best))) best = comp;
+      }
+      solved = {best};
+    }
+    const Eigen::Index q = static_cast<Eigen::Index>(solved.size());
+    Matrix c(q, q);
+    for (Eigen::Index row = 0; row < q; ++row) {
+      for (Eigen::Index col = 0; col < q; ++col) {
+        c(row, col) = d * directions[static_cast<std::size_t>(row)](solved[static_cast<std::size_t>(col)]);
+      }
+    }
+    const Matrix cinv = c.inverse();
+    // Right-hand side terms of each constraint row: the constant, the
+    // node's own free components that stay independent, the master nodes'
+    // free components.
+    std::vector<Dependent> rows(static_cast<std::size_t>(q));
+    for (Eigen::Index row = 0; row < q; ++row) {
+      Dependent& r = rows[static_cast<std::size_t>(row)];
+      const Vector3& w = directions[static_cast<std::size_t>(row)];
+      r.constant = values[static_cast<std::size_t>(row)];
+      for (int comp : n.free) {
+        if (std::find(solved.begin(), solved.end(), comp) != solved.end()) continue;
+        r.terms.emplace_back(red(n.node, comp), -d * w(comp));
+      }
+      for (const auto& [l, m] : n.masters) {
+        for (int comp = 0; comp < dim; ++comp) {
+          const Index col = red(l, comp);
+          if (col >= 0 && w(comp) != 0.0) r.terms.emplace_back(col, m * w(comp));
+        }
+      }
+    }
+    for (Eigen::Index k = 0; k < q; ++k) {
+      Dependent dep;
+      for (Eigen::Index row = 0; row < q; ++row) {
+        const Scalar f = cinv(k, row);
+        if (f == 0.0) continue;
+        dep.constant += f * rows[static_cast<std::size_t>(row)].constant;
+        for (const auto& [col, v] : rows[static_cast<std::size_t>(row)].terms) {
+          dep.terms.emplace_back(col, f * v);
+        }
+      }
+      dependent[red(n.node, solved[static_cast<std::size_t>(k)])] = std::move(dep);
+    }
+  }
+  // Number the independent free increments.
+  std::vector<Index> column(static_cast<std::size_t>(nf), -1);
+  Index ni = 0;
+  for (Index r = 0; r < nf; ++r) {
+    if (dependent.count(r) != 0) continue;
+    column[static_cast<std::size_t>(r)] = ni++;
+    out.independent.push_back(r);
+  }
+  TripletList triplets;
+  out.offset = Vector::Zero(nf);
+  for (Index r = 0; r < nf; ++r) {
+    const auto it = dependent.find(r);
+    if (it == dependent.end()) {
+      triplets.emplace_back(r, column[static_cast<std::size_t>(r)], 1.0);
+      continue;
+    }
+    out.offset(r) = it->second.constant;
+    for (const auto& [col, v] : it->second.terms) {
+      // (A term on another dependent increment cannot occur - a node is not
+      // a slave of two pairs, nor a slave and a master - but would make the
+      // map wrong: then the general solve takes the step.)
+      const Index c = column[static_cast<std::size_t>(col)];
+      if (c < 0) return NullSpace();
+      triplets.emplace_back(r, c, v);
+    }
+  }
+  out.map.resize(nf, ni);
+  out.map.setFromTriplets(triplets.begin(), triplets.end());
+  out.map.makeCompressed();
+  out.available = true;
   return out;
 }
 

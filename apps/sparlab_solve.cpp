@@ -80,6 +80,8 @@ int main(int argc, char** argv) {
       config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
       config.modal.options.linear.type = config.analysis.linear.type;
       config.buckling.options.linear.type = config.analysis.linear.type;
+      config.transient.options.linear.type = config.analysis.linear.type;
+      config.nonlinear.options.contact.solver.type = config.analysis.linear.type;
     }
 
     const std::string out_dir =
@@ -149,9 +151,9 @@ int main(int argc, char** argv) {
       }
     }
     if (config.nonlinear.options.contact.enabled) {
-      log::info("contact is modelled by the non-linear analysis only; the linear static, "
-                "modal and buckling results of this run are those of the model without "
-                "contact");
+      log::info("contact is modelled by the non-linear static analysis only; the linear "
+                "static, modal, buckling, transient and frequency-response results of this "
+                "run are those of the model without contact");
     }
     if (config.nonlinear.enabled) {
       ScopedTimer t(timings, "nonlinear_analysis");

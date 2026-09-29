@@ -105,7 +105,19 @@ void CsvWriter::raw_row(const std::vector<std::string>& fields) {
   }
   for (std::size_t i = 0; i < fields.size(); ++i) {
     if (i > 0) out_ << ',';
-    out_ << fields[i];
+    const std::string& f = fields[i];
+    // A field with a separator, a quote or a line break is quoted, its
+    // quotes doubled (RFC 4180).
+    if (f.find_first_of(",\"\r\n") == std::string::npos) {
+      out_ << f;
+      continue;
+    }
+    out_ << '"';
+    for (char ch : f) {
+      if (ch == '"') out_ << '"';
+      out_ << ch;
+    }
+    out_ << '"';
   }
   out_ << '\n';
 }

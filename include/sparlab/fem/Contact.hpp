@@ -47,13 +47,24 @@
 /// its weighted slip increment over the step \f$\tilde u_\tau\f$ is then zero
 /// - and slips otherwise, with \f$\lambda_\tau = \mu p_j\f$ along
 /// \f$\lambda_\tau + c\,\tilde u_\tau / D_j\f$. The master equations take the
-/// condensed contact forces of their slave nodes. The system is not
-/// symmetric; it is solved by sparse LU. For linear elasticity without
-/// friction the active set is exact after finitely many iterations and the
-/// solution then exact to round-off.
+/// condensed contact forces of their slave nodes.
+///
+/// **The Newton step.** While no node slips under friction, the step is that
+/// of a symmetric problem: with the dual basis each slave node's constraints
+/// (its gap; sticking, its slip too) involve only its own and its master
+/// nodes' displacements, so they fix some of its own increments in terms of
+/// the others, \f$\Delta u_f = T w + c\f$ over the independent increments w,
+/// and the step solves the symmetric positive-definite \f$T^T K_{ff} T\,w =
+/// -T^T (R_f + K_{ff}\,c)\f$ - by LDL^T, or multigrid CG for a large model
+/// (`solver`, as a static solve). A slipping node's friction law makes the
+/// step non-symmetric: the condensed system is then solved by sparse LU.
+/// Both give the same step. For linear elasticity without friction the
+/// active set is exact after finitely many iterations and the solution then
+/// exact to round-off.
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/fem/LinearSolver.hpp"
 #include "sparlab/fem/Selector.hpp"
 
 #include <string>
@@ -121,6 +132,10 @@ struct ContactOptions {
   /// Master faces are searched for within this multiple of a slave face's
   /// size (plus its initial gap to them).
   Scalar search_factor = 2.0;
+  /// The solver of the symmetric Newton steps (no node slipping under
+  /// friction): by default the static analysis' `auto` choice - LDL^T up to
+  /// its size limits, multigrid CG above them.
+  LinearSolverOptions solver;
 };
 
 enum class ContactStatus { Open, Stick, Slip };
@@ -212,10 +227,33 @@ class ContactProblem {
   /// Linearise at the state `u` (full, prescribed values included), load
   /// factor `lambda`, with the full residual `residual` = f_int - f_ext and
   /// the full tangent; `u_start` and `lambda_start` are the last converged
-  /// state, from which the slip of the step is measured.
+  /// state, from which the slip of the step is measured. Without
+  /// `assemble_matrix` only the status, the right-hand side and the scale
+  /// are formed.
   Linearization linearize(const Vector& u, Scalar lambda, const Vector& residual,
                           const SparseMatrix& tangent, const Vector& u_start,
-                          Scalar lambda_start) const;
+                          Scalar lambda_start, bool assemble_matrix = true) const;
+
+  /// For a status with no node slipping under friction, the Newton step of
+  /// the constrained problem as a symmetric one: every node in contact has
+  /// its constraints - its gap, and when it sticks its slip - solved for
+  /// increments of its own free components (the normal one, or all of them
+  /// when it sticks) in terms of the others and its master nodes'. With the
+  /// dual basis a slave node's constraints involve no other slave node, so
+  /// the free increments are du_f = map w + offset over the independent
+  /// ones w, and the step solves map^T K_ff map w = -map^T (R_f + K_ff
+  /// offset): symmetric positive definite for a restrained model, factorised
+  /// like a static solve. `available` is false when a node slips.
+  struct NullSpace {
+    SparseMatrix map;   ///< free x independent
+    Vector offset;      ///< free: the part that closes the gaps (and slips)
+    /// The free index (position among the free DOFs) of each independent
+    /// increment, ascending.
+    std::vector<Index> independent;
+    bool available = false;
+  };
+  NullSpace null_space(const Vector& u, Scalar lambda, const std::vector<ContactStatus>& status,
+                       const Vector& u_start, Scalar lambda_start) const;
 
   /// The contact state of every node at a converged state, with the slip
   /// accumulated up to the last commit plus that of the current step.

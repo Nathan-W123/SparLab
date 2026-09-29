@@ -2550,7 +2550,8 @@ int main(int argc, char** argv) {
             "sensitivity-overhang | lame-cylinder | rotating-disk | thermal-cylinder | "
             "bimetal-strip | self-weight | elastica | hyperelastic-cylinder | "
             "arch-snap-through | plastic-cylinder | plastic-bending | plastic-cycle | "
-            "transient-modal | rod-harmonic | rod-transient | nonlinear-oscillator"},
+            "transient-modal | rod-harmonic | rod-transient | nonlinear-oscillator | "
+            "contact-patch | hertz-line | hertz-point"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2679,6 +2680,15 @@ int main(int argc, char** argv) {
     }
     if (all || study == "nonlinear-oscillator") {
       outcomes.push_back(verify::study_nonlinear_oscillator(out_dir, summary));
+    }
+    if (all || study == "contact-patch") {
+      outcomes.push_back(verify::study_contact_patch(out_dir, summary));
+    }
+    if (all || study == "hertz-line") {
+      outcomes.push_back(verify::study_hertz_line(out_dir, summary));
+    }
+    if (all || study == "hertz-point") {
+      outcomes.push_back(verify::study_hertz_point(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

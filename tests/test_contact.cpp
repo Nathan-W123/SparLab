@@ -16,6 +16,8 @@
 #include "sparlab/fem/Contact.hpp"
 #include "sparlab/fem/NonlinearStatic.hpp"
 
+#include <Eigen/SparseCholesky>
+#include <Eigen/SparseLU>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -654,6 +656,131 @@ TEST_CASE("friction on a mortar pair: stacked blocks stick, a dragged block slip
         }
       }
       REQUIRE(r.equilibrium.relative_force_error <= 1.0e-10);
+    }
+  }
+}
+
+TEST_CASE("the symmetric step of the constrained problem equals the condensed LU step",
+          "[contact]") {
+  // At an arbitrary state of a mortar pair - part of the interface
+  // penetrating, part open - the Newton step taken as a symmetric problem
+  // over the increments the constraints leave independent must be the step
+  // of the condensed system that sparse LU solves, frictionless and with
+  // every node in contact sticking; and it must close the gap of every node
+  // in contact, the gap being linear in the displacement.
+  const IsotropicMaterial m = default_material();
+  const Scalar lx = 0.4;
+  const Scalar lz = 0.3;
+  const Scalar h1 = 0.2;
+  const Scalar h2 = 0.15;
+  const Scalar g0 = 2.0e-5;
+  const Scalar delta = 1.0e-4;
+  for (const ElementType type : {ElementType::Quad4, ElementType::Hex8, ElementType::Tet4}) {
+    for (const Scalar mu : {0.0, 1.0e6}) {
+      INFO(to_string(type) << ", friction " << mu);
+      const Mesh lower = block(type, 4, 3, 3, lx, h1, lz, 0.0, 11u);
+      const Mesh upper = block(type, 5, 2, 4, lx, h2, lz, h1 + g0, 17u);
+      Mesh mesh = merge(lower, upper);
+      const int dim = mesh.dim();
+      const Scalar thickness = dim == 2 ? 0.01 : 1.0;
+      FemModel model(std::move(mesh), m, thickness, state_of(lower), IntegrationOptions());
+      model.constraints().push_back(fix(box(-kInf, kInf, h1 + g0 + h2, kInf), 1, -delta));
+      model.constraints().push_back(fix(box(-kInf, kInf, -kInf, 0.0), 1));
+      for (const Scalar y : {0.0, h1 + g0}) {
+        model.constraints().push_back(fix(box(-kInf, 0.0, y, y, -kInf, 0.0), 0));
+        if (dim == 3) {
+          model.constraints().push_back(fix(box(-kInf, 0.0, y, y, -kInf, 0.0), 2));
+          model.constraints().push_back(fix(box(lx, kInf, y, y, -kInf, 0.0), 2));
+        }
+      }
+      LoadCaseSpec lc;
+      lc.name = "press";
+      lc.prescribed_displacement_only = true;
+      model.load_case_specs().push_back(lc);
+      model.finalize();
+      Assembler assembler(model);
+      ContactPairSpec pair;
+      pair.name = "interface";
+      pair.rigid = false;
+      pair.friction = mu;
+      pair.slave = box(-kInf, kInf, h1 + g0, h1 + g0);
+      pair.master = box(-kInf, kInf, h1, h1);
+      const NonlinearOptions options = contact_options(pair);
+      const ContactProblem contact(model, options.contact);
+
+      // The state: the upper block lowered by up to twice the gap along x
+      // (its left part penetrating, its right part open) and sheared, both
+      // blocks perturbed; the prescribed values at lambda = 1.
+      const Index n = model.dofs().num_dofs();
+      Vector u = Vector::Zero(n);
+      for (Index node = 0; node < model.mesh().num_nodes(); ++node) {
+        const Vector3 x = model.mesh().node(node);
+        const bool in_upper = node >= lower.num_nodes();
+        for (int k = 0; k < dim; ++k) {
+          const Scalar wobble = 1.0e-6 * std::sin(17.0 * x.x() + 11.0 * x.y() + 7.0 * x.z() + k);
+          u(node * dim + k) = wobble;
+        }
+        if (in_upper) {
+          u(node * dim + 1) -= 2.0 * g0 * (1.0 - x.x() / lx);
+          u(node * dim + 0) += 3.0e-6 * (x.y() - h1);
+        }
+      }
+      for (Index d : model.dofs().constrained_dofs()) u(d) = model.dofs().prescribed_value(d);
+      const Vector u_start = Vector::Zero(n);
+      const NonlinearState s = evaluate_nonlinear_state(model, assembler, 0, options, u, 1.0);
+
+      const ContactProblem::Linearization lin =
+          contact.linearize(u, 1.0, s.residual, s.tangent, u_start, 0.0);
+      int active = 0;
+      int open = 0;
+      for (ContactStatus st : lin.status) {
+        REQUIRE(st != (mu > 0.0 ? ContactStatus::Slip : ContactStatus::Stick));
+        (st == ContactStatus::Open ? open : active) += 1;
+      }
+      REQUIRE(active > 0);
+      REQUIRE(open > 0);
+      Eigen::SparseLU<SparseMatrix> lu(lin.matrix);
+      REQUIRE(lu.info() == Eigen::Success);
+      const Vector du_lu = lu.solve(lin.rhs);
+
+      const ContactProblem::NullSpace ns = contact.null_space(u, 1.0, lin.status, u_start, 0.0);
+      REQUIRE(ns.available);
+      const std::vector<Index>& free_dofs = model.dofs().free_dofs();
+      // K_ff and R_f in the free DOFs' order.
+      std::vector<Index> position(static_cast<std::size_t>(n), -1);
+      for (std::size_t i = 0; i < free_dofs.size(); ++i) {
+        position[static_cast<std::size_t>(free_dofs[i])] = static_cast<Index>(i);
+      }
+      TripletList triplets;
+      for (Eigen::Index col = 0; col < s.tangent.outerSize(); ++col) {
+        for (SparseMatrix::InnerIterator it(s.tangent, col); it; ++it) {
+          const Index r = position[static_cast<std::size_t>(it.row())];
+          const Index c = position[static_cast<std::size_t>(col)];
+          if (r >= 0 && c >= 0) triplets.emplace_back(r, c, it.value());
+        }
+      }
+      const auto nf = static_cast<Eigen::Index>(free_dofs.size());
+      SparseMatrix kff(nf, nf);
+      kff.setFromTriplets(triplets.begin(), triplets.end());
+      Vector rf(nf);
+      for (Eigen::Index i = 0; i < nf; ++i) rf(i) = s.residual(free_dofs[static_cast<std::size_t>(i)]);
+      const SparseMatrix map_t = ns.map.transpose();
+      const SparseMatrix reduced = map_t * kff * ns.map;
+      REQUIRE(static_cast<std::size_t>(ns.map.cols()) == ns.independent.size());
+      Eigen::SimplicialLDLT<SparseMatrix> ldlt(reduced);
+      REQUIRE(ldlt.info() == Eigen::Success);
+      REQUIRE(ldlt.vectorD().minCoeff() > 0.0);  // positive definite
+      const Vector du_ns = ns.map * Vector(ldlt.solve(-(map_t * (rf + kff * ns.offset)))) + ns.offset;
+
+      REQUIRE((du_ns - du_lu).norm() <= 1.0e-9 * du_lu.norm());
+      // The gaps of the nodes in contact close.
+      Vector next = u;
+      for (Eigen::Index i = 0; i < nf; ++i) next(free_dofs[static_cast<std::size_t>(i)]) += du_ns(i);
+      for (std::size_t i = 0; i < contact.nodes().size(); ++i) {
+        if (lin.status[i] == ContactStatus::Open) continue;
+        const Scalar d = contact.nodes()[i].weight;
+        REQUIRE(std::abs(contact.weighted_gap(i, next, 1.0)) <= 1.0e-12 * d * delta);
+      }
     }
   }
 }

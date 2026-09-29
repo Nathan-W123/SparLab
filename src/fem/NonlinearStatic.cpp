@@ -5,6 +5,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/elements/FaceGeometry.hpp"
+#include "sparlab/fem/LinearSolver.hpp"
 #include "sparlab/fem/Loads.hpp"
 #include "sparlab/fem/StressRecovery.hpp"
 #include "sparlab/fem/TotalLagrangian.hpp"
@@ -187,6 +188,21 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
   std::vector<ContactStatus> contact_status;
   if (contact) contact_status.assign(contact->nodes().size(), ContactStatus::Open);
   std::string contact_failure;  // why the last contact iteration gave up
+  // The solver of the symmetric contact steps and the unknowns it sees (the
+  // independent free DOFs as global DOFs, which change with the active set:
+  // no multigrid hierarchy is carried from one step to the next); whether
+  // any step was symmetric, and whether any needed LU.
+  std::unique_ptr<LinearSolver> contact_solver;
+  std::unique_ptr<LinearSolver> contact_direct;  // where multigrid CG fails
+  std::vector<Index> contact_unknowns;
+  bool contact_symmetric_steps = false;
+  bool contact_direct_steps = false;
+  bool contact_lu_steps = false;
+  if (contact) {
+    LinearSolverOptions o = options_.contact.solver;
+    o.amg.reuse_aggregates = false;
+    contact_solver = make_linear_solver(o);
+  }
   const bool arc = options_.method == NonlinearOptions::Method::ArcLength;
   const bool small = options_.kinematics == Kinematics::SmallStrain;
   // The jump test compares the converged state with the elastic tangent's
@@ -498,11 +514,17 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
     for (std::size_t i = 0; i < fixed.size(); ++i) {
       trial(fixed[i]) = lambda_new * prescribed(static_cast<Eigen::Index>(i));
     }
+    const std::string singular =
+        "the contact system is singular: a body is not restrained against a rigid-body "
+        "motion that the contact leaves free (a body held only by frictionless contact "
+        "can slide along it) - restrain it with supports or prescribed displacements";
     std::vector<ContactStatus> previous;
     for (int it = 1; it <= options_.max_iterations; ++it) {
       Evaluation ev = system.evaluate(trial, lambda_new, true);
-      const ContactProblem::Linearization lin =
-          contact->linearize(trial, lambda_new, ev.residual, ev.tangent, state, lambda);
+      // The status and the condensed residual; the matrix only when the step
+      // needs it (below).
+      ContactProblem::Linearization lin = contact->linearize(
+          trial, lambda_new, ev.residual, ev.tangent, state, lambda, /*assemble_matrix=*/false);
       const Scalar scale = std::max(residual_scale(ev), lin.force_scale);
       const Scalar norm = lin.rhs.norm();
       if (!std::isfinite(norm)) return false;
@@ -526,17 +548,80 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
       }
       if (norm > 1.0e8 * scale) return false;  // diverging
       previous = lin.status;
-      Eigen::SparseLU<SparseMatrix> lu;
-      lu.analyzePattern(lin.matrix);
-      lu.factorize(lin.matrix);
-      if (lu.info() != Eigen::Success) {
-        contact_failure =
-            "the contact system is singular: a body is not restrained against a rigid-body "
-            "motion that the contact leaves free (a body held only by frictionless contact "
-            "can slide along it) - restrain it with supports or prescribed displacements";
-        return false;
+      // With no node slipping under friction the step is that of a
+      // symmetric problem over the increments the constraints leave
+      // independent (ContactProblem::null_space): factorised by LDL^T like a
+      // static solve. A slipping node makes it non-symmetric: sparse LU of
+      // the condensed system. Both give the same step.
+      const ContactProblem::NullSpace ns =
+          system.symmetric() ? contact->null_space(trial, lambda_new, lin.status, state, lambda)
+                             : ContactProblem::NullSpace();
+      Vector du;
+      if (ns.available && !ns.independent.empty()) {
+        const SparseMatrix kff = free_block(ev.tangent, free_dofs);
+        const SparseMatrix map_t = ns.map.transpose();
+        SparseMatrix reduced = map_t * kff * ns.map;
+        reduced.makeCompressed();
+        const Vector b = -(map_t * (restrict(ev.residual, free_dofs) + kff * ns.offset));
+        contact_unknowns.clear();
+        for (Index r : ns.independent) {
+          contact_unknowns.push_back(free_dofs[static_cast<std::size_t>(r)]);
+        }
+        DofLayout layout;
+        layout.dim = dim;
+        layout.dofs_per_node = model_.dofs_per_node();
+        layout.coordinates = &mesh.coordinates();
+        layout.unknowns = &contact_unknowns;
+        try {
+          Vector w;
+          bool solved = false;
+          if (!contact_direct) {
+            try {
+              contact_solver->set_layout(layout);
+              contact_solver->factorize(reduced);
+              w = contact_solver->solve(b);
+              solved = true;
+            } catch (const SparLabError& e) {
+              if (!contact_solver->iterative()) throw;
+              // Multigrid CG did not converge on this system (strongly
+              // stretched elements, or slave nodes tying their normal
+              // increments to many master nodes, can defeat the
+              // aggregation) or its hierarchy broke down: factorise the
+              // system instead - which also tells a singular one - and
+              // every later one of the analysis, whose systems are alike.
+              log::info("contact: ", e.what(), " - the contact steps are solved by LDL^T from "
+                        "here on");
+              LinearSolverOptions o = options_.contact.solver;
+              o.type = LinearSolverType::SimplicialLdlt;
+              contact_direct = make_linear_solver(o);
+            }
+          }
+          if (!solved) {
+            contact_direct->factorize(reduced);
+            w = contact_direct->solve(b);
+            contact_direct_steps = true;
+          }
+          du = ns.map * w + ns.offset;
+        } catch (const SolverError& e) {
+          contact_failure = singular + " (" + e.what() + ")";
+          return false;
+        }
+        contact_symmetric_steps = true;
+      } else if (ns.available) {
+        du = ns.offset;  // every free increment fixed by the constraints
+        contact_symmetric_steps = true;
+      } else {
+        lin = contact->linearize(trial, lambda_new, ev.residual, ev.tangent, state, lambda);
+        Eigen::SparseLU<SparseMatrix> lu;
+        lu.analyzePattern(lin.matrix);
+        lu.factorize(lin.matrix);
+        if (lu.info() != Eigen::Success) {
+          contact_failure = singular;
+          return false;
+        }
+        du = lu.solve(lin.rhs);
+        contact_lu_steps = true;
       }
-      const Vector du = lu.solve(lin.rhs);
       if (!du.allFinite()) return false;
       add_to(trial, free_dofs, du, 1.0);
     }
@@ -863,12 +948,25 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
 
   // Final state: inertia, reactions, balance, stresses.
   const Evaluation final_ev = system.evaluate(u, lambda, true);
-  if (factor.factorize(free_block(final_ev.tangent, free_dofs), system.symmetric()) &&
-      !result.steps.empty()) {
-    result.steps.back().negative_pivots = factor.negative_pivots();
+  if (!contact) {
+    if (factor.factorize(free_block(final_ev.tangent, free_dofs), system.symmetric()) &&
+        !result.steps.empty()) {
+      result.steps.back().negative_pivots = factor.negative_pivots();
+    }
+    result.symmetric_tangent = factor.symmetric();
+    result.linear_solver = factor.name();
+  } else {
+    // With contact the stiffness alone says nothing of the stability (a body
+    // may be held by the contact alone): no inertia is reported.
+    result.symmetric_tangent = system.symmetric();
+    std::vector<std::string> used;
+    if (contact_symmetric_steps) used.push_back(contact_solver->name());
+    if (contact_direct_steps) used.push_back("SimplicialLDLT (where multigrid CG failed)");
+    if (contact_lu_steps) used.push_back("SparseLU (steps with nodes slipping)");
+    for (std::size_t i = 0; i < used.size(); ++i) {
+      result.linear_solver += (i > 0 ? " + " : "") + used[i];
+    }
   }
-  result.symmetric_tangent = factor.symmetric();
-  result.linear_solver = factor.name();
   result.displacement = u;
   result.load_factor = lambda;
   result.completed = arc ? lambda >= target * (1.0 - 1.0e-12) : path_completed;

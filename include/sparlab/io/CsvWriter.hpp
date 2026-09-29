@@ -27,7 +27,8 @@ class CsvWriter {
   /// Write a row mixing an index column with numeric values.
   void row(Index index, const std::vector<Scalar>& values);
 
-  /// Write a row of arbitrary strings (already formatted).
+  /// Write a row of arbitrary strings (already formatted); a field holding
+  /// a comma, a quote or a line break is quoted (RFC 4180).
   void raw_row(const std::vector<std::string>& fields);
 
   void close();

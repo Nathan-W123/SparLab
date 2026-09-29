@@ -4,8 +4,9 @@
 /// The structural studies live in sparlab_verify.cpp; the studies of the
 /// volume, pressure and thermal loads live in verify_loads.cpp, those of the
 /// geometrically non-linear analysis in verify_nonlinear.cpp, those of
-/// plasticity in verify_plasticity.cpp and those of dynamics in
-/// verify_dynamics.cpp. All report a
+/// plasticity in verify_plasticity.cpp, those of dynamics in
+/// verify_dynamics.cpp and those of contact in verify_contact.cpp. All
+/// report a
 /// `StudyOutcome` that the driver prints and writes to summary.json.
 #pragma once
 
@@ -69,6 +70,13 @@ StudyOutcome study_transient_modal(const std::string& out_dir, json::Value& summ
 StudyOutcome study_rod_harmonic(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_rod_transient(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_nonlinear_oscillator(const std::string& out_dir, json::Value& summary);
+/// \}
+
+/// Studies of contact (verify_contact.cpp).
+/// \{
+StudyOutcome study_contact_patch(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_hertz_line(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_hertz_point(const std::string& out_dir, json::Value& summary);
 /// \}
 
 /// Quarter sections of a cylinder (verify_loads.cpp).
