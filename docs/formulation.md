@@ -1390,8 +1390,8 @@ A shell mesh (`structured_shell`, or S4 cells in a file) is made of
 four-node MITC4 elements (Dvorkin and Bathe 1984; `src/elements/Shell4.cpp`):
 a degenerated continuum whose fibres stay straight and inextensible, with
 assumed transverse shear strains that keep a thin shell from locking. Its
-analyses are linear: static, modal and buckling (`docs/verification.md`,
-section 27).
+analyses are linear: static, modal, the harmonic response and buckling
+(`docs/verification.md`, section 27).
 
 **Kinematics.** A point at the natural coordinates `(r, s)` of the
 mid-surface and `zeta in [-1, 1]` through the thickness `t` lies at, and
@@ -1441,8 +1441,8 @@ default. Under a rigid rotation both terms equal `n . omega` on any geometry,
 so the six rigid-body motions stay free of stiffness (checked to `1e-12`);
 at a fold, where one wall's rotation about its normal bends its neighbour,
 the penalty makes the two compatible. The answer barely depends on `alpha`
-(section 27: a factor 1e-5 ... 1e-2 changes the box beam's bending and
-torsion by at most 1.7e-4).
+(`docs/verification.md`, section 27: a factor 1e-5 ... 1e-2 changes the box
+beam's bending and torsion by at most 1.7e-4).
 
 **Loads.** Point forces and moments act on a node's six DOFs. A traction
 loads a free edge over its length times the element's thickness; a pressure
@@ -1467,13 +1467,19 @@ in-plane stresses on the two faces, and the von Mises stress of each face
 and of the mid-surface, where the transverse shear stress takes its
 parabolic peak `3 Q / (2 t)`.
 
-**Modes.** The consistent mass is only semi-definite: the rotation of a node
-about its director carries no inertia, as it moves no material. The modal
-solver takes such a pencil through `M y = mu K y` with `K` positive definite,
-whose largest `mu` are `1 / lambda` of the lowest modes and whose zero `mu`
-are the massless directions. A transient would need the initial
-accelerations from `M`, which that singular mass does not determine, so a
-shell refuses it.
+**Modes and the harmonic response.** The consistent mass is only
+semi-definite: the rotation of a node about its director carries no inertia,
+as it moves no material. The modal solver takes such a pencil through
+`M y = mu K y` with `K` positive definite, whose largest `mu` are
+`1 / lambda` of the lowest modes and whose zero `mu` are the massless
+directions. The lumped mass scales each element's diagonal to the element's
+total in each DOF component (Hinton, Rock and Zienkiewicz), rotary inertia
+included; a component the element gives no inertia - the drilling rotation
+of a flat element normal to a global axis - stays massless. The harmonic
+response solves `[K (1 + i eta) - omega^2 M + i omega C] U = f` and needs no
+inverse of `M`, so it takes a shell as it stands. A transient would need
+the initial accelerations from `M`, which that singular mass does not
+determine, so a shell refuses it.
 
 **Buckling.** The geometric stiffness is that of the in-plane stresses on
 the gradient of the whole displacement field,
@@ -1487,13 +1493,15 @@ verification plate).
 divergence through the thickness: a cylinder of radius `R` under internal
 pressure expands by `p R / (E ln((R + t/2) / (R - t/2)))`, the thick ring's
 value, `(t / R)^2 / 12` below the membrane formula `p R^2 / (E t)` - which is
-what the refinement converges to (section 27).
+what the refinement converges to (`docs/verification.md`, section 27).
 
 **Known limits of the element.** MITC4 is free of shear locking on meshes of
 parallelograms; on distorted meshes a coarse mesh can lock as `t / a` falls -
 measured on a clamped plate, whose 4 x 4 distorted mesh has 24 interior-edge
 shear constraints on 27 interior DOFs and reaches 0.15 of the deflection at
-`t / a = 1e-3`, while from 8 x 8 on the result no longer depends on `t / a`.
+`t / a = 1e-3`, while from 8 x 8 on it no longer falls as `t / a` does (the
+8 x 8 deflection moves by 1.3 % from `t / a = 1e-2` to `1e-3` and by 5e-4
+from `1e-3` to `1e-4`).
 It is not free of membrane locking: bending-dominated curved shells converge
 slowly on coarse meshes (the pinched cylinder reaches 0.38, 0.75, 0.93, 0.99 of
 its reference on 4 ... 32 cells a side).

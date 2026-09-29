@@ -2869,7 +2869,8 @@ def plot_shell_plates(directory: str, path: str) -> str:
     ax.set_ylabel("|w - w_exact| / w_exact at the centre [-]")
     st.title(ax, "Simply supported plate: no shear locking",
              "the exact Reissner-Mindlin deflection; t / a = 1e-2, 1e-3, 1e-4 give the same "
-             "error on every mesh, t / a = 0.1 (5 % shear deflection) another", wrap=48)
+             "error to 0.2 % on the regular meshes and 2 % on the distorted ones, "
+             "t / a = 0.1 (5 % shear deflection) another", wrap=48)
     st.legend(ax, loc="lower left", fontsize=6.6, ncol=2)
 
     ax = axes[0, 1]
@@ -2906,7 +2907,7 @@ def plot_shell_plates(directory: str, path: str) -> str:
     st.title(ax, "MITC4 on a distorted mesh: locking on the coarsest",
              f"clamped plate, interior nodes moved by up to 0.2 of a cell: 4 x 4 cells lock "
              f"({float(coarse['w_over_reference[-]'].iloc[0]):.2f} of w at t/a = 1e-3); from "
-             "8 x 8 on, w does not depend on t/a", wrap=48)
+             "8 x 8 on, w stops falling with t/a", wrap=48)
     st.legend(ax, loc="lower left", fontsize=7.5)
 
     ax = axes[1, 1]
@@ -2947,39 +2948,79 @@ def plot_shell_plates(directory: str, path: str) -> str:
 
 
 def plot_shell_eigen(directory: str, path: str) -> str:
-    """The plate's frequencies and buckling loads against the exact values of
-    the model."""
+    """The plate's frequencies (consistent and lumped mass), its harmonic
+    response and its buckling loads against the exact values of the model."""
     modes = load_csv(os.path.join(directory, "shell_plate_modes.csv"))
+    harmonic = load_csv(os.path.join(directory, "shell_plate_harmonic.csv"))
     buckling = load_csv(os.path.join(directory, "shell_plate_buckling.csv"))
-    fig, axes = st.figure(11.0, 4.6, nrows=1, ncols=2)
+    fig, axes = st.figure(15.0, 4.8, nrows=1, ncols=3)
+    styles = {"consistent": ("-", "o"), "lumped": ("--", "s")}
 
     ax = axes[0]
     seen = set()
     slot = 0
-    for mode in sorted(modes["mode"].unique()):
-        sub = modes[modes["mode"] == mode].sort_values("n")
+    consistent = modes[modes["mass"] == "consistent"]
+    for mode in sorted(consistent["mode"].unique()):
+        sub = consistent[consistent["mode"] == mode]
         m, n = int(sub["m"].iloc[0]), int(sub["n_half_waves"].iloc[0])
         key = (min(m, n), max(m, n))
         if key in seen:  # the (m, n) and (n, m) pair of a square plate coincide
             continue
         seen.add(key)
         label = f"({m}, {n})" if m == n else f"({key[0]}, {key[1]}) and ({key[1]}, {key[0]})"
-        ax.plot(sub["n"], sub["relative_error[-]"], "-o", color=st.series_color(slot),
-                markersize=4.5, label=f"mode {label}")
+        for mass, (line, marker) in styles.items():
+            rows = modes[(modes["mass"] == mass) & (modes["mode"] == mode)].sort_values("n")
+            ax.plot(rows["n"], rows["relative_error[-]"], line + marker,
+                    color=st.series_color(slot), markersize=4.0,
+                    label=f"mode {label}" if mass == "consistent" else None)
         slot += 1
+    ax.plot([], [], "-", color=st.INK_MUTED, label="consistent mass")
+    ax.plot([], [], "--", color=st.INK_MUTED, label="lumped mass")
     _order_guide(ax, modes["n"].unique(), 0.4 * float(modes["relative_error[-]"].min()), 2.0)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
+    ax.set_ylim(top=8.0 * float(modes["relative_error[-]"].max()))  # room for the legend
     ax.set_xticks(sorted(modes["n"].unique()))
     ax.set_xticklabels([str(int(n)) for n in sorted(modes["n"].unique())])
     ax.set_xlabel("cells per side, n [-]")
     ax.set_ylabel("|f - f_exact| / f_exact [-]")
-    st.title(ax, "Simply supported plate: the six lowest frequencies",
-             "against the Reissner-Mindlin frequencies with rotary inertia; t / a = 0.01",
-             wrap=48)
-    st.legend(ax, loc="lower left", fontsize=7.5)
+    st.title(ax, "Plate: the six lowest frequencies",
+             "against the Reissner-Mindlin frequencies with rotary inertia, t / a = 0.01; "
+             "the lumped mass's error and the stiffness's cancel on the coarse meshes in "
+             "the modes (1, 2) and (2, 1)", wrap=52)
+    st.legend(ax, loc="upper right", fontsize=7.0, ncol=2)
 
     ax = axes[1]
+    damped = harmonic[np.isclose(harmonic["loss_factor"], 0.05)]
+    for slot, frequency in enumerate(sorted(damped["frequency[Hz]"].unique())):
+        for mass, (line, marker) in styles.items():
+            rows = damped[(damped["mass"] == mass)
+                          & np.isclose(damped["frequency[Hz]"], frequency)].sort_values("n")
+            ax.plot(rows["n"], rows["relative_error[-]"], line + marker,
+                    color=st.series_color(slot), markersize=4.0,
+                    label=f"{frequency:g} Hz" if mass == "consistent" else None)
+    ax.plot([], [], "-", color=st.INK_MUTED, label="consistent mass")
+    ax.plot([], [], "--", color=st.INK_MUTED, label="lumped mass")
+    _order_guide(ax, damped["n"].unique(), 0.4 * float(damped["relative_error[-]"].min()), 2.0)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_ylim(top=8.0 * float(damped["relative_error[-]"].max()))  # room for the legend
+    ax.set_xticks(sorted(damped["n"].unique()))
+    ax.set_xticklabels([str(int(n)) for n in sorted(damped["n"].unique())])
+    ax.set_xlabel("cells per side, n [-]")
+    ax.set_ylabel("|w - w_exact| / |w_exact| at the centre [-]")
+    undamped = harmonic[np.isclose(harmonic["loss_factor"], 0.0)]
+    finest = int(harmonic["n"].max())
+    spread = float(np.max(np.abs(
+        undamped[undamped["n"] == finest]["relative_error[-]"].to_numpy()
+        - damped[damped["n"] == finest]["relative_error[-]"].to_numpy())))
+    st.title(ax, "Plate: harmonic response to a uniform pressure",
+             "the complex centre amplitude against the exact Reissner-Mindlin series, loss "
+             f"factor 0.05 (undamped: within {spread:.1e} of these at {finest} cells); at "
+             "200 Hz the modes (1, 1) and (1, 3) nearly cancel", wrap=52)
+    st.legend(ax, loc="upper right", fontsize=7.0, ncol=2)
+
+    ax = axes[2]
     for loading, slot, marker in (("uniaxial", 0, "o"), ("equal biaxial", 1, "s")):
         sub = buckling[buckling["loading"] == loading].sort_values("n")
         k = float(sub["k_kirchhoff[-]"].iloc[-1])
@@ -2994,22 +3035,25 @@ def plot_shell_eigen(directory: str, path: str) -> str:
     ax.set_xticklabels([str(int(n)) for n in sorted(buckling["n"].unique())])
     ax.set_xlabel("cells per side, n [-]")
     ax.set_ylabel("|N - N_exact| / N_exact [-]")
-    st.title(ax, "Simply supported plate: buckling under compression",
+    st.title(ax, "Plate: buckling under compression",
              "exact loads of the model: Kirchhoff's k = 4 and 2 less the shear deformation "
              "(5.6e-4) and the fibres' own geometric stiffness (1.6e-4); both cases buckle in "
-             "the mode (1, 1), so their errors coincide", wrap=48)
-    st.legend(ax, loc="lower left", fontsize=7.5)
+             "the mode (1, 1), so their errors coincide", wrap=52)
+    st.legend(ax, loc="upper right", fontsize=7.5)
 
     st.annotate_note(
         fig,
-        "Square plate a = 1 m, t = 0.01 m, E = 70 GPa, nu = 0.3, rho = 2700 kg/m^3, hard "
-        "simple supports; consistent mass (the rotations about the normal carry none). The "
-        "exact values are the smallest roots of the 3 x 3 problem of each trigonometric "
-        "mode (w, psi_1, psi_2) of the Reissner-Mindlin plate - with its rotary inertia for "
-        "the frequencies, and for buckling with the geometric stiffness of the degenerated "
-        "solid, which adds (t^2 / 12) N psi_a,x^2 to N w_,x^2. k is the computed load in "
-        "units of pi^2 D / a^2. The equal biaxial load's Rayleigh quotient on the mode (1, 1) "
-        "is half the uniaxial one's, on the continuum and the mesh alike.",
+        "Simply supported square plate a = 1 m, t = 0.01 m, E = 70 GPa, nu = 0.3, "
+        "rho = 2700 kg/m^3, hard supports. Mass: consistent, or lumped by scaling the diagonal to each "
+        "element's total per DOF component (Hinton-Rock-Zienkiewicz); the rotations about "
+        "the normal carry none. The exact values come from the 3 x 3 problem of each "
+        "trigonometric mode (w, psi_1, psi_2) of the Reissner-Mindlin plate - with its rotary "
+        "inertia for the frequencies and the harmonic response (the series over the odd "
+        "modes a uniform pressure excites, m, n <= 401, loss factor on the stiffness), and "
+        "for buckling with the geometric stiffness of the degenerated solid, which adds "
+        "(t^2 / 12) N psi_a,x^2 to N w_,x^2. k is the computed load in units of "
+        "pi^2 D / a^2; the equal biaxial load's Rayleigh quotient on the mode (1, 1) is half "
+        "the uniaxial one's, on the continuum and the mesh alike.",
     )
     return st.save_figure(fig, path)
 

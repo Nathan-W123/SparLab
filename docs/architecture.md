@@ -49,7 +49,7 @@ below it.
                            |  Element (abc) |  |  Isotropic  |  |  Mesh      |
                            |  Quad4  Tri3   |  |  Material   |  |  Structured|
                            |  Hex8   Tet4   |  |  Hyper-     |  |  SubMesh   |
-                           |  Tet10         |  |  elastic    |  |            |
+                           |  Tet10  Shell4 |  |  elastic    |  |            |
                            |  Quadrature    |  |  Plasticity |  |            |
                            |  FaceGeometry  |  |             |  |            |
                            +-------+--------+  +------+------+  +-----+------+
@@ -72,6 +72,8 @@ below it.
        solvers in scikit-fem) and, with dynamics_xval.py, the transient
        histories (CalculiX *DYNAMIC; HHT-alpha in scikit-fem) and harmonic
        responses (a direct complex solve in scikit-fem)
+   python/scripts/shell_xval.py  an independent MITC4 in NumPy, which
+       cross_validate.py solves the shell decks with
    python/scripts/make_meshes.py  generates the Gmsh meshes the
        real-geometry decks read (the meshes are committed)
    python/scripts/tet10_part_study.py  meshes the engine mount at several
@@ -80,10 +82,11 @@ below it.
 
 The core is dimension-generic at run time: `Mesh::dim()` is 2 or 3, the
 element kernels are written for their own dimension (`Quad4` and `Tri3` on a
-2-D, `Hex8`, `Tet4` and `Tet10` on a 3-D mesh) and everything above the element
-layer - DOF
+2-D, `Hex8`, `Tet4`, `Tet10` and the surface element `Shell4` on a 3-D mesh)
+and everything above the element layer - DOF
 numbering, assembly, partitioning, stress recovery, modal analysis, the
-optimiser, the writers - is written against `dim`, `nodes_per_element` and
+optimiser, the writers - is written against `dim`, `nodes_per_element`,
+`dofs_per_node` (six on a shell: the rotations follow the translations) and
 the Voigt length rather than against a fixed 2. The Q4 kernels keep
 fixed-size internal matrices, so the plane path produces bit-for-bit what it
 did before the solid path existed - checked by re-running every benchmark
@@ -94,8 +97,8 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | Component | Owns | Deliberately does *not* |
 |-----------|------|--------------------------|
 | `core/` | scalar and matrix aliases, the exception hierarchy, the logger, timing, build provenance | anything numerical |
-| `mesh/Mesh` | nodal coordinates (2-D or 3-D), flat connectivity with an explicit stride, validation, boundary edge / face extraction, named node and element sets, cell-quality statistics | materials, DOFs, physics |
-| `mesh/StructuredMesh` | the rectangular Q4 and the box Hex8 generators, the Tri3 and Tet4 meshes split from them and the Tet10 meshes elevated from those, each with a node-perturbing variant for patch tests; `elevate_to_tet10` for any Tet4 mesh | reading files |
+| `mesh/Mesh` | nodal coordinates (2-D or 3-D), flat connectivity with an explicit stride, validation, boundary edge / face extraction, named node and element sets, cell-quality statistics, a shell surface's exact normals at its nodes | materials, DOFs, physics |
+| `mesh/StructuredMesh` | the rectangular Q4 and the box Hex8 generators, the Tri3 and Tet4 meshes split from them and the Tet10 meshes elevated from those, each with a node-perturbing variant for patch tests; `elevate_to_tet10` for any Tet4 mesh; the plate, cylinder and sphere shell surfaces with their exact normals | reading files |
 | `mesh/SubMesh` | extracting an element subset with compact renumbering; edge- (face-) connected components; the density-to-solid interpretation | deciding *whether* to interpret |
 | `material/IsotropicMaterial` | `(E, nu, rho)`, the plane-stress, plane-strain and three-dimensional matrices, the thermal properties, the plasticity parameters and the hardening curve, input validation | element integration |
 | `material/Hyperelastic` | the Saint Venant-Kirchhoff and compressible neo-Hookean laws at a displacement gradient: energy, second Piola-Kirchhoff stress, tangent, the multiplicative thermal split, the thickness stretch of plane stress, the Cauchy stress | the element loop |
@@ -104,19 +107,20 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | `elements/Quad4`, `elements/Hex8` | the bilinear quadrilateral and the trilinear hexahedron | any other topology |
 | `elements/Tri3`, `elements/Tet4` | the constant-strain triangle and tetrahedron, in closed form | quadrature |
 | `elements/Tet10` | the isoparametric ten-node tetrahedron: shape functions, 4-point stiffness, collapsed-Gauss mass and face loads, volume and Jacobian ratio of curved cells | lumping (the assembler's HRZ) |
+| `elements/Shell4` | the MITC4 shell: the degenerated-continuum kinematics over nodal directors, the MITC transverse-shear tying, the local frame, the drilling penalty; stiffness, consistent mass (rotary inertia; the drilling rotation massless), geometric stiffness and its derivative, the pressure and edge-traction loads, the resultants and the face and mid-surface stresses | the directors (the model's) and lumping (the assembler's HRZ) |
 | `elements/Quadrature` | Gauss-Legendre rules on the line, the square and the cube; the symmetric 4-point tetrahedron rule and collapsed Gauss rules on the triangle and the tetrahedron | where they are used |
 | `elements/FaceGeometry` | the shape functions and area vectors of edges and (curved) faces, the consistent pressure load on a face and its derivative with respect to the face's nodes (the follower-pressure stiffness), face integrals for fluxes and convection | which faces are loaded |
 | `fem/DofManager` | DOF numbering, prescribed values, the free/prescribed partition, gather and scatter | assembly |
 | `fem/Selector` | region selection by geometry (box, circle, annulus, sphere, ids, nearest node) or by a mesh file's named group, unions and complements | what a region is *for* |
 | `fem/BoundaryConditions` | constraint and load specifications, and turning them into prescribed DOFs and a global force vector | solving |
-| `fem/FemModel` | the complete discrete model: mesh, material, idealisation, integration orders, DOFs, load cases | any numerics |
+| `fem/FemModel` | the complete discrete model: mesh, material, idealisation, integration orders, DOFs, load cases; for a shell, the thickness of every element and the director at every element corner (the mesh's normals, or averaged within the fold angle) | any numerics |
 | `fem/Assembler` | sparse assembly of `K` and `M`, block extraction, the uniform-mesh element cache, the cached sparsity pattern later assemblies scatter into | choosing scale factors |
 | `fem/LinearSolver` | the solver backends behind one interface (direct, multigrid CG, Jacobi CG, the automatic choice), warm starts, pivot inspection, residual verification | model semantics |
 | `fem/Multigrid` | the smoothed-aggregation hierarchy, its reuse across refactorisations, the V-cycle, preconditioned CG, the deterministic parallel kernels | which solver a model uses |
 | `fem/ModelDiagnostics` | per-component rigid-body and floating-region detection before any factorisation | fixing the model |
 | `fem/StaticAnalysis` | the reduced solve, reaction recovery, global equilibrium checks, one factorisation shared across load cases | stress |
-| `fem/StressRecovery` | strain, stress, von Mises, principal stresses, element strain energy, nodal averaging | plotting |
-| `fem/ModalAnalysis` | the generalised eigenproblem, subspace iteration, validity screening, the analytical references | design variables |
+| `fem/StressRecovery` | strain, stress, von Mises, principal stresses, element strain energy, nodal averaging; a shell's resultants, face stresses and element energies (`ShellField`) | plotting |
+| `fem/ModalAnalysis` | the generalised eigenproblem, subspace iteration (the reversed pencil where the mass is only semi-definite, as a shell's), validity screening, the analytical references | design variables |
 | `fem/Buckling` | the geometric stiffness assembly, the buckling eigenproblem by subspace iteration with the spectral transformation and inertia-placed shift, warm starts, the solid-energy diagnostic, the Euler and Engesser references | the constraint built on it |
 | `fem/Loads` | the body loads from the consistent mass (self-weight, force densities, rotation), region temperatures, the thermal load and thermal strain | the conduction solve |
 | `fem/HeatConduction` | steady conduction on the structural mesh: conductivity, sources, fluxes, convection, prescribed temperatures, the heat balance | the thermal strain it causes |
@@ -139,10 +143,10 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | `topopt/TopologyOptimizer` | the loop for either method, penalty and `beta` continuation, the robust formulation's three designs and volume rescaling, the erosion check, convergence, history, snapshots | I/O |
 | `io/Json` | a self-contained JSON reader/writer and a path-aware, typo-catching config reader | the schema |
 | `io/Config` | the input-deck schema, validation, and model construction | numerics |
-| `io/MeshReader` | Gmsh (MSH 2.2 / 4.1) and Abaqus / CalculiX `.inp` import: cell types, named sets, orientation repair, unused and duplicate nodes, units, the read report | boundary conditions or materials in the file |
+| `io/MeshReader` | Gmsh (MSH 2.2 / 4.1) and Abaqus / CalculiX `.inp` import: cell types (S4 / S4R as shells), named sets, orientation repair, unused and duplicate nodes, units, the read report | boundary conditions or materials in the file |
 | `io/CsvWriter`, `io/VtkWriter` | plain-text export with explicit precision | what to export |
 | `io/StlWriter` | the boundary surface of a mesh (extruded for a plane one) as an indexed triangle surface, its closure and manifold checks, binary STL in and out | choosing what to export |
-| `io/CalculixWriter` | one CalculiX input deck per load case for the same discrete problem, every field within CalculiX's 20 characters, its non-linear counterpart (`*STEP, NLGEOM`, or small strain) with `*PLASTIC`, one step per leg of a load path and the contact pairs as `LINMORTAR` (a flat rigid obstacle as one moving element), and its transient counterpart (`*DYNAMIC, DIRECT, ALPHA` with the amplitude tabulated per step and Rayleigh `*DAMPING`), refusing what CalculiX cannot integrate as the same problem | running CalculiX |
+| `io/CalculixWriter` | one CalculiX input deck per load case for the same discrete problem, every field within CalculiX's 20 characters, its non-linear counterpart (`*STEP, NLGEOM`, or small strain) with `*PLASTIC`, one step per leg of a load path and the contact pairs as `LINMORTAR` (a flat rigid obstacle as one moving element), and its transient counterpart (`*DYNAMIC, DIRECT, ALPHA` with the amplitude tabulated per step and Rayleigh `*DAMPING`), shells as `S4` with a section per thickness, refusing what CalculiX cannot integrate as the same problem | running CalculiX |
 | `io/ResultWriter` | the result-directory layout, the geometry export and the summary documents | computing anything |
 | `apps/` | argument parsing, orchestration, console reports, exit codes | physics |
 | `python/sparlab_viz` | reading result files and drawing figures (plane fields in `fields`/`plots`, solid surfaces in `solid`/`plots3d`) | recomputing physics |
@@ -150,7 +154,9 @@ deck and comparing each summary, CSV and VTK file with the earlier output.
 | `python/scripts/dynamics_xval.py` | the dynamic references of the cross-validation: scikit-fem's mass matrices (consistent and lumped as SparLab lumps), HHT-alpha in the acceleration form, linear and non-linear (through `SkfemProblem.j2_system`), the direct complex harmonic solve, the monitors, and CalculiX's `.frd` series | the formulation it checks |
 | `python/scripts/contact_xval.py` | the contact reference of the cross-validation: the weights, dual bases, mortar integrals (2-D segments, 3-D clipped polygons) and gaps computed again from the faces `mesh.json` exports, SparLab's search and exclusion rules, and scikit-fem's own solve of the contact problem - a semismooth Newton method on the uncondensed Alart-Curnier functions - compared node by node | the formulation it checks |
 | `python/scripts/make_meshes.py` | the Gmsh parts of the real-geometry decks in linear and quadratic tetrahedra, their physical groups, deterministic mesher options | the analysis |
+| `python/scripts/shell_xval.py` | the shell reference of the cross-validation: an independent MITC4 in NumPy (interpolation, tying, frames, drilling term, mass, geometric stiffness, pressure and self-weight) with SparLab's directors and thicknesses, its static, modal and buckling solves, and the judge of the comparison (round-off scale and backward error) | the formulation it checks |
 | `python/scripts/make_contact_meshes.py` | the two-body meshes of the contact decks (non-matching Hex8 blocks touching and 20 um apart, a Q4 cylinder cap on a block), with their named node sets, in numpy alone | the analysis |
+| `python/scripts/make_shell_meshes.py` | the S4R box-beam mesh of the shell decks, with its named node and element sets, in numpy alone | the analysis |
 | `python/scripts/tet10_part_study.py` | meshing, solving and tabulating the Tet4 / Tet10 comparison on the engine mount | the element formulation |
 
 ## Design decisions worth naming
@@ -277,7 +283,10 @@ face table), add an `ElementType` enumerator, and register it in
 `make_element()`. That is exactly how `Hex8`, and later `Tri3` and `Tet4`,
 were added: the layers above them are written against `dim()`,
 `num_nodes()`, `num_faces()` and `num_voigt()` and needed no change beyond
-the writers' cell-type tables (VTK, CalculiX, STL faces). `Mesh` stores
+the writers' cell-type tables (VTK, CalculiX, STL faces). The shell added
+`dofs_per_node()` - six, the rotations after the translations - which the
+DOF numbering, the assembly and the writers read, and an element geometry
+that carries the directors as well as the coordinates. `Mesh` stores
 connectivity as a flat array with an explicit stride, so one mesh holds one
 cell type; mixed meshes (a quad-dominant plane mesh, a hex mesh with prisms)
 need that stride replaced by a per-element offset table, which is the one
@@ -345,7 +354,7 @@ node-by-node comparison, the tolerances and the summary.
 include/sparlab/          public headers, one per component, documented
 src/                      implementations, mirroring include/
 apps/                     four command-line drivers plus shared CLI support
-tests/                    twenty-four Catch2 translation units plus shared fixtures
+tests/                    twenty-five Catch2 translation units plus shared fixtures
 configs/benchmarks/       the fifteen benchmark decks (four plane compliance
                           cases and the MBB beam's projected, robust and
                           overhang variants, the stress-constrained L-bracket,
@@ -354,12 +363,14 @@ configs/benchmarks/       the fifteen benchmark decks (four plane compliance
                           the two parts read from mesh files)
 configs/meshes/           the Gmsh / Abaqus meshes those parts read (the
                           engine mount also in curved Tet10), each with a
-                          .json record of how it was generated
+                          .json record of how it was generated, and the
+                          contact and shell decks' meshes
 configs/studies/          the design-study baseline deck
 configs/verification/     the decks the cross-validation solves: static (Q4,
                           Hex8, Tri3, Tet4, the lug at nu = 0, the Tet10
                           engine mount, the buckling columns), the loads,
-                          non-linear, elastoplastic, dynamic and contact decks
+                          non-linear, elastoplastic, dynamic, contact and
+                          shell decks
 python/sparlab_viz/       loaders, style, field artists (plane and solid), figures
 python/scripts/           figure and table drivers, the cross-validation driver
 scripts/                  run scripts (benchmarks, verification, cross-validation,

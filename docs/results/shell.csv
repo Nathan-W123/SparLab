@@ -1,0 +1,72 @@
+study,case,finest_mesh,error_or_value,observed_order,note
+shell-patch,membrane,5 x 4 cells,6.216e-13,,5 mesh(es)
+shell-patch,bending,5 x 4 cells,1.303e-12,,5 mesh(es)
+shell-patch,membrane and bending,5 x 4 cells,3.403e-13,,5 mesh(es)
+shell-patch,"rigid motion, cylinder panel",5 x 4 cells,7.274e-14,,1 mesh(es)
+shell-patch,"rigid motion, sphere zone",5 x 4 cells,3.712e-13,,1 mesh(es)
+shell-plate,"simple, t/a = 0.1, regular",64^2,6.528e-05,2.002,
+shell-plate,"simple, t/a = 0.1, distorted",64^2,0.0001034,2.032,
+shell-plate,"simple, t/a = 0.01, regular",64^2,7.849e-05,2.002,
+shell-plate,"simple, t/a = 0.01, distorted",64^2,0.0001226,2.048,
+shell-plate,"simple, t/a = 0.001, regular",64^2,7.862e-05,2.002,
+shell-plate,"simple, t/a = 0.001, distorted",64^2,0.0001251,2.037,
+shell-plate,"simple, t/a = 0.0001, regular",64^2,7.857e-05,2.003,
+shell-plate,"simple, t/a = 0.0001, distorted",64^2,0.0001244,2.045,
+shell-plate,"clamped, t/a = 0.001, regular",64^2,0.0001618,2.128,
+shell-plate,"clamped, t/a = 0.001, distorted",64^2,0.0003,2.063,
+shell-plate,"clamped, distorted 4 x 4: w / w_thin over t/a = 1e-2 ... 1e-4",4^2,0.125417,,to 0.7280
+shell-plate,"clamped, distorted 8 x 8: w / w_thin over t/a = 1e-2 ... 1e-4",8^2,0.970534,,to 0.9839
+shell-plate,"clamped, distorted 16 x 16: w / w_thin over t/a = 1e-2 ... 1e-4",16^2,0.994106,,to 0.9975
+shell-plate-modes,"consistent mass, mode 1 (1, 1), 48.4021 Hz",64^2,0.0002685,2.001,
+shell-plate-modes,"consistent mass, mode 2 (1, 2), 121.0243 Hz",64^2,0.0009716,2.004,
+shell-plate-modes,"consistent mass, mode 3 (2, 1), 121.0243 Hz",64^2,0.0009716,2.004,
+shell-plate-modes,"consistent mass, mode 4 (2, 2), 193.5530 Hz",64^2,0.001073,2.004,
+shell-plate-modes,"consistent mass, mode 5 (1, 3), 242.1766 Hz",64^2,0.00241,2.009,
+shell-plate-modes,"consistent mass, mode 6 (3, 1), 242.1766 Hz",64^2,0.00241,2.009,
+shell-plate-modes,"lumped mass, mode 1 (1, 1), 48.3827 Hz",64^2,0.0001331,1.999,
+shell-plate-modes,"lumped mass, mode 2 (1, 2), 120.9028 Hz",64^2,3.29e-05,1.947,
+shell-plate-modes,"lumped mass, mode 3 (2, 1), 120.9028 Hz",64^2,3.29e-05,1.947,
+shell-plate-modes,"lumped mass, mode 4 (2, 2), 193.2424 Hz",64^2,0.0005337,1.996,
+shell-plate-modes,"lumped mass, mode 5 (1, 3), 241.6908 Hz",64^2,0.0003995,2.024,
+shell-plate-modes,"lumped mass, mode 6 (3, 1), 241.6908 Hz",64^2,0.0003995,2.024,
+shell-plate-harmonic,"consistent mass, loss factor 0, 0 Hz",64^2,7.849e-05,2.002,
+shell-plate-harmonic,"consistent mass, loss factor 0, 30 Hz",64^2,0.0004388,1.998,
+shell-plate-harmonic,"consistent mass, loss factor 0, 100 Hz",64^2,0.0002046,2.009,
+shell-plate-harmonic,"consistent mass, loss factor 0, 200 Hz",64^2,0.007414,1.95,
+shell-plate-harmonic,"consistent mass, loss factor 0.05, 0 Hz",64^2,7.849e-05,2.002,
+shell-plate-harmonic,"consistent mass, loss factor 0.05, 30 Hz",64^2,0.0004375,1.998,
+shell-plate-harmonic,"consistent mass, loss factor 0.05, 100 Hz",64^2,0.0002105,2.008,
+shell-plate-harmonic,"consistent mass, loss factor 0.05, 200 Hz",64^2,0.007318,1.951,
+shell-plate-harmonic,"lumped mass, loss factor 0, 0 Hz",64^2,7.849e-05,2.002,
+shell-plate-harmonic,"lumped mass, loss factor 0, 30 Hz",64^2,6.896e-05,1.997,
+shell-plate-harmonic,"lumped mass, loss factor 0, 100 Hz",64^2,0.000677,2.001,
+shell-plate-harmonic,"lumped mass, loss factor 0, 200 Hz",64^2,0.002738,2.003,
+shell-plate-harmonic,"lumped mass, loss factor 0.05, 0 Hz",64^2,7.849e-05,2.002,
+shell-plate-harmonic,"lumped mass, loss factor 0.05, 30 Hz",64^2,6.906e-05,1.997,
+shell-plate-harmonic,"lumped mass, loss factor 0.05, 100 Hz",64^2,0.0006761,2.001,
+shell-plate-harmonic,"lumped mass, loss factor 0.05, 200 Hz",64^2,0.00271,2.003,
+shell-plate-buckling,"uniaxial, k = 3.99843",64^2,0.0003362,2.001,
+shell-plate-buckling,"equal biaxial, k = 1.99922",64^2,0.0003362,2.001,
+shell-cylinder-pressure,radial displacement (hoop force 1.1e-04),256 round,0.0001012,1.991,
+benchmark,Scordelis-Lo roof,4^2,0.943323,,reference 0.3024
+benchmark,Scordelis-Lo roof,8^2,0.972853,,reference 0.3024
+benchmark,Scordelis-Lo roof,16^2,0.989046,,reference 0.3024
+benchmark,Scordelis-Lo roof,32^2,0.994461,,reference 0.3024
+benchmark,Scordelis-Lo roof,64^2,0.996815,,reference 0.3024
+benchmark,pinched cylinder,4^2,0.379283,,reference 1.8248e-05
+benchmark,pinched cylinder,8^2,0.747648,,reference 1.8248e-05
+benchmark,pinched cylinder,16^2,0.92971,,reference 1.8248e-05
+benchmark,pinched cylinder,32^2,0.988619,,reference 1.8248e-05
+benchmark,pinched cylinder,64^2,1.00645,,reference 1.8248e-05
+benchmark,pinched hemisphere,4^2,1.02507,,reference 0.094
+benchmark,pinched hemisphere,8^2,0.99555,,reference 0.094
+benchmark,pinched hemisphere,16^2,0.990267,,reference 0.094
+benchmark,pinched hemisphere,32^2,0.992882,,reference 0.094
+benchmark,pinched hemisphere,64^2,0.99474,,reference 0.094
+box-beam,"4 cells per wall, drilling 0.001",,0.991343,,twist ratio 0.999357
+box-beam,"8 cells per wall, drilling 1e-06",,0.997293,,twist ratio 0.999414
+box-beam,"8 cells per wall, drilling 1e-05",,0.997293,,twist ratio 0.999414
+box-beam,"8 cells per wall, drilling 0.0001",,0.997293,,twist ratio 0.999412
+box-beam,"8 cells per wall, drilling 0.001",,0.997293,,twist ratio 0.999396
+box-beam,"8 cells per wall, drilling 0.01",,0.997286,,twist ratio 0.999230
+box-beam,"8 cells per wall, drilling 0.1",,0.997228,,twist ratio 0.997757

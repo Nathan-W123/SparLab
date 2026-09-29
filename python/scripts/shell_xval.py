@@ -27,7 +27,9 @@ mesh.json, the modal problem (the lowest frequencies, scipy's shift-invert
 Lanczos) and the buckling problem of each static solution, and compares
 with SparLab's results: displacements and rotations node by node,
 frequencies and load factors mode by mode. The agreement is that of two
-solves of one discrete problem (1e-10 and better).
+solves of one discrete problem, their round-off: judge_fields weighs it
+against the system's round-off scale kappa_1 eps and the backward error of
+SparLab's solution in the NumPy system.
 
 CalculiX's S4 is a different discretisation - it expands each shell into a
 layer of incompatible-mode solids (C3D8I) over normals it averages itself -
@@ -49,6 +51,26 @@ import scipy.sparse.linalg as spla
 SHEAR_FACTOR = 5.0 / 6.0
 CORNERS = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]])
 _G2 = 1.0 / math.sqrt(3.0)
+
+
+def _start(n: int) -> np.ndarray:
+    """A fixed random start vector for ARPACK, whose default one is drawn
+    afresh on every call: the results repeat bit for bit, and no symmetry of
+    the model hides a mode from the Krylov space."""
+    return np.random.default_rng(20240917).standard_normal(n)
+
+
+def seeded_onenormest(operator) -> float:
+    """scipy's onenormest (Hager and Higham's block estimate of the 1-norm)
+    with its random starting block drawn from a fixed seed: it draws from
+    numpy's global random state, which is restored afterwards, so the
+    estimate repeats bit for bit from run to run."""
+    state = np.random.get_state()
+    np.random.seed(20240917)
+    try:
+        return float(spla.onenormest(operator))
+    finally:
+        np.random.set_state(state)
 
 
 def gauss(n: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -309,11 +331,15 @@ class ShellProblem:
                              shape=(self.ndof, self.ndof))
 
     def condition_estimate(self) -> float:
-        """lambda_max / lambda_min of K_ff (Lanczos)."""
+        """The 1-norm condition number of K_ff, estimated as for the solid
+        decks (Hager and Higham, scipy's onenormest, on a factorisation of
+        K_ff): two backward-stable solves can differ by about kappa * eps of
+        the largest value."""
         kff = self.k[self.free][:, self.free].tocsc()
-        top = spla.eigsh(kff, k=1, which="LA", return_eigenvectors=False)[0]
-        bottom = spla.eigsh(kff, k=1, sigma=0.0, which="LM", return_eigenvectors=False)[0]
-        return float(top / bottom)
+        solve = spla.factorized(kff)
+        n = kff.shape[0]
+        inverse = spla.LinearOperator((n, n), matvec=solve, rmatvec=solve, dtype=float)
+        return float(abs(kff).sum(axis=0).max() * seeded_onenormest(inverse))
 
     def backward_error(self, u: np.ndarray, f: np.ndarray) -> float:
         """||K u - f|| / (||K|| ||u|| + ||f||) on the free rows, ||K|| the
@@ -338,7 +364,7 @@ class ShellProblem:
         kff = self.k[self.free][:, self.free].tocsc()
         mff = m[self.free][:, self.free].tocsc()
         vals = spla.eigsh(kff, k=count, M=mff, sigma=0.0, which="LM",
-                          return_eigenvectors=False, tol=1e-13)
+                          return_eigenvectors=False, tol=1e-13, v0=_start(kff.shape[0]))
         return np.sqrt(np.sort(vals))
 
     def buckling(self, u: np.ndarray, count: int) -> np.ndarray:
@@ -348,7 +374,7 @@ class ShellProblem:
         kff = self.k[self.free][:, self.free].tocsc()
         gff = -kg[self.free][:, self.free].tocsc()
         vals = spla.eigsh(gff, k=count + 4, M=kff, which="LA", return_eigenvectors=False,
-                          tol=1e-13)
+                          tol=1e-13, v0=_start(kff.shape[0]))
         mu = np.sort(vals[vals > 0.0])[::-1]
         return 1.0 / mu[:count]
 

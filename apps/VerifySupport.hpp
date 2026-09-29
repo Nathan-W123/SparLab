@@ -84,6 +84,7 @@ StudyOutcome study_hertz_point(const std::string& out_dir, json::Value& summary)
 StudyOutcome study_shell_patch(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_plate(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_plate_modes(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_plate_harmonic(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_plate_buckling(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_cylinder_pressure(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_scordelis_lo(const std::string& out_dir, json::Value& summary);

@@ -6,17 +6,15 @@ says what would be needed to lift it.
 
 ## Physics and idealisation
 
-**Plane or solid continuum, nothing in between.** Plane stress (default),
-plane strain, and three-dimensional solids on hexahedral or tetrahedral
-meshes. There are no
-plate, shell or beam elements, so a thin-walled part is either a plane
-load-path study or a solid mesh with enough elements through the wall to
-resolve its bending - which the solid element needs several of (below).
-Buckling is seen only as far as the continuum model allows: the linear
-buckling analysis finds the in-plane buckling of a plane model's struts and
-every mode of a solid mesh fine enough to bend, but a plane model cannot
+**Plane, solid and shell models; no beams.** Plane stress (default), plane
+strain, three-dimensional solids on hexahedral or tetrahedral meshes, and
+four-node MITC4 shells for linear statics, natural frequencies, the
+harmonic response and linear buckling (below). There are no beam elements,
+and no model mixes element types, so a stiffened panel is either all shell
+- the stiffeners as shell walls - or a solid mesh. A plane model cannot
 buckle out of its plane, so plate buckling of a thin lightened web - which
-can govern it - stays invisible to the 2-D decks.
+can govern it - stays invisible to the 2-D decks; a shell model of the web
+shows it, and a solid mesh does if it is fine enough to bend.
 
 **Elastic and linear unless asked otherwise.** The static, modal and
 buckling analyses and the topology optimisation are linear and elastic:
@@ -161,12 +159,74 @@ do:
 * no automatic contact search: every pair is declared, a node takes one
   constraint (it cannot be on two slave surfaces, or on a slave and a master
   one), and there is no self-contact detection. No tied (bonded) interfaces,
-  adhesion, cohesive zones, wear, thermal contact conductance or contact
-  between shells or beams (which do not exist here);
+  adhesion, cohesive zones, wear or thermal contact conductance, and no
+  contact of shells (refused) or beams (which do not exist here);
 * two mortar surfaces that start a gap apart transmit friction across it, as
   the small-sliding model on the reference geometry does in every code: the
   couple of that force pair (the gap times the tangential force) remains in
   the moment balance.
+
+**Shells: MITC4, linear, on four-node quadrilaterals.** The shell is the
+degenerated continuum with Dvorkin and Bathe's transverse-shear tying and a
+drilling penalty (`docs/formulation.md`, section 7g), verified against
+exact plate, shell and ring solutions and the MacNeal-Harder benchmarks
+(`docs/verification.md`, section 27). What it does not do:
+
+* linear only: static, modal, harmonic response and linear buckling. The
+  non-linear analysis (large rotations, plasticity), contact and the
+  transient analysis refuse a shell model, the last because the rotation
+  about the director moves no mass - the mass matrix is singular - so the
+  initial accelerations are not determined. Temperatures and the
+  centrifugal load are refused too, and so is topology optimisation;
+* one element: the four-node quadrilateral. No triangles (S3), no quadratic
+  shells (S8R, S9) - a mesh file with them is refused with the reason - so
+  a curved surface is a mesh of flat-ish facets, and the geometry error of
+  those facets is part of the discretisation error (the thick-ring study
+  converges to the circle at second order);
+* MITC4 is free of shear locking on meshes of parallelograms, not on
+  distorted ones: a distorted 4 x 4 mesh of a thin clamped plate reaches
+  0.15 of the deflection at `t / a = 1e-3`, while from 8 x 8 on the
+  deflection no longer falls with the thickness. It is not free of membrane
+  locking: the pinched cylinder reaches 0.38, 0.75, 0.93 and 0.99 of its
+  reference on 4 to 32 cells a side. Coarse meshes of bending-dominated
+  curved shells are too stiff;
+* the rotation about the director has no stiffness of its own: a penalty
+  `alpha G t` (`alpha = 1e-3`) ties it to the in-plane rotation of the
+  displacement field. A moment about a shell's normal therefore acts only
+  through the penalty, and at a fold, where one wall's drilling rotation is
+  its neighbour's bending rotation, the penalty couples the two walls. The
+  box beam moves by at most `1.7e-4` for `alpha` from `1e-6` to `1e-2`; a
+  penalty of `1e-1` begins to stiffen the walls;
+* one isotropic material per element and a thickness constant over each
+  element (`model.shell.sections`): no composite layups, no offsets of the
+  reference surface from the mid-surface, no thickness varying within an
+  element, no stress through the thickness (`sigma_33 = 0`), and the
+  transverse shear stress is recovered as the parabolic `1.5 Q / t` at the
+  mid-surface. Stresses and resultants are those at each element's centre;
+* the directors are the mesh's exact normals when it has them (the
+  generated plate, cylinder and sphere), or averaged over the elements that
+  meet at a node within the fold angle (20 degrees by default): a coarse
+  mesh of a curved surface read from a file has directors that are not its
+  true normals. Self-weight and mass are those of the solid the directors
+  sweep, which on the flat facets of a curved surface falls short of `t A`
+  by a discretisation error of order `h^2` (1.8 % on 5 x 4 cells of a
+  sphere zone, 0.45 % on 10 x 8);
+* a point load on a shell is singular twice over: its bending stress and,
+  in a shear-deformable shell, its deflection, whose transverse-shear part
+  grows like `log(1 / h)` under the load. The pinched cylinder passes its
+  thin-shell reference on the finest mesh for that reason; spread a load
+  over an area to get a deflection that converges;
+* shells cannot be tied to solids or beams (no shell-to-solid coupling, no
+  rigid links or multi-point constraints), and a model is all shells or
+  none;
+* the frequency response's field files carry the translations only, and a
+  monitor reads a translation component;
+* CalculiX's `S4`, which the exporter writes, is not the same element: it
+  expands each shell into incompatible-mode solids over normals it averages
+  itself, and imposes held rotations and nodal moments through rigid knots,
+  which stiffen its model where rotations are held (tenfold on a quarter of
+  the Scordelis-Lo roof). The export is a starting point for a CalculiX
+  model, not the same discrete problem.
 
 **Body loads: self-weight, force densities and steady rotation.** Gravity,
 uniform body force densities on element regions and the centrifugal load of a
@@ -520,9 +580,14 @@ values, which are what the CSV tables and the reported peaks use, are unaffected
 ## Verification and validation
 
 **Verification is strong; validation is narrow.** The implementation is
-verified against exact answers on all five element types. The patch tests
-pass to 4e-15 (Q4), 2e-15 (Hex8) and 9e-15 (Tri3 and Tet4), and the Tet10
-passes the quadratic (pure-bending) patch test to 1.2e-14. The sparse and
+verified against exact answers on all six element types. The patch tests
+pass to 4e-15 (Q4), 2e-15 (Hex8), 9e-15 (Tri3 and Tet4) and 1.3e-12 (the
+MITC4 shell, membrane and bending states on distorted meshes in a turned
+plane), and the Tet10 passes the quadratic (pure-bending) patch test to
+1.2e-14. The shell converges at second order to the exact Reissner-Mindlin
+deflection, frequencies, harmonic response and buckling loads of a plate,
+without shear locking from `t / a = 1e-1` to `1e-4`, and to the exact state
+of a thick ring. The sparse and
 dense solvers agree to 9e-12, and multigrid CG agrees with Cholesky to
 4e-12. The compliance gradient matches central differences to 2e-8 on Q4
 and Hex8, and to 1e-7 through the Heaviside projection on Q4 and Tet4; the
@@ -537,10 +602,14 @@ responses and a one-element oscillator's finite-strain elastic and
 elastoplastic motion converge at second order to their exact solutions.
 Linear static displacements are cross-validated node by node against two
 independent codes on thirty-eight problems with sixty-three load cases,
-covering all five element types and both mesh-file formats; so are buckling
-load factors on three columns, large-deflection states on four decks,
-elastoplastic states on ten, transient histories on five and harmonic
-responses on two. scikit-fem agrees to solver round-off, displacements and
+covering all five continuum element types and both mesh-file formats; so
+are buckling load factors on three columns, large-deflection states on four
+decks, elastoplastic states on ten, transient histories on five, harmonic
+responses on two and contact states on six; and the shell's displacements,
+rotations, frequencies and buckling factors on four decks against an
+independent MITC4 written in NumPy, to 6.2e-9 or better but for the
+rotations of the worst-conditioned deck, 2.6e-7, below its round-off
+scale. scikit-fem agrees to solver round-off, displacements and
 load factors alike: every linear difference lies below the round-off scale
 of its system (its condition number times eps), 1.5e-10 or better except on
 the three worst-conditioned systems - a plane-strain strip and two slender
@@ -550,7 +619,8 @@ solver with the elastoplastic states, small strain and finite, E-bar
 included, to 7e-12; an HHT-alpha integration and a direct complex solve on
 its matrices agree with the transient histories to 2.2e-8 (the final
 acceleration of an elastoplastic run; its displacements to 1.2e-12) and
-with the harmonic responses to 1.0e-10. CalculiX's displacements agree to
+with the harmonic responses to 1.0e-10, and an independent contact solve
+with the contact states to 8.6e-13. CalculiX's displacements agree to
 the rounding of its own result file, 4.3e-6 or better, linear, `NLGEOM`,
 `*PLASTIC` and `*DYNAMIC` alike, wherever the two codes solve the same
 discrete problem; its plane-stress
@@ -558,14 +628,18 @@ comparisons at `nu != 0` and its finite-strain plasticity are recorded but
 not judged, its kinematic hardening is not compared (it does not
 reproduce Prager's rule), and neither are its plane elements in dynamics
 (their `*DYNAMIC` response contradicts CalculiX's own `*FREQUENCY`); its
-buckling factors differ by up to 8.3e-5 for a reason not identified.
-Validation against independent theory covers exactly five references:
+buckling factors differ by up to 8.3e-5 for a reason not identified, and
+its shell (`S4`, solids over its own normals, rotations held through rigid
+knots) is a different discretisation, recorded and not judged.
+Validation against independent theory covers exactly these references:
 Euler-Bernoulli and Timoshenko cantilever deflection, Euler-Bernoulli
 bending frequencies, fixed-free rod axial frequencies, the Euler-Engesser
-buckling load of a clamped column, and Euler's elastica. Stresses,
-frequencies, non-linear static load paths and optimised designs are not
-compared with another code, and there is **no comparison against
-experiment**.
+buckling load of a clamped column, Euler's elastica, Hertz's line and point
+contact, the thin-shell references of three MacNeal-Harder shell
+benchmarks, and beam theory and Bredt's torsion for a box beam. Stresses,
+the continuum elements' frequencies, non-linear static load paths and
+optimised designs are not compared with another code, and there is **no
+comparison against experiment**.
 
 **The MBB compliance is not compared to a published number.** SparLab reports
 what it computes (218.8 J with the density filter, 203.2 J with the sensitivity

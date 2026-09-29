@@ -1379,8 +1379,16 @@ def shell_verification_table(results_dir: str) -> Optional[str]:
     if modes is not None:
         finest = modes[modes["n"] == modes["n"].max()]
         for _, r in finest.iterrows():
-            record("shell-plate-modes", f"mode {int(r['mode'])} ({int(r['m'])}, "
-                   f"{int(r['n_half_waves'])}), {float(r['frequency[Hz]']):.4f} Hz",
+            record("shell-plate-modes", f"{r['mass']} mass, mode {int(r['mode'])} "
+                   f"({int(r['m'])}, {int(r['n_half_waves'])}), "
+                   f"{float(r['frequency[Hz]']):.4f} Hz", f"{int(r['n'])}^2",
+                   float(r["relative_error[-]"]), float(r["observed_order"]))
+    harmonic = _verification_csv(results_dir, "shell_plate_harmonic.csv")
+    if harmonic is not None:
+        finest = harmonic[harmonic["n"] == harmonic["n"].max()]
+        for _, r in finest.iterrows():
+            record("shell-plate-harmonic", f"{r['mass']} mass, loss factor "
+                   f"{float(r['loss_factor']):g}, {float(r['frequency[Hz]']):g} Hz",
                    f"{int(r['n'])}^2", float(r["relative_error[-]"]),
                    float(r["observed_order"]))
     buckling = _verification_csv(results_dir, "shell_plate_buckling.csv")
@@ -1795,10 +1803,12 @@ def main(argv=None) -> int:
          "k G t), clamped against Taylor and Govindjee's thin-plate value - on regular and "
          "distorted meshes, and on distorted meshes of the clamped plate the ratio of the "
          "deflection to the thin-plate value over t/a = 1e-2 ... 1e-4 (MITC4 locks on the "
-         "4 x 4 mesh; the ratio is the same for every thickness from 8 x 8 on). "
-         "shell-plate-modes and -buckling: against the exact frequencies and buckling loads "
-         "of the Reissner-Mindlin plate (with rotary inertia; with the degenerated solid's "
-         "geometric stiffness), t / a = 0.01; k in units of pi^2 D / a^2. "
+         "4 x 4 mesh; from 8 x 8 on the ratio no longer falls with t/a). "
+         "shell-plate-modes, -harmonic and -buckling: against the exact frequencies, "
+         "harmonic centre amplitudes (a uniform pressure, the complex amplitude's relative "
+         "error) and buckling loads of the Reissner-Mindlin plate (with rotary inertia; with "
+         "the degenerated solid's geometric stiffness), t / a = 0.01, on consistent and "
+         "lumped mass; k in units of pi^2 D / a^2. "
          "shell-cylinder-pressure: a slice of a long cylinder, R / t = 100, against its "
          "thick-ring state."),
         ("Shell benchmarks", shell_benchmark_table(args.results),

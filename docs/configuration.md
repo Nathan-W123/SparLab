@@ -234,7 +234,10 @@ small), contact, plasticity, temperatures, a centrifugal load (it varies
 through the thickness in a way nodal loads cannot carry), a transient (the
 rotation of a node about its director moves no material, so the mass matrix
 is singular and the initial accelerations are undetermined) and topology
-optimisation, each with its reason.
+optimisation, each with its reason. The modal analysis (consistent or
+lumped mass), the harmonic response (`frequency_response`) and linear
+buckling take a shell model; the harmonic response's field files and
+monitors carry the translations only.
 
 ## Regions
 

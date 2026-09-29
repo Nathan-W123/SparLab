@@ -460,7 +460,8 @@ class SkfemProblem:
 
     def condition_estimate(self) -> float:
         """The 1-norm condition number of K_ff, estimated (Hager and Higham,
-        scipy's onenormest) with the factorisation static() made. K_ff is
+        scipy's onenormest from a fixed seed, shell_xval.seeded_onenormest)
+        with the factorisation static() made. K_ff is
         symmetric, so it is also the infinity-norm condition number, the one
         that bounds the largest nodal error: two backward-stable solves of the
         system can differ by about kappa * eps of the largest displacement."""
@@ -472,7 +473,7 @@ class SkfemProblem:
         n = kff.shape[0]
         inverse = sla.LinearOperator((n, n), matvec=self._factor, rmatvec=self._factor,
                                      dtype=float)
-        return float(abs(kff).sum(axis=0).max() * sla.onenormest(inverse))
+        return float(abs(kff).sum(axis=0).max() * shell_xval.seeded_onenormest(inverse))
 
     def nodal(self, u: np.ndarray) -> np.ndarray:
         out = np.zeros((self.mesh.num_nodes, self.dim))
@@ -1897,11 +1898,16 @@ def main(argv=None) -> int:
                                    "round-off, whose scale is the condition number of "
                                    "K_ff times eps (condition_estimate: Hager and "
                                    "Higham's 1-norm estimate; round_off_scale)"},
+            "numpy mitc4": {"note": "an independent MITC4 shell written in NumPy "
+                                    "(shell_xval.py) solving the same discrete shell "
+                                    "problem; round_off_scale as for scikit-fem"},
             "calculix": {"version": None if args.skip_calculix else calculix_version(),
                          "note": "C3D8, C3D4 and C3D10 are the same elements as "
                                  "SparLab's Hex8, Tet4 and Tet10; CPS4/CPS3 (CPE4/CPE3) are plane elements "
                                  "CalculiX expands through the thickness, a different "
-                                 "discretisation of the plane problem. Nodal results are "
+                                 "discretisation of the plane problem, and S4 a shell it "
+                                 "expands into incompatible-mode solids, a different "
+                                 "discretisation of the shell. Nodal results are "
                                  "read from the .frd file, which carries six significant "
                                  "digits, so differences below 5e-6 relative are its "
                                  "rounding, not a disagreement"},

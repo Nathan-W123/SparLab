@@ -21,8 +21,11 @@
 ///                                and equal biaxial compression against the
 ///                                exact buckling loads of the model (k = 4 and
 ///                                2 in the thin limit);
-///   * `shell-cylinder-pressure`  a free cylinder under internal pressure:
-///                                the membrane state u_r = p R^2 / (E t);
+///   * `shell-cylinder-pressure`  a slice of a long cylinder under internal
+///                                pressure, its end rings held against
+///                                rotation: the exact thick-ring state
+///                                u_r = p R / (E ln((R + t/2) / (R - t/2))),
+///                                within (t / R)^2 / 12 of p R^2 / (E t);
 ///   * `shell-scordelis-lo`, `shell-pinched-cylinder`,
 ///     `shell-pinched-hemisphere` the MacNeal-Harder benchmarks, against the
 ///                                references of thin-shell theory (validation);
@@ -46,6 +49,7 @@
 #include "sparlab/elements/Shell4.hpp"
 #include "sparlab/fem/Assembler.hpp"
 #include "sparlab/fem/Buckling.hpp"
+#include "sparlab/fem/Dynamics.hpp"
 #include "sparlab/fem/ModalAnalysis.hpp"
 #include "sparlab/fem/StaticAnalysis.hpp"
 #include "sparlab/fem/StressRecovery.hpp"
@@ -57,6 +61,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <functional>
 #include <limits>
 #include <sstream>
@@ -629,7 +634,7 @@ StudyOutcome study_shell_plate(const std::string& out_dir, json::Value& summary)
                 "MITC4's freedom from shear locking holds on parallelogram meshes; on a "
                 "distorted 4 x 4 mesh of the clamped plate, whose 24 interior edges' shear "
                 "constraints nearly exhaust its 27 interior DOFs, it locks as t / a falls; "
-                "from 8 x 8 on the result no longer depends on t / a."));
+                "from 8 x 8 on it no longer falls as t / a does."));
   summary.set("shell_plate", block);
 
   StudyOutcome outcome;
@@ -675,40 +680,51 @@ StudyOutcome study_shell_plate_modes(const std::string& out_dir, json::Value& su
   const int modes = 6;
   const std::vector<Index> ladder{8, 16, 32, 64};
   CsvWriter csv(path_join(out_dir, "shell_plate_modes.csv"),
-                {"n", "mode", "m", "n_half_waves", "frequency[Hz]", "exact[Hz]",
+                {"mass", "n", "mode", "m", "n_half_waves", "frequency[Hz]", "exact[Hz]",
                  "relative_error[-]", "observed_order"});
-  std::vector<Scalar> previous(modes, 0.0);
   Scalar worst_fine = 0.0;
+  Scalar worst_lumped = 0.0;
   Scalar worst_order = kInf;
   json::Value meshes = json::Value::make_array();
-  for (const Index n : ladder) {
-    FemModel model = plate(n, a, a, t, material);
-    simple_supports(model, a, a, true);
-    model.load_case_specs() = {uniform_pressure(1.0)};
-    model.finalize();
-    Assembler assembler(model);
-    ModalAnalysisOptions options;
-    options.num_modes = modes;
-    const ModalResult r = solve_modal(model, assembler, options);
-    json::Value entry = json::Value::make_object();
-    entry.set("n", json::Value::make_number(static_cast<Scalar>(n)));
-    json::Value errors = json::Value::make_array();
-    for (int i = 0; i < modes; ++i) {
-      const Scalar error = std::abs(r.angular_frequencies(i) - exact[i].omega) / exact[i].omega;
-      const Scalar p = previous[i] > 0.0 ? order(previous[i], error) : 0.0;
-      csv.raw_row({std::to_string(n), std::to_string(i + 1), std::to_string(exact[i].m),
-                   std::to_string(exact[i].n), fmt(r.frequencies_hz(i), 10),
-                   fmt(exact[i].omega / (2.0 * kPi), 10), fmt(error, 4),
-                   previous[i] > 0.0 ? fmt(p, 4) : ""});
-      errors.push_back(json::Value::make_number(error));
-      if (n == ladder.back()) {
-        worst_fine = std::max(worst_fine, error);
-        worst_order = std::min(worst_order, p);
+  for (const MassType mass : {MassType::Consistent, MassType::Lumped}) {
+    const std::string mass_name = mass == MassType::Consistent ? "consistent" : "lumped";
+    std::vector<Scalar> previous(modes, 0.0);
+    for (const Index n : ladder) {
+      FemModel model = plate(n, a, a, t, material);
+      simple_supports(model, a, a, true);
+      model.load_case_specs() = {uniform_pressure(1.0)};
+      model.finalize();
+      Assembler assembler(model);
+      ModalAnalysisOptions options;
+      options.num_modes = modes;
+      options.mass_type = mass;
+      const ModalResult r = solve_modal(model, assembler, options);
+      json::Value entry = json::Value::make_object();
+      entry.set("mass", json::Value::make_string(mass_name));
+      entry.set("n", json::Value::make_number(static_cast<Scalar>(n)));
+      json::Value errors = json::Value::make_array();
+      for (int i = 0; i < modes; ++i) {
+        const Scalar error =
+            std::abs(r.angular_frequencies(i) - exact[i].omega) / exact[i].omega;
+        const Scalar p = previous[i] > 0.0 ? order(previous[i], error) : 0.0;
+        csv.raw_row({mass_name, std::to_string(n), std::to_string(i + 1),
+                     std::to_string(exact[i].m), std::to_string(exact[i].n),
+                     fmt(r.frequencies_hz(i), 10), fmt(exact[i].omega / (2.0 * kPi), 10),
+                     fmt(error, 4), previous[i] > 0.0 ? fmt(p, 4) : ""});
+        errors.push_back(json::Value::make_number(error));
+        if (n == ladder.back()) {
+          if (mass == MassType::Consistent) {
+            worst_fine = std::max(worst_fine, error);
+          } else {
+            worst_lumped = std::max(worst_lumped, error);
+          }
+          worst_order = std::min(worst_order, p);
+        }
+        previous[i] = error;
       }
-      previous[i] = error;
+      entry.set("errors", errors);
+      meshes.push_back(entry);
     }
-    entry.set("errors", errors);
-    meshes.push_back(entry);
   }
   csv.close();
   json::Value block = json::Value::make_object();
@@ -723,17 +739,175 @@ StudyOutcome study_shell_plate_modes(const std::string& out_dir, json::Value& su
                 "exact Reissner-Mindlin frequencies with the rotary inertia rho t^3 / 12 and "
                 "the shear factor 5/6 (the smallest root of the 3 x 3 modal problem in "
                 "W sin sin, psi cos sin, sin cos). The rotations about the normal carry no "
-                "mass; the eigensolver treats that semi-definite mass."));
+                "mass; the eigensolver treats that semi-definite mass. Consistent mass and "
+                "the lumped one (Hinton-Rock-Zienkiewicz: per DOF component the diagonal "
+                "scaled to the element's total, rotary inertia included)."));
+  block.set("largest_error_at_64_consistent", json::Value::make_number(worst_fine));
+  block.set("largest_error_at_64_lumped", json::Value::make_number(worst_lumped));
   summary.set("shell_plate_modes", block);
   StudyOutcome outcome;
-  outcome.name = "shell plate: six lowest natural frequencies";
+  outcome.name = "shell plate: six lowest natural frequencies, consistent and lumped mass";
   outcome.kind = "verification";
-  outcome.metric = "largest frequency error at 64 x 64";
+  outcome.metric = "largest frequency error at 64 x 64, consistent mass";
   outcome.value = worst_fine;
   outcome.tolerance = 3.0e-3;
-  outcome.passed = worst_fine <= outcome.tolerance && worst_order >= 1.9;
+  const Scalar lumped_tolerance = 1.0e-3;
+  outcome.passed = worst_fine <= outcome.tolerance && worst_lumped <= lumped_tolerance &&
+                   worst_order >= 1.9;
   std::ostringstream note;
-  note << "smallest observed order " << fmt(worst_order, 3) << " (32 -> 64)";
+  note << "lumped mass " << fmt(worst_lumped, 3) << " (tolerance " << fmt(lumped_tolerance, 3)
+       << "); smallest observed order " << fmt(worst_order, 3) << " (32 -> 64, both masses)";
+  outcome.note = note.str();
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
+// Harmonic response
+// ---------------------------------------------------------------------------
+
+/// The exact steady harmonic centre deflection of the simply supported
+/// (hard) Reissner-Mindlin plate a x a under a uniform pressure q cos(omega t)
+/// with the loss factor eta on its stiffness: the sum over the odd modes
+/// (m, n) that the uniform load excites, 16 q / (pi^2 m n) each, of the
+/// deflection amplitude W solving the mode's 3 x 3 problem
+/// (k (1 + i eta) - omega^2 m) (W, P1, P2) = (16 q / (pi^2 m n), 0, 0).
+std::complex<Scalar> harmonic_centre(Scalar a, Scalar e, Scalar nu, Scalar t, Scalar rho,
+                                     Scalar q, Scalar omega, Scalar eta) {
+  using Complex = std::complex<Scalar>;
+  Complex sum = 0.0;
+  for (int m = 1; m <= 401; m += 2) {
+    for (int n = 1; n <= 401; n += 2) {
+      const TrigMode mode = trig_mode(m * kPi / a, n * kPi / a, e, nu, t, rho, 0.0, 0.0);
+      const Eigen::Matrix3cd dynamic = mode.k.cast<Complex>() * Complex(1.0, eta) -
+                                       (omega * omega) * mode.m.cast<Complex>();
+      Eigen::Vector3cd load = Eigen::Vector3cd::Zero();
+      load(0) = 16.0 * q / (kPi * kPi * static_cast<Scalar>(m) * static_cast<Scalar>(n));
+      const Eigen::Vector3cd x = dynamic.fullPivLu().solve(load);
+      const Scalar sign = (((m + n) / 2 - 1) % 2 == 0) ? 1.0 : -1.0;
+      sum += sign * x(0);
+    }
+  }
+  return sum;
+}
+
+StudyOutcome study_shell_plate_harmonic(const std::string& out_dir, json::Value& summary) {
+  const Scalar a = 1.0;
+  const Scalar t = 0.01;
+  const Scalar e_mod = 70.0e9;
+  const Scalar nu = 0.3;
+  const Scalar rho = 2700.0;
+  const Scalar q = 1.0e3;
+  const IsotropicMaterial material(e_mod, nu, rho);
+  // Static, below the lowest resonance the uniform load excites - the mode
+  // (1, 1) at 48.4 Hz - and between it and the next, (1, 3) and (3, 1) at
+  // 241.6 Hz; undamped and with a loss factor.
+  const std::vector<Scalar> frequencies{0.0, 30.0, 100.0, 200.0};
+  const std::vector<Scalar> losses{0.0, 0.05};
+  const std::vector<Index> ladder{8, 16, 32, 64};
+  // The series against the closed form of the static deflection (Navier's
+  // series plus the Marcus moment over the shear stiffness).
+  const Scalar d_b = e_mod * t * t * t / (12.0 * (1.0 - nu * nu));
+  const Scalar g = e_mod / (2.0 * (1.0 + nu));
+  const Scalar closed_form =
+      navier_centre() * q * a * a * a * a / d_b + marcus_centre() * q * a * a / (kShear * g * t);
+  const Scalar series_check =
+      std::abs(harmonic_centre(a, e_mod, nu, t, rho, q, 0.0, 0.0) - closed_form) / closed_form;
+  CsvWriter csv(path_join(out_dir, "shell_plate_harmonic.csv"),
+                {"mass", "loss_factor", "frequency[Hz]", "n", "w_real[m]", "w_imag[m]",
+                 "exact_real[m]", "exact_imag[m]", "relative_error[-]", "observed_order"});
+  Scalar worst_fine = 0.0;
+  Scalar worst_order = kInf;
+  json::Value cases = json::Value::make_array();
+  for (const MassType mass : {MassType::Consistent, MassType::Lumped}) {
+    const std::string mass_name = mass == MassType::Consistent ? "consistent" : "lumped";
+    for (const Scalar eta : losses) {
+      std::vector<std::complex<Scalar>> exact;
+      for (const Scalar f : frequencies) {
+        exact.push_back(harmonic_centre(a, e_mod, nu, t, rho, q, 2.0 * kPi * f, eta));
+      }
+      std::vector<Scalar> previous(frequencies.size(), 0.0);
+      json::Value c = json::Value::make_object();
+      c.set("mass", json::Value::make_string(mass_name));
+      c.set("loss_factor", json::Value::make_number(eta));
+      json::Value meshes = json::Value::make_array();
+      for (const Index n : ladder) {
+        FemModel model = plate(n, a, a, t, material);
+        simple_supports(model, a, a, true);
+        model.load_case_specs() = {uniform_pressure(q)};
+        model.finalize();
+        Assembler assembler(model);
+        FrequencyResponseOptions options;
+        options.frequencies = frequencies;
+        options.mass_type = mass;
+        options.structural_damping = eta;
+        options.snapshot_frequencies = frequencies;
+        const FrequencyResponseResult r = solve_frequency_response(model, assembler, 0, options);
+        if (r.snapshots.size() != frequencies.size()) {
+          throw SolverError("shell-plate-harmonic: expected one snapshot per frequency");
+        }
+        const Index centre = (n / 2) * (n + 1) + n / 2;
+        json::Value errors = json::Value::make_array();
+        for (std::size_t j = 0; j < frequencies.size(); ++j) {
+          // The pressure pushes against the normal (+z): the plate moves down.
+          const std::complex<Scalar> w = -r.snapshots[j].displacement(model.dofs().dof(centre, 2));
+          const Scalar error = std::abs(w - exact[j]) / std::abs(exact[j]);
+          const Scalar p = previous[j] > 0.0 ? order(previous[j], error) : 0.0;
+          csv.raw_row({mass_name, fmt(eta, 3), fmt(frequencies[j], 6), std::to_string(n),
+                       fmt(w.real(), 10), fmt(w.imag(), 10), fmt(exact[j].real(), 10),
+                       fmt(exact[j].imag(), 10), fmt(error, 4),
+                       previous[j] > 0.0 ? fmt(p, 4) : ""});
+          errors.push_back(json::Value::make_number(error));
+          if (n == ladder.back()) {
+            worst_fine = std::max(worst_fine, error);
+            worst_order = std::min(worst_order, p);
+          }
+          previous[j] = error;
+        }
+        json::Value entry = json::Value::make_object();
+        entry.set("n", json::Value::make_number(static_cast<Scalar>(n)));
+        entry.set("errors", errors);
+        meshes.push_back(entry);
+      }
+      c.set("meshes", meshes);
+      cases.push_back(c);
+    }
+  }
+  csv.close();
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification (exact Reissner-Mindlin harmonic "
+                                             "response)"));
+  block.set("cases", cases);
+  block.set("series_vs_closed_form_static", json::Value::make_number(series_check));
+  block.set("note",
+            json::Value::make_string(
+                "The simply supported (hard) square plate of the frequency study (a = 1 m, "
+                "t = 0.01 m, E = 70 GPa, nu = 0.3, rho = 2700 kg/m^3) under a uniform "
+                "pressure of 1 kPa cos(omega t), solved directly at 0, 30, 100 and 200 Hz - "
+                "static, below the lowest resonance the load excites, (1, 1) at 48.4 Hz, and "
+                "between it and (1, 3), (3, 1) at 241.6 Hz - undamped and with the loss "
+                "factor 0.05, on consistent and lumped mass. The exact centre amplitude is "
+                "the series over the odd modes (m, n <= 401) of the 3 x 3 problems "
+                "(k (1 + i eta) - omega^2 m) x = (16 q / (pi^2 m n), 0, 0); "
+                "series_vs_closed_form_static checks it at 0 Hz against Navier's series "
+                "plus the Marcus moment. Errors: |w - w_exact| / |w_exact| of the complex "
+                "centre amplitude."));
+  summary.set("shell_plate_harmonic", block);
+  StudyOutcome outcome;
+  outcome.name = "shell plate: harmonic response vs the exact Reissner-Mindlin series";
+  outcome.kind = "verification";
+  outcome.metric = "largest centre-amplitude error at 64 x 64";
+  outcome.value = worst_fine;
+  // The largest error is at 200 Hz, where the modes (1, 1) and (1, 3)
+  // nearly cancel at the centre (the amplitude is a seventh of the static
+  // one), so the small error of the (1, 3) resonance is a large part of it.
+  outcome.tolerance = 1.0e-2;
+  outcome.passed =
+      worst_fine <= outcome.tolerance && worst_order >= 1.9 && series_check <= 1.0e-9;
+  std::ostringstream note;
+  note << "smallest observed order " << fmt(worst_order, 3)
+       << " (32 -> 64; consistent and lumped mass, eta = 0 and 0.05, 0 ... 200 Hz); series "
+          "vs closed form at 0 Hz "
+       << fmt(series_check, 2);
   outcome.note = note.str();
   return outcome;
 }

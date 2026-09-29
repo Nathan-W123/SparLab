@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 284 cases, 20 538 assertions
+make test              # the Catch2 suite: 296 cases, 21 038 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -64,6 +64,16 @@ All numbers in this document come from `results/verification/summary.json`,
 | Contact patch tests: a rigid plane with and without a gap, a mortar pair with non-matching meshes, full slip (distorted Q4, Tri3, Hex8, Tet4) | verification | largest relative error of the nodal pressures, the displacement fields and the full-slip traction and force ratio, 14 cases | `6.19e-13` | `1e-9` | PASS |
 | Hertz line contact: a cylinder on a rigid flat, a rigid cylinder into a block, an elastic pair (mortar, non-matching); plane-strain Q4 | verification + validation | largest centre or interior pressure error vs Hertz, finest meshes (`a / h = 42`; `<= 1e-3` on the flat and the pair, the edge within an element, the model floors and the coarse master's error falling also required) | `1.95e-03` | `3e-3` | PASS |
 | Hertz point contact: a sphere on a rigid flat and on a block (mortar, non-matching); Hex8 | verification + validation | RMS pressure error vs Hertz on the rigid flat, `a / h = 9.3` (falling with every refinement, the edge within an element, the centre `<= 3e-3`, the pair's interior order `>= 2` also required) | `2.57e-02` | `0.05` | PASS |
+| Shell patch tests: constant membrane, bending and combined states on distorted meshes in a turned plane, rigid motions of a cylinder panel and a sphere zone (MITC4) | verification | largest relative error of the interior displacements and rotations and of the element resultants, 17 cases | `1.30e-12` | `1e-10` | PASS |
+| Shell plates: simply supported at `t / a = 1e-1 ... 1e-4` vs the exact Reissner-Mindlin deflection, clamped vs the thin plate; regular and distorted meshes | verification | largest centre-deflection error at 64 x 64 (order `>= 1.8`, the error independent of `t / a` to a factor `< 1.01` and the distorted clamped 16 x 16 spread over `t / a` `< 1e-2` also required) | `3.00e-04` | `5e-4` | PASS |
+| Shell plate: the six lowest frequencies vs the exact Reissner-Mindlin ones (rotary inertia), consistent and lumped mass | verification | largest error at 64 x 64, consistent mass (lumped `<= 1e-3` and order `>= 1.9` for both also required) | `2.41e-03` | `3e-3` | PASS |
+| Shell plate: harmonic response to a uniform pressure vs the exact Reissner-Mindlin series, 0 to 200 Hz, undamped and `eta = 0.05`, consistent and lumped mass | verification | largest relative error of the complex centre amplitude at 64 x 64 (order `>= 1.9` and the series against the closed form `<= 1e-9` also required) | `7.41e-03` | `1e-2` | PASS |
+| Shell plate buckling, uniaxial and equal biaxial, vs the exact loads of the model | verification | largest critical-load error at 64 x 64 (order `>= 1.9` also required) | `3.36e-04` | `1e-3` | PASS |
+| Shell cylinder under internal pressure vs the exact thick-ring state | verification | largest radial-displacement error at 256 cells round (order `>= 1.9` also required) | `1.01e-04` | `2e-4` | PASS |
+| Scordelis-Lo roof: vertical displacement at the middle of the free edge | validation | `|value / reference - 1|` at 64 x 64 | `3.19e-03` | `1e-2` | PASS |
+| Pinched cylinder with end diaphragms: displacement under the load | validation | `|value / reference - 1|` at 64 x 64 | `6.45e-03` | `1e-2` | PASS |
+| Pinched hemisphere with an 18 degree hole: displacement under a load | validation | `|value / reference - 1|` at 64 x 64 | `5.26e-03` | `1e-2` | PASS |
+| Box-section cantilever: bending vs beam theory, torsion vs Bredt, walls meeting at folds | validation | largest gap at 8 cells per wall (a change `<= 1e-2` for drilling factors `1e-5 ... 1e-2` also required) | `2.71e-03` | `2e-2` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -88,6 +98,11 @@ Supporting measurements from the same runs:
 | Hertz line, the model's floor (centre error at `a / h = 42`) | bodies `25 a` -> `100 a` across: `4.36e-04 -> 9.82e-05`; rigid cylinder `R = 50 a -> 200 a`: `2.51e-03 -> 5.84e-04`, order `1.05` in `a / R` |
 | Hertz line, curved master twice as coarse as the slave | centre error `3.57e-02 -> 1.06e-02` from `a / h = 10.6` to `42`, order `1.00` on the finest pair |
 | Hertz point: RMS error over the surface (order); the mortar pair's interior error | rigid flat `0.085 -> 0.047 -> 0.026` (`1.35`); mortar `0.092 -> 0.055` (`1.27`); interior `1.46e-02 -> 4.74e-03` (`2.78`) |
+| Shell plate: the error's change over `t / a = 1e-2 ... 1e-4` at 16 x 16; the distorted clamped plate at `t / a = 1e-3` | a factor `1.002`; `0.150` of the deflection on 4 x 4 cells (locked), `0.971` on 8 x 8, `0.994` on 16 x 16 |
+| Shell plate: lumped-mass frequencies at 64 x 64 | mode (1, 1) `1.33e-04` from below; (1, 2) and (2, 1) `3.3e-05` (errors cancelling); largest `5.34e-04` |
+| Shell plate buckling at 64 x 64, in `pi^2 D / a^2` | `k = 3.9984` (uniaxial), `1.9992` (biaxial); the model's exact values `3.9971`, `1.9985` |
+| MacNeal-Harder benchmarks on 4 ... 64 cells a side, over the reference | Scordelis-Lo `0.943 -> 0.997`; pinched cylinder `0.379 -> 1.006`; pinched hemisphere `1.025 -> 0.995` |
+| Box beam on 8 cells per wall; the drilling factor | bending `0.99729`, torsion `0.99940` of the theory; `<= 1.7e-4` change over `1e-6 ... 1e-2`, the twist `0.99776` at `1e-1` |
 
 And from the cross-validation against two independent codes (section 14):
 
@@ -133,6 +148,9 @@ And from the cross-validation against two independent codes (section 14):
 | The Q4 plate's static solution (plane stress, `nu = 0.3`) | CalculiX, `CPS4` | `1.52e-03` | - | INFO |
 | Contact: a Hex8 block held by its contact alone on another (non-matching meshes) / a punch pressing and dragging a Hex8 block along another with friction / a rigid plane rising under a Tet4 block / a rigid cylinder pressed and dragged along a plane-strain Q4 block with friction / a rigid sphere indenting a Hex8 block with friction / a cylinder cap on a Q4 block (a curved master) | scikit-fem, an independent contact solve (pressures, tractions and every node's status compared too) | `4.94e-13` / `1.20e-13` / `5.00e-13` / `3.33e-13` / `4.79e-13` / `8.58e-13` | `1e-9` | PASS |
 | The three solid decks with a mortar pair or a flat obstacle | CalculiX LINMORTAR, `C3D8` / `C3D8` / `C3D4` | `3.93e-06` / `4.02e-06` / `2.47e-06` | `1e-5` | PASS |
+| MITC4 shells: a simply supported plate under pressure and compression / the whole Scordelis-Lo roof / the pinched hemisphere / a box beam from an S4R file with two thicknesses, under a tip shear and tip moments | an independent MITC4 in NumPy, displacements and rotations | `<= 6.20e-09` / `3.12e-11` / `7.05e-10` / `1.29e-09`; the box beam's rotations under the shear `2.58e-07` | `1e-7`; rotations `10 kappa_1 eps` | PASS |
+| The same: natural frequencies (three decks) and buckling load factors (three decks) | the NumPy MITC4 | `<= 1.63e-11` | `1e-7` | PASS |
+| The same | CalculiX `S4`, a different discretisation of the shell | `3.0e-06` to `0.89` | - | INFO |
 
 And the linear buckling load factors of the same three columns, four modes
 each (section 20):
@@ -151,7 +169,9 @@ idealisations or models: CalculiX expands its plane elements into a layer of sol
 elements, which reproduces plane stress only at `nu = 0` - the same mesh at
 `nu = 0` agrees to the `.frd` rounding floor (section 14); the elastoplastic
 large-deflection row sets SparLab's J2 return in the Green-Lagrange strain
-against CalculiX's finite-strain plasticity (section 24). Where CalculiX's own
+against CalculiX's finite-strain plasticity (section 24); CalculiX's `S4`
+expands a shell into solids over its own normals and holds rotations through
+rigid knots (section 27). Where CalculiX's own
 formulation of a load differs from SparLab's, its row is judged against
 scikit-fem solving CalculiX's problem (section 22); SparLab's own loads are
 judged by scikit-fem integrating them independently, to `1e-12`.
@@ -648,6 +668,12 @@ node (`python/scripts/cross_validate.py`, `make cross-validation`):
   and `lug_bracket_nu0_analysis`); the `nu = 0.33` comparison is recorded as
   informational (`passed: null`, `INFO` in the tables), and scikit-fem - the
   same plane element - is the verification for it.
+* **An independent MITC4 in NumPy** (`python/scripts/shell_xval.py`) solves
+  the shell decks, for which scikit-fem has no element: the same discrete
+  shell problem written again from the formulation's equations, compared
+  node by node (translations and rotations), mode by mode and factor by
+  factor. CalculiX's `S4` is a different discretisation of the shell, and
+  its rows are informational (section 27).
 
 **Buckling load factors.** Where the run computed them (the three column
 decks, `sparlab_solve` with a `buckling` section), the lowest four load
@@ -686,8 +712,8 @@ non-linear states, transient and harmonic responses) and `1e-5` for CalculiX
 displacements, linear, non-linear and transient, `1e-4` for its load
 factors, all recorded in the summary with the `.frd` floor. The comparison
 exits non-zero if any judged pair exceeds its tolerance, or if a non-linear
-run stopped short of its load. Of the 198 comparisons on 38 decks and 63
-load cases, 192 pass and 6 are informational. CI runs the scikit-fem half -
+run stopped short of its load. Of the 230 comparisons on 48 decks and 75
+load cases, 215 pass and 15 are informational. CI runs the scikit-fem half -
 displacements, load factors, the dead-load non-linear states, the
 elastoplastic states and the transient and harmonic responses - on every
 push.
@@ -1985,6 +2011,325 @@ What the cross-validation found, and how it was resolved:
   affected - every deck's displacements and contact results are identical,
   byte for byte, before and after.
 
+## 27. Shells
+
+The four-node MITC4 shell (`docs/formulation.md`, section 7g) in linear
+statics, modal analysis, the harmonic response and linear buckling. Its
+exact references are solutions of the continuum model it discretises - the
+Reissner-Mindlin plate with the shear factor 5/6, its rotary inertia and
+the degenerated solid's own geometric stiffness, and the thick ring -
+computed in `apps/verify_shell.cpp` from their series or their 3 x 3 modal
+problems; the curved-shell benchmarks of MacNeal and Harder (1985) and the
+box beam are validations against thin-shell and beam theory.
+
+**Unit tests** (`tests/test_shell.cpp`, 12 cases, 500 assertions):
+
+* *the element*: the stiffness is symmetric and leaves exactly the six
+  rigid-body motions free on a flat cell, a warped cell and a warped cell
+  with tilted directors, at `t = 0.1` and `0.001` - MITC4 has no spurious
+  zero-energy mode; without the drilling penalty a flat cell has four more,
+  the rotations about its normal. The consistent mass holds `rho t A` in
+  each direction and `rho t^3 A / 12` in each rotation about an in-plane
+  axis (`1e-13`), and on a warped cell `rho` times the volume its directors
+  sweep, measured independently by central differences of the position on a
+  6 x 6 x 6 Gauss grid (`1e-8`). A uniform pressure on a warped cell sums to
+  `-p` times its vector area (`1e-12`), an edge traction to itself times the
+  edge's length and thickness. The geometric stiffness gives
+  `sigma t A / a^2` on a uniform slope (`1e-12`), and its derivative in `u`
+  reproduces it (`1e-11`);
+* *patch tests and rigid motions* on distorted meshes in a turned plane and
+  on curved panels (the study below);
+* *directors*: a mesh's exact normals are used as they stand; without them,
+  an interior node of a cylinder panel averages its cells' normals to the
+  radial direction (`1e-14`) and a free-edge node keeps its cell's own, half
+  a cell's angle off; cells 25 degrees apart meet at a fold, where each
+  keeps its own normal, until the fold angle is raised past 25 degrees; a
+  fold angle above 90 degrees is refused, and so is a mesh normal more than
+  75 degrees off its element's normal (it would tilt the fibres nearly
+  flat), while one 70 degrees off is taken as it stands;
+* *loads through the model*: a pressure over a spherical panel sums to `-p`
+  times its vector area (`1e-12`); self-weight is `rho g` times the volume
+  the directors sweep, which on the flat facets of a curved surface falls
+  short of `t A` by the chords' tilt against the normals - `1.8e-2` on 5 x 4
+  cells, `4.5e-3` on 10 x 8: a discretisation error of order `h^2`;
+* *a simply supported plate* on 16 x 16 cells lies within `2e-3` below the
+  Reissner-Mindlin deflection at `t / a = 0.1` and `1e-3`;
+* *decks*: a generated cylinder with a thickness section, held and
+  prescribed rotations and nodal moments; refused with the reason: the
+  non-linear analysis, topology optimisation, a temperature and a shell
+  without `model.thickness`; rotations and moments on a solid;
+* *files*: S4R cells read in space with their node order kept (a folded
+  pair, one of them listed with its normal pointing down, is not
+  reoriented), each keeping its own normal at the fold; S3 and S8R refused,
+  naming MITC4; a plane `CPS4` file read as a shell (`shell: true`), a
+  triangle file refused;
+* *the CalculiX export*: `S4` cells, a `*SHELL SECTION` per thickness, the
+  pressure's sign flipped (CalculiX's shell `P` acts along the normal,
+  SparLab's against it), moments on DOFs 4 to 6, and the results written at
+  the shell's own nodes (`OUTPUT=2D`).
+
+**Patch tests** (`shell-patch`, 17 cases). A 1 x 0.8 m plate of 5 x 4
+cells, `t = 0.02 m`, regular and with its interior nodes moved by up to 0.1
+and 0.2 of a cell (two seeds each), turned out of every coordinate plane;
+its boundary nodes carry
+the exact field, all six DOFs: a constant membrane state (the drilling
+rotation that of the in-plane displacement gradient), constant curvatures,
+or both. Every interior displacement and rotation is exact to `6.2e-13` of
+the largest value, and the force, moment and shear resultants at every
+element centre to `1.3e-12` (`Q = 0`). A cylinder panel and a sphere zone
+moved rigidly follow the motion to `3.7e-13` and carry no resultant
+(`6.2e-15` of `E t |omega|`). Tolerance `1e-10`.
+
+**Plates** (`shell-plate`). A square plate `a = 1 m`, `E = 1 GPa`,
+`nu = 0.3`, under a uniform pressure of 1 kPa, on `n x n` cells from 4 to
+64, regular and with the interior nodes moved by up to 0.2 of a cell (the
+centre node kept at the centre). With hard simple supports (`w` and the
+rotation along each edge held) the exact centre deflection of the
+Reissner-Mindlin plate is `w_K + phi / (k G t)` - Navier's series
+(`0.00406235 q a^4 / D`) plus the Marcus moment over the shear stiffness
+(`phi = 0.0736713 q a^2`) - for `t / a = 1e-1` to `1e-4`:
+
+| `t / a` | Error at 64 x 64, regular (order) | Error at 64 x 64, distorted (order) |
+|--------:|----------------------------------:|------------------------------------:|
+| `1e-1` | `6.53e-05` (2.00) | `1.03e-04` (2.03) |
+| `1e-2` | `7.85e-05` (2.00) | `1.23e-04` (2.05) |
+| `1e-3` | `7.86e-05` (2.00) | `1.25e-04` (2.04) |
+| `1e-4` | `7.86e-05` (2.00) | `1.24e-04` (2.05) |
+
+There is no shear locking: from `t / a = 1e-2` to `1e-4` - the deflection
+growing a millionfold - the error on every regular mesh is the same to
+within 0.2 % (a factor `1.002` at 16 x 16, required below `1.01`), and on
+the distorted meshes to within 2 %. The clamped plate (every DOF of the
+edges held) at `t / a = 1e-3`, against the thin-plate value
+`0.001265319 q a^4 / D` (Taylor
+and Govindjee 2004; the shear deflection is of order `(t / a)^2` of it):
+`1.62e-04` regular (order 2.13), `3.00e-04` distorted (2.06), the study's
+metric (tolerance `5e-4`; order `>= 1.8` on the regular meshes also
+required). Distortion is where MITC4's freedom from locking ends: on the
+distorted clamped plate the ratio to the thin-plate value is
+
+| `t / a` | 4 x 4 | 8 x 8 | 16 x 16 |
+|--------:|------:|------:|--------:|
+| `1e-1` | `1.076` | `1.173` | `1.185` |
+| `1e-2` | `0.728` | `0.984` | `0.997` |
+| `1e-3` | `0.150` | `0.971` | `0.994` |
+| `1e-4` | `0.125` | `0.971` | `0.994` |
+
+The 4 x 4 mesh has 24 interior edges, each tying one shear strain, on 27
+interior bending DOFs; once its cells are no parallelograms the constraints
+no longer leave it the freedom to bend, and it locks as `t / a` falls. From
+8 x 8 on (147 DOFs for 112 constraints) the deflection stops falling with
+`t / a`: it moves by 1.3 % (8 x 8) and 0.33 % (16 x 16) from `t / a = 1e-2`
+to `1e-3`, part of that the plate's own shear deflection, and by `5e-4` and
+`9e-5` from `1e-3` to `1e-4`. The study requires the 16 x 16 spread over
+`t / a = 1e-2 ... 1e-4` to stay below `1e-2` (it is `3.4e-3`). The
+`t / a = 0.1` row is the thick plate's larger answer, not an error.
+`docs/figures/verify_shell_plates.png` shows the convergence, the
+distortion series and the cylinder below.
+
+**Natural frequencies** (`shell-plate-modes`). The simply supported plate at
+`t = 0.01 m`, `E = 70 GPa`, `rho = 2700 kg/m^3`: the six lowest frequencies
+against the exact Reissner-Mindlin ones with the rotary inertia
+`rho t^3 / 12` (the smallest root of each mode's 3 x 3 problem in
+`W sin sin`, `psi cos sin`, `psi sin cos`) - 48.389, 120.907 (twice),
+193.346 and 241.594 Hz (twice) - on consistent and on lumped mass. The
+consistent mass converges from above, its errors at 64 x 64 `2.69e-04`
+(mode (1, 1)), `9.72e-04`, `1.07e-03` and `2.41e-03` (modes (1, 3) and
+(3, 1); tolerance `3e-3`). The lumped mass (each element's diagonal scaled
+to its total per DOF component, rotary inertia included) lowers them: mode
+(1, 1) converges from below (`1.33e-04`), and in the modes (1, 2) and
+(2, 1) its error and the stiffness's nearly cancel on the coarse meshes
+(`4.3e-04` on both 8 x 8 and 16 x 16), leaving `3.3e-05` at 64 x 64; its
+largest error there is `5.34e-04` (tolerance `1e-3`). Every mode converges
+at order 1.95 to 2.02 between 32 and 64 cells (`>= 1.9` required). The
+rotations about the normal carry no mass, so the mass matrix is only
+semi-definite: where the direct eigensolve of a projected pencil fails, the
+solver takes the reversed pencil `M y = mu K y`.
+
+**Harmonic response** (`shell-plate-harmonic`). The same plate under a
+uniform pressure of 1 kPa `cos(omega t)` at 0, 30, 100 and 200 Hz - static,
+below the lowest resonance a uniform load excites (the mode (1, 1)), and
+between it and the next, (1, 3) and (3, 1) - undamped and with the loss
+factor `eta = 0.05`, on consistent and lumped mass. The exact complex centre
+amplitude is the series over the odd modes (`m, n <= 401`) of the 3 x 3
+problems `(k (1 + i eta) - omega^2 m) x = (16 q / (pi^2 m n), 0, 0)`; at 0 Hz
+it equals Navier's series plus the Marcus moment to `1.4e-11`. The errors of
+the complex centre amplitude at 64 x 64:
+
+| Frequency | Consistent mass (order) | Lumped mass (order) |
+|----------:|------------------------:|--------------------:|
+| 0 Hz | `7.85e-05` (2.00) | `7.85e-05` (2.00) |
+| 30 Hz | `4.39e-04` (2.00) | `6.90e-05` (2.00) |
+| 100 Hz | `2.05e-04` (2.01) | `6.77e-04` (2.00) |
+| 200 Hz | `7.41e-03` (1.95) | `2.74e-03` (2.00) |
+
+undamped; with `eta = 0.05` every error is within `9.6e-5` of these. At
+200 Hz the modes (1, 1) and (1, 3) nearly cancel at the centre - the
+amplitude is a seventh of the static one - so the small error of the (1, 3)
+resonance is a large part of it; the tolerance, `1e-2`, is set there (order
+`>= 1.9` also required, and the series check `<= 1e-9`). The analysis's
+field files and monitors carry the translations.
+`docs/figures/verify_shell_eigen.png` shows the frequencies, the harmonic
+response and the buckling loads.
+
+**Buckling** (`shell-plate-buckling`). The same plate compressed by a
+uniform edge stress, uniaxially and equally in both directions. The exact
+load of the model is the smallest over the modes `(m, n)` of the 3 x 3
+problem with the degenerated solid's geometric stiffness, which adds
+`(t^2 / 12) N psi_a,b psi_a,b` to Kirchhoff's `N w_,a w_,b`; it lies below
+Kirchhoff's `k = 4` and `2` by the shear deformation (`5.6e-4`) and that
+term (`1.6e-4`). Computed: `k = 4.0847, 4.0187, 4.0025, 3.9984` on 8 to 64
+cells a side (uniaxial), and for the biaxial case half of each to the
+eight digits written; the error at 64 x 64 is `3.36e-04` (tolerance `1e-3`),
+at order 2.00 (`>= 1.9` required). Both cases buckle in the mode (1, 1),
+where the biaxial load's Rayleigh quotient is half the uniaxial one on the
+continuum and on the mesh alike, so their errors coincide.
+
+**A cylinder under internal pressure** (`shell-cylinder-pressure`). A slice
+2 m long of a long cylinder, `R = 1 m`, `t = 0.01 m`, `E = 70 GPa`,
+`nu = 0.3`, 0.1 MPa inside, 8 to 256 cells round it and 4 along, its end
+rings held against rotation (symmetry planes, which the exact state
+satisfies). The degenerated continuum keeps the fibres' divergence through
+the thickness, so the exact state is that of a thick ring in plane stress:
+`u_r = p R / (E ln((R + t/2) / (R - t/2))) = 1.4285595e-4 m`, `8.3e-6` below
+the membrane formula `p R^2 / (E t)`, with the hoop force `p R`. At 256
+cells the largest nodal radial error is `1.01e-04` of `u_r` (tolerance
+`2e-4`; order 1.99, `>= 1.9` required), the axial displacement's `3.6e-5`
+and the hoop force's `1.05e-4`: the flat facets of the polygon converging to
+the circle at second order. The study's first form had two errors of its
+own, not the element's: with free ends the order fell to 1.7 - the facets'
+bending under the pressure leaves a boundary layer about `sqrt(R t)` wide at
+each end, which 4 cells along do not resolve - and, measured against the
+membrane formula, the error stopped falling near `9e-6`, the thick ring's
+`(t / R)^2 / 12`.
+
+**The MacNeal-Harder benchmarks** (validation; `shell-scordelis-lo`,
+`shell-pinched-cylinder`, `shell-pinched-hemisphere`). The geometry,
+material and loads of MacNeal and Harder (1985), `n x n` cells on the part
+modelled, the surfaces' exact normals as directors. The references come
+from thin-shell theory, so a gap is expected; the value over the reference:
+
+| Benchmark | 4 | 8 | 16 | 32 | 64 | Reference |
+|-----------|--:|--:|---:|---:|---:|----------:|
+| Scordelis-Lo roof: vertical free-edge displacement (a quarter, self-weight, rigid diaphragms) | `0.9433` | `0.9729` | `0.9890` | `0.9945` | `0.9968` | `0.3024` |
+| Pinched cylinder: displacement under the load (an octant, end diaphragms) | `0.3793` | `0.7476` | `0.9297` | `0.9886` | `1.0065` | `1.8248e-5` |
+| Pinched hemisphere, 18 degree hole: displacement under a load (a quarter) | `1.0251` | `0.9956` | `0.9903` | `0.9929` | `0.9947` | `0.094` |
+
+All three are within 1 % at 64 x 64 (the tolerance). The roof approaches its
+reference from below at about first order on the finest meshes (0.98 and
+0.80 from 16 to 64), as the free edge's boundary layer resolves. The pinched
+cylinder shows the element's membrane locking on coarse meshes - 0.38 of the
+answer on 4 x 4 - and then passes the reference: under a point load a
+shear-deformable shell's deflection has a logarithmic singularity that thin
+shell theory lacks - its transverse-shear part under the load grows by
+`P ln 2 / (2 pi k G t)`, `2.1e-3` of the reference, with each halving of
+`h` - so the refinement passes Flugge's value. The hemisphere, dominated by
+inextensional bending, is within 1 % from 8 x 8 on.
+`docs/figures/verify_shell_benchmarks.png` shows the three and the box beam.
+
+**A box beam** (validation; `shell-box-beam`). A cantilever of square box
+section, mid-surface side 0.1 m, walls 2 mm, 2 m long, `E = 70 GPa`, clamped;
+its four walls meet at 90 degree folds, where each cell keeps its own normal
+and the drilling stiffness ties one wall's bending rotation to the in-plane
+rotation of its neighbour. Bending: a 1 kN shear on the side walls' tip
+edges against `P L^3 / (3 E I) + P L / (G A_s)` with `I = 2 t b^3 / 3` and
+`A_s = 2 b t`; torsion: 100 N m as Bredt's shear flow round the tip against
+`T L / (G J)` with `J = b^3 t` (a square box does not warp). With 8 cells a
+wall the tip deflection is `0.99729` of beam theory and the twist `0.99940`
+of Bredt's (4 cells: `0.99134` and `0.99936`); the tolerance is 2 %, since
+the root clamp and the load's spread depart from beam theory within about a
+wall width of the ends. The drilling penalty is `alpha G t` with
+`alpha = 1e-3`: from `alpha = 1e-6` to `1e-2` the two ratios move by at most
+`1.7e-4` from their values at the default (the study requires `<= 1e-2`
+over `1e-5 ... 1e-2`); at `1e-1` the twist falls to `0.99776`, the penalty
+beginning to add stiffness of its own.
+
+**The decks and the cross-validation** (section 14's codes, four decks,
+`configs/verification/shell_*.json`; the box beam's mesh, an S4R file with
+named sets, written by `python/scripts/make_shell_meshes.py`). scikit-fem
+has no shell element, so the independent solution comes from a MITC4
+written in NumPy (`python/scripts/shell_xval.py`) from the formulation's
+equations - its own interpolation, tying, local frames, drilling term, mass
+and geometric stiffness - with the directors and thicknesses SparLab used
+(`mesh.json`), and the pressure and self-weight integrated in NumPy from the
+deck. It solves the same discrete problem, so the displacements, rotations,
+frequencies and buckling factors must agree to round-off:
+
+| Deck | Cells | Comparison | Max relative difference | `kappa_1 eps` | Tolerance |
+|------|------:|------------|------------------------:|--------------:|----------:|
+| A simply supported plate, 16 x 16 cells, on soft supports | 256 | pressure: displacements and rotations, SparLab's load vector / the pressure integrated in NumPy | `8.49e-12` / `9.45e-12` | `1.7e-08` | `1e-7` |
+| | | compression: displacements and rotations (translations `4.3e-14`) | `6.20e-09` | `1.7e-08` | `1e-7` |
+| | | six frequencies / three buckling factors of the compression | `7.26e-13` / `2.03e-12` | - | `1e-7` |
+| The Scordelis-Lo roof, whole, 24 x 24 cells, on its diaphragms | 576 | self-weight: SparLab's load vector / integrated in NumPy | `3.12e-11` / `3.11e-11` | `5.8e-10` | `1e-7` |
+| | | four frequencies / two buckling factors | `1.65e-12` / `9.26e-12` | - | `1e-7` |
+| The pinched hemisphere, whole, 48 x 12 cells | 576 | four point loads | `7.05e-10` | `1.4e-07` | `1e-7` |
+| A box beam from an S4R file, flanges 3 mm and webs 2 mm | 1 280 | tip shear: translations / rotations | `4.97e-11` / `2.58e-07` | `3.8e-07` | `1e-7` / `3.8e-06` |
+| | | nodal moments at the tip | `1.29e-09` | `3.8e-07` | `1e-7` |
+| | | four frequencies / two buckling factors of the shear | `1.63e-11` / `9.33e-12` | - | `1e-7` |
+
+CalculiX's `S4` on the same decks, for information: the plate `2.23e-02`
+(pressure) and `3.0e-06` (compression, a homogeneous state both
+discretisations hold exactly, at the `.frd` rounding), its buckling factors
+`2.21e-02`; the roof `3.36e-03`, its buckling factors `1.07e-02`; the
+hemisphere `0.891`; the box beam `4.66e-03` (shear), `0.270` (moments) and
+`0.122` (buckling factors).
+
+The field difference is the larger of the translations' (over the largest
+translation) and the rotations' (over the largest rotation, or the largest
+translation over the model's size if that is larger - a plate compressed in
+its plane rotates by round-off only). A comparison passes if the
+translations agree within the tolerance, the rotations within the larger of
+the tolerance and `10 kappa_1 eps` - the round-off scale of the system, as
+in section 14 - and SparLab's solution satisfies the NumPy system to a
+backward error of `1e-13`. The box beam's thin walls make its system the
+worst conditioned, and its drilling rotations, which the penalty alone
+holds, are where that shows: its rotations differ by `2.58e-07` of the
+largest rotation - below the system's round-off scale
+`kappa_1 eps = 3.8e-07` (`kappa_1 = 1.7e9`) - while its translations agree
+to `5.0e-11` and SparLab's solution satisfies the NumPy system to a backward
+error of `2.3e-15` (at most `3.2e-15` over the shell decks).
+
+CalculiX's `S4` is a different discretisation, so its rows are recorded,
+not judged: it expands each shell into a layer of incompatible-mode solids
+(`C3D8I`) over normals it averages itself, imposes nodal moments and held
+rotations through rigid knots, and its coarse meshes lock where MITC4's do
+not. Refined, it converges to SparLab's answer: on the simply supported
+plate the centre deflections differ by 2.2 %, 0.20 % and 0.089 % on 16, 32
+and 64 cells a side; on the pinched hemisphere by 47 %, 5.9 % and 0.45 % on
+12, 24 and 48 cells a quarter. The knots stiffen its model where rotations
+are held - a quarter of the Scordelis-Lo roof, whose symmetry planes hold
+rotations, gave 0.030 at the free edge against the reference 0.3024 - so the
+decks hold no rotation: the plate stands on soft simple supports, the roof
+is modelled whole on its diaphragms, the hemisphere whole on six held
+components that carry no reaction, and the box beam's root holds
+translations only.
+
+What the cross-validation found, and how it was resolved:
+
+* **The sign of a shell pressure.** CalculiX's `P` on a shell pushes along
+  the element normal; SparLab's pressure, as on a solid's face, pushes
+  against it. The first export deflected the plate the other way; the export
+  now writes `-p` (a unit test checks it).
+* **CalculiX's results at the expanded nodes.** Without `OUTPUT=2D` its
+  `.frd` file holds the displacements of the expanded solid's nodes, not the
+  shell's; the export asks for them at the shell's own nodes.
+* **Held rotations.** On a quarter of the roof CalculiX's answer was a tenth
+  of the reference: it holds a shell rotation through a rigid knot. The
+  decks were rebuilt to hold none (above).
+* **The rotations' round-off.** A plate compressed in its plane has no
+  rotation but round-off, and the rotations' difference over the largest
+  rotation read 1: the rotations are judged over the larger of the largest
+  rotation and the largest translation over the model's size.
+* **The drilling rotations of the box beam** differed by more than the
+  `1e-7` tolerance while SparLab's solution satisfied the NumPy system to a
+  backward error near `1e-15`: two backward-stable solutions of one system
+  differ by up to its round-off scale, and the rotations are judged against
+  it, the translations against the tolerance, every comparison against the
+  backward error.
+* **ARPACK's start vector.** The NumPy modal and buckling solves differed
+  from run to run in the thirteenth digit, ARPACK drawing a new random start
+  vector each time; a fixed seeded one makes them repeat bit for bit.
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
@@ -1997,13 +2342,15 @@ Stated plainly, since the absence matters as much as the presence:
   states of four, eight comparisons in all, the final elastoplastic states
   of ten, fifteen comparisons, the transient histories of five, nine
   comparisons (two of the decks non-linear), the harmonic responses of
-  two, and the final contact states of six, nine comparisons. Stresses,
-  natural frequencies, the non-linear static load paths (only the final
-  states are compared) and the optimised designs are not compared with
-  another code, and CalculiX's
-  `*BUCKLE` factors for
-  `C3D8` and `C3D10` differ from SparLab's by up to `8.3e-5` for a reason
-  not identified (section 14);
+  two, the final contact states of six, nine comparisons, and the shell
+  decks, four: their displacements and rotations in six load cases, their
+  frequencies and buckling load factors in three each, against an
+  independent MITC4 (fourteen comparisons) and, for information, CalculiX's
+  `S4` (nine). Stresses, the continuum elements' natural frequencies, the
+  non-linear static load paths (only the final states are compared) and the
+  optimised designs are not compared with another code, and CalculiX's
+  `*BUCKLE` factors for `C3D8` and `C3D10` differ from SparLab's by up to
+  `8.3e-5` for a reason not identified (section 14);
 * linear buckling is bifurcation of the perfect geometry, and the plane
   models only buckle in their plane. The non-linear analysis has no branch
   switching, so a post-buckling path is computed only from an imperfect mesh,
@@ -2060,6 +2407,21 @@ Stated plainly, since the absence matters as much as the presence:
   not separated into its sources, CalculiX checks friction on a mortar pair
   only (on a rigid plane with friction it departs from SparLab's answer,
   section 26), and there is no experiment;
+* shells are verified against exact solutions of the flat plate (static,
+  frequencies, harmonic response, buckling) and of the thick ring, and
+  validated on three curved-shell benchmarks and a box beam, whose
+  references are thin-shell and beam theory. No exact solution of a curved
+  shell in bending is among them, and neither is the buckling of a curved
+  shell: a cylinder under axial compression (`R / t = 100`, `L = R`, simply
+  supported ends; a one-off run outside the suite) was still converging at
+  1.234 and 1.052 of the classical load on 32 x 24 and 64 x 48 cells, the
+  second taking 67 s, and was left out as too slow. The lumped mass and the
+  harmonic response are verified on the plate only, the stresses through
+  the resultants of the patch tests and the cylinder's hoop force. The
+  cross-validation's independent code for shells is a MITC4 written for it
+  in NumPy - an independent implementation of the same equations, which
+  verifies the implementation, not the formulation - since CalculiX's `S4`
+  is a different discretisation;
 * the overhang filter and check are verified for the 3- and 5-element
   stencils of structured square and cubic grids; the robust formulation for
   uniform erosion and dilation only. Neither is a process simulation;

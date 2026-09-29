@@ -119,6 +119,26 @@ only. `mesh.order: 2` elevates a Tet4 mesh by appending one node per edge
 after the existing nodes, in order of first appearance, so the corner nodes
 keep their numbers.
 
+### Shell meshes
+
+A shell mesh is a surface of four-node quadrilaterals in 3-D. An element's
+normal is `g_r x g_s`, right-handed about its node order (the nodes run
+counter-clockwise seen from the side it points to): the side its "top" face
+(`zeta = +1`) lies on and the side a positive pressure presses on. A
+`structured_shell` mesh numbers its nodes `node(i, j) = j (n1 + 1) + i`
+(`j n1 + i` on a surface closed in direction 1) and its elements
+`elem(i, j) = j n1 + i`, each running `(i, j)`, `(i + 1, j)`,
+`(i + 1, j + 1)`, `(i, j + 1)`. Direction 1 runs along x on a plate, around
+the axis on a cylinder and in longitude on a sphere; direction 2 along y,
+along the axis, or in latitude from the larger polar angle to the smaller -
+so the normal points along `+z` on a plate and away from the axis or the
+centre on a cylinder or a sphere. A cylinder's angle starts at the axis
+after its own and turns towards the next (about z from `+x` towards `+y`,
+about x from `+y` towards `+z`, about y from `+z` towards `+x`); a sphere's
+longitude turns about `+z` from `+x`, and its polar angle is measured from
+`+z`. A shell read from a file keeps its cells' node order, and so their
+normals: shell cells are never reoriented.
+
 ### Meshes read from a file
 
 Nodes keep the order of the file, renumbered consecutively from 0 after the
@@ -129,7 +149,7 @@ such cells is recorded under `mesh.file.cells_reoriented`.
 
 ## Degrees of freedom
 
-`dim` translations per node, numbered node-major:
+`dim` translations per node on a plane or solid mesh, numbered node-major:
 
 ```
   dof(node n, component c) = dim * n + c,     c = 0 -> u_x,  1 -> u_y,  2 -> u_z
@@ -139,8 +159,19 @@ An element's DOF vector follows the same ordering:
 `{u_x1, u_y1, u_x2, u_y2, ...}` on a plane mesh and `{u_x1, u_y1, u_z1, ...}`
 on a solid one.
 
-There are no rotational degrees of freedom: these are continuum elements, not
-beam or shell elements.
+A shell node has six: the three translations and the three rotations about
+the global axes, in radians, positive by the right-hand rule:
+
+```
+  dof(node n, component c) = 6 * n + c,     c = 0, 1, 2 -> u_x, u_y, u_z
+                                            c = 3, 4, 5 -> theta_x, theta_y, theta_z
+```
+
+The rotations are small (the shell is linear). In a deck they are `rx`,
+`ry` and `rz`; in the result files the columns `rx[rad]`, `ry[rad]`,
+`rz[rad]` follow the translations. The component of a node's rotation along
+its director moves no material: it has no mass, and only the drilling
+penalty gives it stiffness.
 
 ## Signs
 
@@ -205,6 +236,22 @@ beam or shell elements.
   master body or the obstacle feels its opposite. A rigid obstacle's normal
   (`normal` of a plane) points out of the obstacle towards the body, and its
   `motion` is its translation at `lambda = 1`.
+* Shells: a pressure acts on the mid-surface against the element's normal
+  (the side the normal points to is pressed), so a positive pressure pushes
+  a generated plate down and a cylinder inwards; an internal pressure in a
+  generated cylinder, whose normals point out, is negative. CalculiX's shell
+  `P` pushes along the normal, and the export flips the sign. A nodal moment
+  `[M_x, M_y, M_z]` [N m] acts on the rotations, positive by the right-hand
+  rule; its component along a node's director acts only through the
+  drilling penalty. The resultants are given in each element's local frame
+  at its centre: `e3` along the director, `e1` the projection of the global
+  x axis onto the plane normal to it (the global z axis when x lies within
+  0.1 degree of `e3`), `e2 = e3 x e1`. `N11`, `N22`, `N12` [N/m] are the
+  membrane forces, tension positive; `M11`, `M22`, `M12` [N m/m] the
+  moments `int sigma z dz` with `z` along the director, so `M11 > 0`
+  stretches the top face along `e1`; `Q13`, `Q23` [N/m] the transverse
+  shear forces. The face stresses are `N / t +- 6 M / t^2` on the top
+  (`zeta = +1`) and bottom faces.
 * A build direction `+y` means the part grows along `+y` from a plate at the
   low-`y` end of the domain; `-y` from a plate at the high end. Layer 0 is
   the layer on the plate.

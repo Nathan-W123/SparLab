@@ -2552,9 +2552,9 @@ int main(int argc, char** argv) {
             "arch-snap-through | plastic-cylinder | plastic-bending | plastic-cycle | "
             "transient-modal | rod-harmonic | rod-transient | nonlinear-oscillator | "
             "contact-patch | hertz-line | hertz-point | shell-patch | shell-plate | "
-            "shell-plate-modes | shell-plate-buckling | shell-cylinder-pressure | "
-            "shell-scordelis-lo | shell-pinched-cylinder | shell-pinched-hemisphere | "
-            "shell-box-beam"},
+            "shell-plate-modes | shell-plate-harmonic | shell-plate-buckling | "
+            "shell-cylinder-pressure | shell-scordelis-lo | shell-pinched-cylinder | "
+            "shell-pinched-hemisphere | shell-box-beam"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2701,6 +2701,9 @@ int main(int argc, char** argv) {
     }
     if (all || study == "shell-plate-modes") {
       outcomes.push_back(verify::study_shell_plate_modes(out_dir, summary));
+    }
+    if (all || study == "shell-plate-harmonic") {
+      outcomes.push_back(verify::study_shell_plate_harmonic(out_dir, summary));
     }
     if (all || study == "shell-plate-buckling") {
       outcomes.push_back(verify::study_shell_plate_buckling(out_dir, summary));

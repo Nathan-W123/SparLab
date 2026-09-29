@@ -519,6 +519,26 @@ TEST_CASE("shell directors: exact normals, averages over a smooth surface, own n
           1e-14);
   options.fold_angle_deg = 95.0;
   REQUIRE_THROWS_AS(smooth.set_shell_options(options), ConfigError);
+
+  // Normals the mesh does not follow - 80 degrees off a flat plate's at its
+  // centre node - would tilt the fibres nearly flat: refused; 70 degrees off
+  // is taken as it stands.
+  ShellMeshSpec plate;
+  plate.n1 = 2;
+  plate.n2 = 2;
+  const Mesh flat = make_structured_shell_mesh(plate);
+  const auto tilted = [&](Scalar degrees) {
+    Mesh mesh(flat.coordinates(), flat.connectivity(), ElementType::Shell4);
+    Matrix normals = flat.node_normals();
+    const Scalar angle = degrees * 3.14159265358979323846 / 180.0;
+    normals.col(4) = Vector3(std::sin(angle), 0.0, std::cos(angle));
+    mesh.set_node_normals(normals);
+    return FemModel(mesh, default_material(), 0.01, StressState::Shell, IntegrationOptions());
+  };
+  REQUIRE_THROWS_WITH(tilted(80.0), ContainsSubstring("at most 75 allowed"));
+  const FemModel steep = tilted(70.0);
+  REQUIRE(Vector3(steep.element_geometry(0).block<3, 1>(3, 2)).z() ==
+          Approx(std::cos(70.0 * 3.14159265358979323846 / 180.0)).epsilon(1e-14));
 }
 
 TEST_CASE("shell model loads: a pressure over a panel, gravity through the volume",
