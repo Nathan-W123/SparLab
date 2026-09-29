@@ -297,7 +297,8 @@ Mesh sector_mesh(ElementType type, Index nr, Index nt, Scalar a, Scalar b) {
     case ElementType::Hex8: return quarter_annulus(make_structured_hex_mesh(ms), a, b);
     case ElementType::Tet4: return quarter_annulus(make_structured_tet_mesh(ms), a, b);
     case ElementType::Tet10: return quarter_annulus(make_structured_tet10_mesh(ms), a, b);
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   throw ConfigError("a quarter section is a continuum mesh; " + to_string(type) +
                     " is not a continuum element");
@@ -503,7 +504,8 @@ std::vector<Index> section_ladder(ElementType type) {
     case ElementType::Hex8: return {4, 8, 16, 32};
     case ElementType::Tet4: return {4, 8, 16, 32};
     case ElementType::Tet10: return {2, 4, 8, 16, 32};
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   return {};
 }

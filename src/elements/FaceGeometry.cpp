@@ -50,6 +50,7 @@ FaceShape face_shape_of(ElementType type) {
     case ElementType::Hex8: return FaceShape::Quad4;
     case ElementType::Tet4: return FaceShape::Tri3;
     case ElementType::Tet10: return FaceShape::Tri6;
+    case ElementType::Beam2: break;  // a beam has no faces
   }
   throw MeshError("element type has no boundary-face shape registered");
 }

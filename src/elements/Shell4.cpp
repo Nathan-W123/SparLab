@@ -396,6 +396,31 @@ Matrix Shell4Element::consistent_mass(const Matrix& geometry, Scalar density, Sc
   return 0.5 * (me + me.transpose());
 }
 
+Matrix Shell4Element::lumped_mass(const Matrix& geometry, Scalar density, Scalar thickness,
+                                  const IntegrationOptions& opts) const {
+  const Matrix me = consistent_mass(geometry, density, thickness, opts);
+  // The translational blocks are the same in every direction: the x rows
+  // give the element's mass and each node's share of it.
+  Scalar mass = 0.0;
+  Scalar diagonal = 0.0;
+  Matrix3 inertia = Matrix3::Zero();
+  for (int a = 0; a < kNodes; ++a) {
+    diagonal += me(6 * a, 6 * a);
+    for (int b = 0; b < kNodes; ++b) {
+      mass += me(6 * a, 6 * b);
+      inertia += me.block<3, 3>(6 * a + 3, 6 * b + 3);
+    }
+  }
+  inertia = 0.5 * (inertia + inertia.transpose());
+  Matrix ml = Matrix::Zero(kDofs, kDofs);
+  for (int a = 0; a < kNodes; ++a) {
+    const Scalar share = me(6 * a, 6 * a) / diagonal;
+    ml.block<3, 3>(6 * a, 6 * a) = (share * mass) * Matrix3::Identity();
+    ml.block<3, 3>(6 * a + 3, 6 * a + 3) = share * inertia;
+  }
+  return ml;
+}
+
 Matrix Shell4Element::geometric_stiffness(const Matrix& geometry, const Matrix& d_in,
                                           const Vector& ue, Scalar stress_scale,
                                           Scalar thickness, const IntegrationOptions&) const {

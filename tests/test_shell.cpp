@@ -192,6 +192,69 @@ TEST_CASE("the shell mass holds rho t A per direction and the rotary inertia rho
   REQUIRE(std::abs(volume / (t * Shell4Element::area(w)) - 1.0) < 0.01);
 }
 
+TEST_CASE("the shell's lumped mass: HRZ translations and the rotary-inertia tensor, turned "
+          "with the element",
+          "[shell][element]") {
+  const Scalar rho = 2700.0;
+  const IntegrationOptions opts;
+  const Shell4Element element;
+  const Scalar a = 1.2;
+  const Scalar b = 0.7;
+  const Scalar t = 0.05;
+  // A distorted flat cell, so the nodes' shares differ.
+  Matrix x(3, 4);
+  x << 0.0, a, 1.1 * a, 0.2 * a,
+       0.0, -0.1 * b, b, 0.9 * b,
+       0.0, 0.0, 0.0, 0.0;
+  const Matrix me = element.consistent_mass(x, rho, t, opts);
+  const Matrix ml = element.lumped_mass(x, rho, t, opts);
+  REQUIRE(ml.rows() == 24);
+  const Scalar area = Shell4Element::area(x);
+  Scalar mass = 0.0;
+  Matrix3 inertia = Matrix3::Zero();
+  for (int k = 0; k < 4; ++k) {
+    // The translations: the HRZ-scaled diagonal, the same in each direction.
+    Scalar diagonal = 0.0;
+    for (int j = 0; j < 4; ++j) diagonal += me(6 * j, 6 * j);
+    const Scalar share = me(6 * k, 6 * k) / diagonal;
+    REQUIRE((ml.block<3, 3>(6 * k, 6 * k) - share * rho * t * area * Matrix3::Identity())
+                .cwiseAbs()
+                .maxCoeff() <= 1e-12 * rho * t * area);
+    mass += ml(6 * k, 6 * k);
+    inertia += ml.block<3, 3>(6 * k + 3, 6 * k + 3);
+    // In the x-y plane the tensor is diagonal, as the per-component HRZ
+    // lumping was.
+    Scalar rot_diagonal = 0.0;
+    Scalar rot_total = 0.0;
+    for (int i = 0; i < 4; ++i) {
+      rot_diagonal += me(6 * i + 3, 6 * i + 3);
+      for (int j = 0; j < 4; ++j) rot_total += me(6 * i + 3, 6 * j + 3);
+    }
+    REQUIRE(ml(6 * k + 3, 6 * k + 3) ==
+            Approx(me(6 * k + 3, 6 * k + 3) * rot_total / rot_diagonal).epsilon(1e-12));
+  }
+  REQUIRE(mass == Approx(rho * t * area).epsilon(1e-13));
+  const Matrix3 expected = rho * t * t * t / 12.0 * area * Vector3(1.0, 1.0, 0.0).asDiagonal();
+  REQUIRE((inertia - expected).cwiseAbs().maxCoeff() <= 1e-13 * expected(0, 0));
+
+  // Turned out of every coordinate plane, each block turns with the cell:
+  // no inertia about the normal, rho t^3 / 12 per area about the plane's axes.
+  const Matrix3 rot = (Eigen::AngleAxisd(0.4, Vector3::UnitX()) *
+                       Eigen::AngleAxisd(-0.7, Vector3::UnitY()) *
+                       Eigen::AngleAxisd(0.3, Vector3::UnitZ()))
+                          .toRotationMatrix();
+  const Matrix turned = element.lumped_mass(rot * x, rho, t, opts);
+  for (int k = 0; k < 4; ++k) {
+    const Matrix3 back = rot.transpose() * turned.block<3, 3>(6 * k + 3, 6 * k + 3) * rot;
+    REQUIRE((back - ml.block<3, 3>(6 * k + 3, 6 * k + 3)).cwiseAbs().maxCoeff() <=
+            1e-12 * expected(0, 0));
+    const Vector3 normal = rot.col(2);
+    REQUIRE(normal.dot(turned.block<3, 3>(6 * k + 3, 6 * k + 3) * normal) <=
+            1e-12 * expected(0, 0));
+    REQUIRE(turned(6 * k, 6 * k) == Approx(ml(6 * k, 6 * k)).epsilon(1e-12));
+  }
+}
+
 TEST_CASE("shell loads: a pressure against the normal, an edge traction over its area",
           "[shell][element]") {
   const IntegrationOptions opts;

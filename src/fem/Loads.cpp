@@ -32,8 +32,9 @@ class UnitMass {
  public:
   explicit UnitMass(const FemModel& model) : model_(model) {
     const auto& info = model.mesh().structured_info();
-    // A shell's elements differ in their directors and thicknesses.
-    uniform_ = info.has_value() && info->uniform && !model.is_shell();
+    // A shell's elements differ in their directors and thicknesses, a beam's
+    // in their axes and sections.
+    uniform_ = info.has_value() && info->uniform && !model.is_structural();
   }
   const Matrix& operator()(Index e) {
     if (uniform_ && cached_.size() > 0) return cached_;
@@ -58,11 +59,17 @@ Vector assemble_body_load_vector(const FemModel& model, const LoadCaseSpec& spec
   const Index ne = mesh.num_elements();
   Vector f = Vector::Zero(model.dofs().num_dofs());
   if (!spec.has_body_loads()) return f;
-  if (!model.is_shell()) require_continuum(model, "a body load");
+  if (!model.is_structural()) require_continuum(model, "a body load");
   if (model.is_shell() && spec.centrifugal.enabled) {
     throw ConfigError("load case '" + spec.name +
                       "': a shell model takes no steady rotation - its centrifugal load "
                       "varies through the thickness, which the nodal load cannot carry");
+  }
+  if (model.is_beam() && spec.centrifugal.enabled) {
+    throw ConfigError("load case '" + spec.name +
+                      "': a beam model takes no steady rotation - its centrifugal load "
+                      "varies over the section, which the section's resultants do not "
+                      "carry");
   }
 
   require_in_plane(spec.gravity, dim, "gravity of load case '" + spec.name + "'");

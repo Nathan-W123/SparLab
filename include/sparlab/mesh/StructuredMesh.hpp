@@ -164,6 +164,42 @@ struct ShellMeshSpec {
 /// \throws ConfigError for out-of-range counts, extents or angles.
 Mesh make_structured_shell_mesh(const ShellMeshSpec& spec);
 
+/// A named point of a frame mesh: a joint, a support or a load point.
+struct FramePoint {
+  std::string name;
+  Vector3 position = Vector3::Zero();  ///< [m]
+};
+
+/// A member of a frame mesh between two of its points, divided into
+/// `elements` Beam2 elements: straight, or a circular arc about `arc_centre`
+/// turning counter-clockwise about `arc_axis` (right-hand rule) from `from`
+/// to `to` - a full circle when the two are the same point.
+struct FrameMember {
+  std::string name;  ///< the element set of its elements
+  std::string from;
+  std::string to;
+  Index elements = 1;
+  bool arc = false;
+  Vector3 arc_centre = Vector3::Zero();  ///< [m]
+  Vector3 arc_axis = Vector3::UnitZ();
+};
+
+/// A frame of beam members joined rigidly at shared points.
+struct FrameMeshSpec {
+  std::vector<FramePoint> points;
+  std::vector<FrameMember> members;
+};
+
+/// Build a frame mesh of Beam2 elements: a node at every point, shared by the
+/// members that meet there (a rigid joint), and `elements - 1` interior nodes
+/// along each member - evenly spaced on a straight member, at equal angles on
+/// an arc, exactly on the circle. Each point becomes a node set of its name
+/// and each member an element set of its name.
+/// \throws ConfigError for duplicate or unknown names, a member of no
+///         element, a straight member between one point, or an arc whose
+///         ends are not on one circle about its axis.
+Mesh make_frame_mesh(const FrameMeshSpec& spec);
+
 /// Convenience accessors for structured grids (used by tests and selectors).
 /// The two-index forms address a 2-D grid; the three-index forms a 3-D grid.
 /// \{

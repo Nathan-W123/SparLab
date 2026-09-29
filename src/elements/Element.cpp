@@ -3,6 +3,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/elements/Hex8.hpp"
 #include "sparlab/elements/Quad4.hpp"
+#include "sparlab/elements/Beam2.hpp"
 #include "sparlab/elements/Shell4.hpp"
 #include "sparlab/elements/Tet10.hpp"
 #include "sparlab/elements/Tet4.hpp"
@@ -67,6 +68,10 @@ const std::vector<int>& Element::face_nodes(int local_face) const {
     throw MeshError(os.str());
   }
   return faces[static_cast<std::size_t>(local_face)];
+}
+
+Matrix Element::lumped_mass(const Matrix&, Scalar, Scalar, const IntegrationOptions&) const {
+  return Matrix();
 }
 
 Matrix Element::geometric_stiffness(const Matrix& coords, const Matrix& d, const Vector& ue,
@@ -169,6 +174,7 @@ std::unique_ptr<Element> make_element(ElementType type) {
     case ElementType::Tet4: return std::make_unique<Tet4Element>();
     case ElementType::Tet10: return std::make_unique<Tet10Element>();
     case ElementType::Shell4: return std::make_unique<Shell4Element>();
+    case ElementType::Beam2: return std::make_unique<Beam2Element>();
   }
   throw ConfigError("no element implementation registered for the requested type");
 }

@@ -70,13 +70,17 @@ enum class StressState {
   PlaneStress,       ///< sigma_zz = 0 (thin sheet). Default 2-D path.
   PlaneStrain,       ///< epsilon_zz = 0 (thick section / plane of symmetry).
   ThreeDimensional,  ///< full isotropic elasticity on a solid mesh.
-  Shell              ///< plane stress in the shell's plane, transverse shear.
+  Shell,             ///< plane stress in the shell's plane, transverse shear.
+  Beam               ///< the section resultants of a Timoshenko beam.
 };
 
 /// Spatial dimension a stress state belongs to (2 or 3): the coordinates of
 /// the mesh it goes with.
 constexpr int stress_state_dimension(StressState state) {
-  return state == StressState::ThreeDimensional || state == StressState::Shell ? 3 : 2;
+  return state == StressState::ThreeDimensional || state == StressState::Shell ||
+                 state == StressState::Beam
+             ? 3
+             : 2;
 }
 
 /// Configuration-file spelling of a stress state.
@@ -86,6 +90,7 @@ inline std::string to_string(StressState state) {
     case StressState::PlaneStrain: return "plane_strain";
     case StressState::ThreeDimensional: return "three_dimensional";
     case StressState::Shell: return "shell";
+    case StressState::Beam: return "beam";
   }
   return "unknown";
 }

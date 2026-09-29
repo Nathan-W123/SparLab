@@ -10,11 +10,13 @@
 ///               // or { "type": "structured_hex", "nx","ny","nz", "lx","ly","lz" }
 ///               // or "structured_tri" / "structured_tet" with the same keys
 ///               // or { "type": "structured_shell", "shape": "cylinder", .. }
+///               // or { "type": "frame", "points": [..], "members": [..] }
 ///               // or { "type": "file", "path": "part.msh", "scale": 0.001 }
 ///               // "order": 2 turns tetrahedra into 10-node Tet10 cells
 ///   "material": { "youngs_modulus":.., "poisson_ratio":.., "density":.. },
 ///   "model":    { "thickness":.., "stress_state": "plane_stress" },
 ///               // a shell: { "thickness":.., "shell": { "sections": [..] } }
+///               // a beam: { "beam": { "sections": [ { "shape": "rectangle", .. } ] } }
 ///   "boundary_conditions": [ { "fix": ["x","y"], "region": {..} } ],
 ///   "load_cases":          [ { "name":.., "weight":.., "point_loads": [..] } ],
 ///   "solver":   { "linear": {..}, "equilibrium_tolerance":.. },
@@ -40,7 +42,10 @@
 /// A shell mesh (`structured_shell`, or a file of S4 cells, or of
 /// quadrilaterals with `"shell": true`) lies in 3-D and takes three-entry
 /// vectors, the stress state "shell", a thickness, rotations among the fixed
-/// components ("rx", "ry", "rz") and nodal moments.
+/// components ("rx", "ry", "rz") and nodal moments. A beam mesh (`frame`, or
+/// a file of B31 elements, or of 2-node lines with `"beam": true`) takes the
+/// stress state "beam", cross-sections instead of a thickness, rotations,
+/// moments and loads per unit length along its members (`line_loads`).
 ///
 /// Every numeric field is in SI units. Unknown keys are reported (not ignored),
 /// because a misspelled key that silently takes its default is a direct route
@@ -48,6 +53,7 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/elements/BeamSection.hpp"
 #include "sparlab/fem/Buckling.hpp"
 #include "sparlab/fem/Dynamics.hpp"
 #include "sparlab/fem/FemModel.hpp"
@@ -76,6 +82,7 @@ enum class MeshKind {
   StructuredTri,   ///< "structured_tri": the Q4 grid, each cell split into 2 Tri3
   StructuredTet,   ///< "structured_tet": the Hex8 grid, each cell split into 6 Tet4
   StructuredShell, ///< "structured_shell": a plate, cylinder or sphere of MITC4 cells
+  Frame,           ///< "frame": straight and circular members of Beam2 elements
   File             ///< "file": an unstructured Gmsh (.msh) or Abaqus (.inp) mesh
 };
 
@@ -171,6 +178,15 @@ struct ShellSection {
   Scalar thickness = 0.0;  ///< [m]
 };
 
+/// A beam section (`model.beam.sections`): a cross-section for the elements a
+/// region selects (at their centroids, or an element set), or for every
+/// element when the section names no region (later sections win).
+struct BeamSectionSpec {
+  BeamSection section;
+  SelectorGroup region;
+  bool whole_model = true;
+};
+
 /// A material assigned to an element region, overriding the deck's primary
 /// `material` there (later regions win).
 struct MaterialRegion {
@@ -196,6 +212,7 @@ class Configuration {
   MeshKind mesh_kind = MeshKind::StructuredQuad;
   StructuredMeshSpec mesh_spec;   ///< structured box kinds
   ShellMeshSpec shell_mesh;       ///< MeshKind::StructuredShell
+  FrameMeshSpec frame_mesh;       ///< MeshKind::Frame
   /// Polynomial order of the tetrahedra: 1 (Tet4) or 2 (Tet10). A
   /// `structured_tet` deck with order 2 splits the grid into Tet10 cells; a
   /// file of linear tetrahedra with order 2 is elevated to straight-sided
@@ -216,6 +233,8 @@ class Configuration {
   /// its sections.
   ShellOptions shell;
   std::vector<ShellSection> shell_sections;
+  /// A beam model's sections (`model.beam.sections`).
+  std::vector<BeamSectionSpec> beam_sections;
 
   std::vector<DisplacementConstraint> constraints;
   std::vector<LoadCaseSpec> load_cases;
@@ -239,6 +258,8 @@ class Configuration {
 
   /// True for a deck of shell elements.
   bool is_shell() const { return stress_state == StressState::Shell; }
+  /// True for a deck of beam elements.
+  bool is_beam() const { return stress_state == StressState::Beam; }
 
   /// One-line description of the mesh source for messages and summaries,
   /// e.g. "structured_tet 40 x 20 x 10" or "file 'bracket.msh' (Tri3)".

@@ -4,6 +4,7 @@
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/core/Version.hpp"
 #include "sparlab/fem/BoundaryConditions.hpp"
+#include "sparlab/fem/StressRecovery.hpp"
 #include "sparlab/io/CsvWriter.hpp"
 #include "sparlab/io/StlWriter.hpp"
 #include "sparlab/io/VtkWriter.hpp"
@@ -231,6 +232,29 @@ json::Value mesh_stats_json(const Configuration& config, const FemModel& model) 
       shell.set("n2", json::Value::make_number(static_cast<Scalar>(s.n2)));
     }
     out.set("shell", shell);
+  }
+  if (model.is_beam()) {
+    json::Value beam = json::Value::make_object();
+    Scalar l_min = mesh.element_measure(0);
+    Scalar l_max = l_min;
+    Scalar a_min = model.section_of(0).area;
+    Scalar a_max = a_min;
+    for (Index e = 1; e < mesh.num_elements(); ++e) {
+      l_min = std::min(l_min, mesh.element_measure(e));
+      l_max = std::max(l_max, mesh.element_measure(e));
+      a_min = std::min(a_min, model.section_of(e).area);
+      a_max = std::max(a_max, model.section_of(e).area);
+    }
+    beam.set("element_length_min_m", json::Value::make_number(l_min));
+    beam.set("element_length_max_m", json::Value::make_number(l_max));
+    beam.set("area_min_m2", json::Value::make_number(a_min));
+    beam.set("area_max_m2", json::Value::make_number(a_max));
+    beam.set("sections", json::Value::make_number(static_cast<Scalar>(config.beam_sections.size())));
+    if (config.mesh_kind == MeshKind::Frame) {
+      beam.set("points", json::Value::make_number(static_cast<Scalar>(config.frame_mesh.points.size())));
+      beam.set("members", json::Value::make_number(static_cast<Scalar>(config.frame_mesh.members.size())));
+    }
+    out.set("beam", beam);
   }
   if (mesh.structured_info().has_value()) {
     const StructuredGridInfo& info = *mesh.structured_info();
@@ -495,6 +519,61 @@ void ResultWriter::write_mesh(const FemModel& model) const {
     doc.set("shell", shell);
   }
 
+  // A beam's sections, orientation vectors and moduli per element, and each
+  // load case's distributed load per element and nodal loads apart from it,
+  // for an independent assembly (it computes the local axes itself).
+  if (model.is_beam()) {
+    json::Value beam = json::Value::make_object();
+    json::Value sections = json::Value::make_array();
+    for (Index e = 0; e < mesh.num_elements(); ++e) {
+      const BeamSection s = model.section_of(e);
+      const IsotropicMaterial& m = model.material_of(e);
+      json::Value entry = json::Value::make_object();
+      entry.set("shape", json::Value::make_string(to_string(s.shape)));
+      entry.set("area_m2", json::Value::make_number(s.area));
+      entry.set("iy_m4", json::Value::make_number(s.iy));
+      entry.set("iz_m4", json::Value::make_number(s.iz));
+      entry.set("torsion_m4", json::Value::make_number(s.torsion));
+      entry.set("shear_y", json::Value::make_number(s.shear_deformation ? s.shear_y : 0.0));
+      entry.set("shear_z", json::Value::make_number(s.shear_deformation ? s.shear_z : 0.0));
+      entry.set("width_m", json::Value::make_number(s.width));
+      entry.set("height_m", json::Value::make_number(s.height));
+      entry.set("radius_m", json::Value::make_number(s.radius));
+      entry.set("inner_radius_m", json::Value::make_number(s.inner_radius));
+      entry.set("orientation", point_json(s.orientation, 3));
+      entry.set("youngs_modulus_Pa", json::Value::make_number(m.youngs_modulus()));
+      entry.set("shear_modulus_Pa", json::Value::make_number(m.shear_modulus()));
+      entry.set("density_kg_m3", json::Value::make_number(m.density()));
+      sections.push_back(entry);
+    }
+    beam.set("elements", sections);
+    json::Value cases = json::Value::make_array();
+    for (std::size_t l = 0; l < model.load_case_specs().size(); ++l) {
+      const LoadCaseSpec& spec = model.load_case_specs()[l];
+      json::Value entry = json::Value::make_object();
+      entry.set("name", json::Value::make_string(spec.name));
+      json::Value q = json::Value::make_array();
+      for (const Vector3& v : beam_distributed_loads(model, spec)) q.push_back(point_json(v, 3));
+      entry.set("distributed_N_per_m", q);
+      LoadCaseSpec nodal = spec;
+      nodal.line_loads.clear();
+      const Vector f = assemble_beam_load_vector(model, nodal);
+      json::Value forces = json::Value::make_array();
+      for (Index n = 0; n < mesh.num_nodes(); ++n) {
+        const Eigen::Matrix<Scalar, 6, 1> fn = f.segment<6>(6 * n);
+        if (fn.isZero(0.0)) continue;
+        json::Value row = json::Value::make_array();
+        row.push_back(json::Value::make_number(static_cast<Scalar>(n)));
+        for (int k = 0; k < 6; ++k) row.push_back(json::Value::make_number(fn(k)));
+        forces.push_back(row);
+      }
+      entry.set("nodal_loads_node_fx_fy_fz_mx_my_mz", forces);
+      cases.push_back(entry);
+    }
+    beam.set("load_cases", cases);
+    doc.set("beam", beam);
+  }
+
   // Prescribed DOFs, for the boundary-condition figure.
   const int ndpn = model.dofs_per_node();
   doc.set("dofs_per_node", json::Value::make_number(ndpn));
@@ -737,6 +816,65 @@ void ResultWriter::write_shell_vtk(const FemModel& model, const std::string& loa
                           cell([](const ShellResultants& r) { return r.von_mises_bottom; }));
   writer.add_cell_scalars("von_mises_mid", cell([](const ShellResultants& r) { return r.von_mises_mid; }));
   writer.add_cell_scalars("von_mises", field.element_von_mises);
+  writer.add_cell_scalars("strain_energy", field.element_strain_energy);
+  writer.write(file("fields_" + sanitise(load_case) + ".vtk"));
+}
+
+void ResultWriter::write_beam_forces(const FemModel& model, const std::string& load_case,
+                                     const BeamField& field) const {
+  const Mesh& mesh = model.mesh();
+  CsvWriter csv(file("beam_" + sanitise(load_case) + ".csv"),
+                {"element", "node0", "node1", "length[m]", "area[m2]", "iy[m4]", "iz[m4]",
+                 "torsion[m4]", "xpx[-]", "xpy[-]", "xpz[-]", "ypx[-]", "ypy[-]", "ypz[-]",
+                 "N0[N]", "Qy0[N]", "Qz0[N]", "T0[Nm]", "My0[Nm]", "Mz0[Nm]", "N1[N]", "Qy1[N]",
+                 "Qz1[N]", "T1[Nm]", "My1[Nm]", "Mz1[Nm]", "normal_stress[Pa]",
+                 "strain_energy[J]"});
+  for (Index e = 0; e < mesh.num_elements(); ++e) {
+    const BeamEndForces& f = field.element[static_cast<std::size_t>(e)];
+    const BeamSection s = model.section_of(e);
+    const Index* nodes = mesh.element_nodes(e);
+    std::vector<Scalar> row{static_cast<Scalar>(nodes[0]), static_cast<Scalar>(nodes[1]),
+                            f.frame.length, s.area, s.iy, s.iz, s.torsion};
+    for (const Vector3& v : {f.frame.x_axis(), f.frame.y_axis()}) {
+      row.insert(row.end(), {v.x(), v.y(), v.z()});
+    }
+    for (int k = 0; k < 6; ++k) row.push_back(f.start(k));
+    for (int k = 0; k < 6; ++k) row.push_back(f.end(k));
+    row.push_back(field.element_normal_stress(e));
+    row.push_back(field.element_strain_energy(e));
+    csv.row(e, row);
+  }
+  csv.close();
+}
+
+void ResultWriter::write_beam_vtk(const FemModel& model, const std::string& load_case,
+                                  const Vector& full_displacement, const BeamField& field) const {
+  const Mesh& mesh = model.mesh();
+  const Vector displacement = translations(mesh, full_displacement);
+  const Vector rotation = rotations(mesh, full_displacement);
+  VtkWriter writer(mesh, "SparLab beam solution: " + config_.name + " / " + load_case);
+  Vector mag(mesh.num_nodes());
+  for (Index n = 0; n < mesh.num_nodes(); ++n) mag(n) = magnitude(displacement, n, 3);
+  writer.add_point_vectors("displacement", displacement);
+  writer.add_point_vectors("rotation", rotation);
+  writer.add_point_scalars("displacement_magnitude", mag);
+  writer.add_point_scalars("nodal_normal_stress", field.nodal_normal_stress);
+  const Index ne = mesh.num_elements();
+  const char* names[] = {"N", "Qy", "Qz", "T", "My", "Mz"};
+  for (int k = 0; k < 6; ++k) {
+    Vector start(ne);
+    Vector end(ne);
+    for (Index e = 0; e < ne; ++e) {
+      start(e) = field.element[static_cast<std::size_t>(e)].start(k);
+      end(e) = field.element[static_cast<std::size_t>(e)].end(k);
+    }
+    writer.add_cell_scalars(std::string(names[k]) + "_start", start);
+    writer.add_cell_scalars(std::string(names[k]) + "_end", end);
+  }
+  Vector area(ne);
+  for (Index e = 0; e < ne; ++e) area(e) = model.section_of(e).area;
+  writer.add_cell_scalars("area", area);
+  writer.add_cell_scalars("normal_stress", field.element_normal_stress);
   writer.add_cell_scalars("strain_energy", field.element_strain_energy);
   writer.write(file("fields_" + sanitise(load_case) + ".vtk"));
 }
@@ -1595,7 +1733,8 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
                                 const std::vector<StressField>& stresses,
                                 const ModalResult* modal,
                                 const TimingLedger& timings,
-                                const std::vector<ShellField>* shells) {
+                                const std::vector<ShellField>* shells,
+                                const std::vector<BeamField>* beams) {
   json::Value out = json::Value::make_object();
   out.set("provenance", make_provenance(config));
   out.set("mesh", mesh_stats_json(config, model));
@@ -1655,6 +1794,35 @@ json::Value make_static_summary(const Configuration& config, const FemModel& mod
       shell.set("max_abs_moment_N", json::Value::make_number(m_max));
       shell.set("max_abs_transverse_shear_N_per_m", json::Value::make_number(q_max));
       entry.set("shell", shell);
+    }
+    if (beams != nullptr && l < beams->size()) {
+      // The largest end resultants over the elements, in their own axes.
+      const BeamField& f = (*beams)[l];
+      entry.set("total_strain_energy_J",
+                json::Value::make_number(f.element_strain_energy.sum()));
+      Eigen::Matrix<Scalar, 6, 1> largest = Eigen::Matrix<Scalar, 6, 1>::Zero();
+      for (const BeamEndForces& r : f.element) {
+        largest = largest.cwiseMax(r.start.cwiseAbs()).cwiseMax(r.end.cwiseAbs());
+      }
+      json::Value beam = json::Value::make_object();
+      beam.set("max_abs_axial_force_N", json::Value::make_number(largest(0)));
+      beam.set("max_abs_shear_force_N",
+               json::Value::make_number(std::max(largest(1), largest(2))));
+      beam.set("max_abs_torque_Nm", json::Value::make_number(largest(3)));
+      beam.set("max_abs_bending_moment_Nm",
+               json::Value::make_number(std::max(largest(4), largest(5))));
+      Scalar sigma = 0.0;
+      bool known = false;
+      for (Index e = 0; e < f.element_normal_stress.size(); ++e) {
+        if (!std::isfinite(f.element_normal_stress(e))) continue;
+        sigma = std::max(sigma, f.element_normal_stress(e));
+        known = true;
+      }
+      if (known) {
+        beam.set("max_normal_stress_Pa", json::Value::make_number(sigma));
+        entry.set("max_normal_stress_Pa", json::Value::make_number(sigma));
+      }
+      entry.set("beam", beam);
     }
     cases.push_back(entry);
   }

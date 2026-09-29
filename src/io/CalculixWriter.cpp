@@ -1,6 +1,7 @@
 #include "sparlab/io/CalculixWriter.hpp"
 
 #include "sparlab/core/Exceptions.hpp"
+#include "sparlab/elements/Beam2.hpp"
 
 #include <Eigen/Geometry>
 
@@ -55,7 +56,8 @@ const std::vector<std::vector<int>>& calculix_faces(ElementType type) {
     case ElementType::Hex8: return hex;
     case ElementType::Tet4:
     case ElementType::Tet10: return tet;
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   throw IoError("no CalculiX face table for this element type");
 }
@@ -88,7 +90,8 @@ std::string calculix_conduction_type(const FemModel& model) {
     case ElementType::Hex8: return "DC3D8";
     case ElementType::Tet4: return "DC3D4";
     case ElementType::Tet10: return "DC3D10";
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   throw IoError("no CalculiX heat-transfer element for this mesh");
 }
@@ -158,6 +161,55 @@ std::vector<ShellSet> write_shell_sets(std::ostream& out, const FemModel& model)
     members[s].push_back(e);
   }
   for (std::size_t s = 0; s < sets.size(); ++s) write_set(out, "ELSET", sets[s].name, members[s]);
+  return sets;
+}
+
+/// A beam model's element sets B1, B2, ... - one per material, rectangle and
+/// y' axis, since a *BEAM SECTION takes one 1-direction - as (set name,
+/// material index, width along y', height along z', y').
+struct BeamSet {
+  std::string name;
+  int material = 0;
+  Scalar width = 0.0;
+  Scalar height = 0.0;
+  Vector3 direction = Vector3::Zero();
+};
+
+/// \throws IoError for a section CalculiX's linear beam cannot take: it
+///         expands a B31 element into bricks over a rectangle; a circle needs
+///         its quadratic beam, a general section has no shape to expand, and
+///         the bricks deform in shear whatever the section says.
+std::vector<BeamSet> write_beam_sets(std::ostream& out, const FemModel& model) {
+  std::vector<BeamSet> sets;
+  std::vector<std::vector<Index>> members;
+  for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+    const BeamSection section = model.section_of(e);
+    if (section.shape != BeamSectionShape::Rectangle) {
+      throw IoError("beam section '" + section.name + "' is a " + to_string(section.shape) +
+                    ": CalculiX expands its linear beam (B31) into bricks over a rectangle "
+                    "only (a circle needs its quadratic beam, a general section has no "
+                    "shape), so only rectangular sections are exported");
+    }
+    if (!section.shear_deformation) {
+      throw IoError("beam section '" + section.name + "' has no shear deformation: CalculiX's "
+                    "expanded beam deforms in shear as a solid, so it would not be the same "
+                    "model");
+    }
+    const int m = model.element_material(e);
+    const Vector3 y = Beam2Element::frame(model.element_geometry(e)).y_axis();
+    std::size_t k = 0;
+    while (k < sets.size() &&
+           !(sets[k].material == m && sets[k].width == section.width &&
+             sets[k].height == section.height && (sets[k].direction - y).norm() <= 1.0e-12)) {
+      ++k;
+    }
+    if (k == sets.size()) {
+      sets.push_back({"B" + std::to_string(k + 1), m, section.width, section.height, y});
+      members.emplace_back();
+    }
+    members[k].push_back(e);
+  }
+  for (std::size_t k = 0; k < sets.size(); ++k) write_set(out, "ELSET", sets[k].name, members[k]);
   return sets;
 }
 
@@ -370,18 +422,26 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
       << element << ", " << mesh.num_elements() << " elements)\n";
   write_nodes_and_elements(out, mesh, element);
   const bool shell = model.is_shell();
-  // A shell's sections carry their thickness: one set per material and
-  // thickness, each material written once below.
+  const bool beam = model.is_beam();
+  const bool structural = shell || beam;
+  // A shell's sections carry their thickness, a beam's its rectangle and
+  // axes: one set per material and section, each material written once
+  // below.
   const std::vector<ShellSet> shell_sets =
       shell ? write_shell_sets(out, model) : std::vector<ShellSet>();
+  const std::vector<BeamSet> beam_sets = beam ? write_beam_sets(out, model) : std::vector<BeamSet>();
   const std::vector<std::string> sets =
-      shell ? std::vector<std::string>(model.materials().size(), "") : write_material_sets(out, model);
+      structural ? std::vector<std::string>(model.materials().size(), "")
+                 : write_material_sets(out, model);
   std::vector<std::string> shell_materials = sets;
   for (const ShellSet& s : shell_sets) {
     shell_materials[static_cast<std::size_t>(s.material)] = "used";
   }
+  for (const BeamSet& s : beam_sets) {
+    shell_materials[static_cast<std::size_t>(s.material)] = "used";
+  }
   for (std::size_t m = 0; m < sets.size(); ++m) {
-    if (sets[m].empty() && (!shell || shell_materials[m].empty())) continue;
+    if (sets[m].empty() && (!structural || shell_materials[m].empty())) continue;
     const IsotropicMaterial& mat = model.materials()[m];
     out << "*MATERIAL, NAME=MAT" << m + 1 << "\n*ELASTIC\n" << field(mat.youngs_modulus())
         << ", " << field(mat.poisson_ratio()) << "\n";
@@ -401,13 +461,21 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
       out << "*EXPANSION, ZERO=" << field(mat.reference_temperature()) << "\n"
           << field(mat.thermal_expansion()) << "\n";
     }
-    if (shell) continue;
+    if (structural) continue;
     out << "*SOLID SECTION, ELSET=" << sets[m] << ", MATERIAL=MAT" << m + 1 << "\n";
     if (dim == 2) out << field(model.thickness()) << "\n";
   }
   for (const ShellSet& s : shell_sets) {
     out << "*SHELL SECTION, ELSET=" << s.name << ", MATERIAL=MAT" << s.material + 1 << "\n"
         << field(s.thickness) << "\n";
+  }
+  // CalculiX's RECT: the side along the 1-direction first - SparLab's y'.
+  for (const BeamSet& s : beam_sets) {
+    out << "*BEAM SECTION, ELSET=" << s.name << ", MATERIAL=MAT" << s.material + 1
+        << ", SECTION=RECT\n"
+        << field(s.width) << ", " << field(s.height) << "\n"
+        << field(s.direction.x()) << ", " << field(s.direction.y()) << ", "
+        << field(s.direction.z()) << "\n";
   }
   // Body-force regions get their own element sets.
   std::vector<std::string> body_sets;
@@ -609,6 +677,10 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
       // Results at the shell's own nodes, not at those of CalculiX's
       // expansion into solids.
       out << "*NODE FILE, OUTPUT=2D\nU\n*EL FILE, OUTPUT=2D\nS\n*END STEP\n";
+    } else if (beam) {
+      // Displacements at the beam's own nodes; the stresses are those of
+      // the expansion's bricks.
+      out << "*NODE FILE, OUTPUT=2D\nU\n*EL FILE\nS\n*END STEP\n";
     } else {
       out << "*NODE FILE\nU\n*EL FILE\nS\n*END STEP\n";
     }
@@ -702,6 +774,8 @@ std::string calculix_element_type(const FemModel& model) {
       return "C3D10";  // same node order as the Tet10
     case ElementType::Shell4:
       return "S4";
+    case ElementType::Beam2:
+      return "B31";
   }
   throw IoError("no CalculiX element type for this mesh");
 }

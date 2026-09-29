@@ -5,7 +5,9 @@
 
 #include <Eigen/Geometry>
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 #include <random>
 #include <sstream>
 #include <string>
@@ -502,6 +504,105 @@ Mesh make_structured_shell_mesh(const ShellMeshSpec& spec) {
 Mesh make_perturbed_tet10_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                                unsigned int seed) {
   return elevate_to_tet10(make_perturbed_tet_mesh(spec, perturbation, seed));
+}
+
+Mesh make_frame_mesh(const FrameMeshSpec& spec) {
+  if (spec.points.empty() || spec.members.empty()) {
+    throw ConfigError("a frame mesh needs points and members");
+  }
+  std::map<std::string, Index> point_node;
+  std::vector<Vector3> nodes;
+  for (const FramePoint& p : spec.points) {
+    if (p.name.empty()) throw ConfigError("every frame point needs a name");
+    if (!p.position.allFinite()) {
+      throw ConfigError("frame point '" + p.name + "' has a non-finite position");
+    }
+    if (!point_node.emplace(p.name, static_cast<Index>(nodes.size())).second) {
+      throw ConfigError("frame point '" + p.name + "' is defined twice");
+    }
+    nodes.push_back(p.position);
+  }
+  const auto node_of = [&](const std::string& name, const std::string& member) {
+    const auto it = point_node.find(name);
+    if (it == point_node.end()) {
+      throw ConfigError("frame member '" + member + "' names point '" + name +
+                        "', which the frame does not define");
+    }
+    return it->second;
+  };
+  std::vector<Index> connectivity;
+  std::map<std::string, std::vector<Index>> member_elements;
+  for (const FrameMember& m : spec.members) {
+    if (m.name.empty()) throw ConfigError("every frame member needs a name");
+    if (m.elements < 1) {
+      throw ConfigError("frame member '" + m.name + "' needs at least one element");
+    }
+    if (member_elements.count(m.name) > 0 || point_node.count(m.name) > 0) {
+      throw ConfigError("frame member '" + m.name + "': the name is already used by a point "
+                        "or another member");
+    }
+    const Index a = node_of(m.from, m.name);
+    const Index b = node_of(m.to, m.name);
+    const Vector3 xa = nodes[static_cast<std::size_t>(a)];
+    const Vector3 xb = nodes[static_cast<std::size_t>(b)];
+    // The positions of the member's interior nodes, t = 1 ... elements - 1.
+    std::vector<Vector3> interior;
+    if (!m.arc) {
+      if (a == b) {
+        throw ConfigError("frame member '" + m.name + "' runs from point '" + m.from +
+                          "' to itself; only an arc can close on its start");
+      }
+      for (Index t = 1; t < m.elements; ++t) {
+        interior.push_back(xa + (xb - xa) * (static_cast<Scalar>(t) / m.elements));
+      }
+    } else {
+      if (!(m.arc_axis.norm() > 0.0) || !m.arc_axis.allFinite()) {
+        throw ConfigError("arc member '" + m.name + "' needs a non-zero axis");
+      }
+      const Vector3 axis = m.arc_axis.normalized();
+      const Vector3 ra = xa - m.arc_centre;
+      const Vector3 rb = xb - m.arc_centre;
+      const Scalar radius = ra.norm();
+      const Scalar tol = 1.0e-9 * std::max(radius, 1.0e-300);
+      if (!(radius > 0.0) || std::abs(ra.dot(axis)) > tol || std::abs(rb.dot(axis)) > tol ||
+          std::abs(rb.norm() - radius) > tol) {
+        throw ConfigError("arc member '" + m.name + "': its end points must lie on one circle "
+                          "about its centre, in the plane normal to its axis");
+      }
+      Scalar angle = std::atan2(axis.dot(ra.cross(rb)), ra.dot(rb));
+      if (angle <= 0.0) angle += 2.0 * 3.14159265358979323846;  // counter-clockwise, (0, 2 pi]
+      if (m.elements < 3 && a == b) {
+        throw ConfigError("arc member '" + m.name + "' closes a full circle and needs at least "
+                          "three elements");
+      }
+      const Vector3 rp = axis.cross(ra);  // ra turned by 90 degrees about the axis
+      for (Index t = 1; t < m.elements; ++t) {
+        const Scalar phi = angle * static_cast<Scalar>(t) / static_cast<Scalar>(m.elements);
+        interior.push_back(m.arc_centre + std::cos(phi) * ra + std::sin(phi) * rp);
+      }
+    }
+    std::vector<Index> chain{a};
+    for (const Vector3& x : interior) {
+      chain.push_back(static_cast<Index>(nodes.size()));
+      nodes.push_back(x);
+    }
+    chain.push_back(b);
+    std::vector<Index>& elements = member_elements[m.name];
+    for (std::size_t k = 0; k + 1 < chain.size(); ++k) {
+      elements.push_back(static_cast<Index>(connectivity.size() / 2));
+      connectivity.push_back(chain[k]);
+      connectivity.push_back(chain[k + 1]);
+    }
+  }
+  Matrix coords(3, static_cast<Index>(nodes.size()));
+  for (std::size_t n = 0; n < nodes.size(); ++n) coords.col(static_cast<Index>(n)) = nodes[n];
+  Mesh mesh(std::move(coords), std::move(connectivity), ElementType::Beam2);
+  for (const auto& entry : point_node) mesh.set_node_set(entry.first, {entry.second});
+  for (auto& entry : member_elements) mesh.set_element_set(entry.first, std::move(entry.second));
+  mesh.validate();
+  log::debug("frame mesh: ", spec.points.size(), " points, ", spec.members.size(), " members, ",
+             mesh.num_elements(), " elements");
+  return mesh;
 }
 
 }  // namespace sparlab

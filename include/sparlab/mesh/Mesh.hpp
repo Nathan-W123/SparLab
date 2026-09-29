@@ -33,23 +33,28 @@ enum class ElementType {
   Tri3,   ///< Three-node linear triangle, constant strain (2-D).
   Tet4,   ///< Four-node linear tetrahedron, constant strain (3-D).
   Tet10,  ///< Ten-node quadratic tetrahedron, linear strain (3-D).
-  Shell4  ///< Four-node MITC4 shell: a quadrilateral surface in 3-D.
+  Shell4,  ///< Four-node MITC4 shell: a quadrilateral surface in 3-D.
+  Beam2    ///< Two-node Timoshenko beam: a straight segment in 3-D.
 };
 
 /// Number of nodes carried by an element topology.
 int nodes_per_element(ElementType type);
 
 /// Spatial dimension of an element topology (2 or 3): the coordinates of
-/// its nodes, 3 for a shell.
+/// its nodes, 3 for a shell or a beam.
 int element_dimension(ElementType type);
 
-/// Dimension of the cell itself: 2 for the plane elements and the shell
-/// (an area), 3 for the solids (a volume).
+/// Dimension of the cell itself: 1 for the beam (a length), 2 for the plane
+/// elements and the shell (an area), 3 for the solids (a volume).
 int topological_dimension(ElementType type);
 
 /// True for the shell element (a surface in 3-D whose nodes carry
 /// rotations).
 bool is_shell(ElementType type);
+
+/// True for the beam element (a segment in 3-D whose nodes carry
+/// rotations).
+bool is_beam(ElementType type);
 
 /// True for the triangles and tetrahedra (Tri3, Tet4, Tet10).
 bool is_simplex(ElementType type);
@@ -60,8 +65,9 @@ bool is_simplex(ElementType type);
 int corner_nodes(ElementType type);
 
 /// Number of corner nodes on one boundary face (2 for an edge, 3 for a
-/// triangle, 4 for a quadrilateral); they lead each face list of
-/// `element_local_faces`, and they alone identify a face shared by two cells.
+/// triangle, 4 for a quadrilateral, 1 for the ends of a beam, which has no
+/// face table); they lead each face list of `element_local_faces`, and they
+/// alone identify a face shared by two cells.
 int face_corner_nodes(ElementType type);
 
 /// Human-readable name, also used in VTK output.
@@ -73,7 +79,8 @@ std::string to_string(ElementType type);
 /// (VTK hexahedron face convention), the four triangular faces of a Tet4, or
 /// the four 6-node faces of a Tet10 (the Tet4 corners, then the edge nodes of
 /// corner pairs 0-1, 1-2, 2-0 of the face). "Face" is used for all of them
-/// throughout the code base; in 2-D a face is an edge.
+/// throughout the code base; in 2-D a face is an edge. A beam has none: it
+/// takes line loads, not tractions.
 const std::vector<std::vector<int>>& element_local_faces(ElementType type);
 
 /// Summary of element shape quality. The metric is 1 for an ideal cell and

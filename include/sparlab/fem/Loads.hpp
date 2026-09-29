@@ -1,6 +1,7 @@
 /// \file Loads.hpp
 /// \brief Volume loads - self-weight, body forces, rotation - and thermal
-///        loads of a continuum model; self-weight and body forces of a shell.
+///        loads of a continuum model; self-weight and body forces of a shell
+///        or a beam.
 ///
 /// **Body loads from the consistent mass.** A body force density that is
 /// affine in position, \f$b(x) = b_0 + B x\f$, is interpolated exactly by the
@@ -27,6 +28,12 @@
 /// \f$\int N^T b\,dV\f$ exactly, the moment a curved shell's volume gives it
 /// about the mid-surface included. The centrifugal load changes through the
 /// thickness in a way nodal values cannot carry, so a shell refuses it.
+///
+/// **Beams.** Likewise the beam's interpolation (Beam2.hpp) of equal nodal
+/// translations and zero rotations is that translation along the whole
+/// element, its rotation zero, so \f$M_e^{(1)}\hat b\f$ is the consistent load
+/// of the uniform line load \f$A b\f$ exactly. The centrifugal load varies
+/// over the section, and a beam refuses it too.
 ///
 /// **Thermal loads.** A temperature change \f$\Delta T(x) = N^T (T_e - T_{ref})\f$
 /// induces the free strain \f$\varepsilon_0 = \alpha\Delta T\f$ (Voigt form per

@@ -9,6 +9,7 @@
 ///   <out>/displacement_<lc>.csv     nodal displacements per load case
 ///   <out>/stress_<lc>.csv           element strains/stresses per load case
 ///   <out>/shell_<lc>.csv            a shell model's resultants per element
+///   <out>/beam_<lc>.csv             a beam model's end resultants per element
 ///   <out>/reactions_<lc>.csv        support reactions per load case
 ///   <out>/fields_<lc>.vtk           ParaView fields per load case
 ///   <out>/modes.csv                 eigenvalues, frequencies, residuals
@@ -107,6 +108,19 @@ class ResultWriter {
   void write_shell_vtk(const FemModel& model, const std::string& load_case,
                        const Vector& full_displacement, const ShellField& field) const;
 
+  /// A beam model's end resultants per element (beam_<case>.csv): its nodes,
+  /// length, section and local axes, the resultants N, Q_y, Q_z, T, M_y, M_z
+  /// at both ends in those axes, the largest extreme-fibre normal stress and
+  /// the strain energy.
+  void write_beam_forces(const FemModel& model, const std::string& load_case,
+                         const BeamField& field) const;
+
+  /// A beam model's fields (fields_<case>.vtk) on its line cells:
+  /// displacement, rotation and the nodal normal stress on the nodes; the
+  /// end resultants, the extreme-fibre stress and the section on the cells.
+  void write_beam_vtk(const FemModel& model, const std::string& load_case,
+                      const Vector& full_displacement, const BeamField& field) const;
+
   void write_temperature(const Mesh& mesh, const std::string& load_case,
                          const Vector& temperature) const;
 
@@ -177,12 +191,14 @@ class ResultWriter {
 /// Build the JSON summary of a static (plus optional modal) analysis.
 /// \param shells a shell model's resultants per load case (instead of
 ///        `stresses`), or null.
+/// \param beams a beam model's end resultants per load case, or null.
 json::Value make_static_summary(const Configuration& config, const FemModel& model,
                                 const ModelDiagnostics& diagnostics,
                                 const std::vector<StaticSolution>& solutions,
                                 const std::vector<StressField>& stresses,
                                 const ModalResult* modal, const TimingLedger& timings,
-                                const std::vector<ShellField>* shells = nullptr);
+                                const std::vector<ShellField>* shells = nullptr,
+                                const std::vector<BeamField>* beams = nullptr);
 
 /// Build the JSON summary of a topology-optimisation run.
 json::Value make_topology_summary(const Configuration& config, const FemModel& model,

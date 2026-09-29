@@ -2554,7 +2554,8 @@ int main(int argc, char** argv) {
             "contact-patch | hertz-line | hertz-point | shell-patch | shell-plate | "
             "shell-plate-modes | shell-plate-harmonic | shell-plate-buckling | "
             "shell-cylinder-pressure | shell-scordelis-lo | shell-pinched-cylinder | "
-            "shell-pinched-hemisphere | shell-box-beam"},
+            "shell-pinched-hemisphere | shell-box-beam | beam-exact | beam-modes | "
+            "beam-harmonic | beam-buckling | beam-curved"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2722,6 +2723,21 @@ int main(int argc, char** argv) {
     }
     if (all || study == "shell-box-beam") {
       outcomes.push_back(verify::study_shell_box_beam(out_dir, summary));
+    }
+    if (all || study == "beam-exact") {
+      outcomes.push_back(verify::study_beam_exact(out_dir, summary));
+    }
+    if (all || study == "beam-modes") {
+      outcomes.push_back(verify::study_beam_modes(out_dir, summary));
+    }
+    if (all || study == "beam-harmonic") {
+      outcomes.push_back(verify::study_beam_harmonic(out_dir, summary));
+    }
+    if (all || study == "beam-buckling") {
+      outcomes.push_back(verify::study_beam_buckling(out_dir, summary));
+    }
+    if (all || study == "beam-curved") {
+      outcomes.push_back(verify::study_beam_curved(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

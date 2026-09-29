@@ -145,6 +145,9 @@ Vector IsotropicMaterial::thermal_strain(StressState state, Scalar delta_t) cons
       throw ModelError("a temperature field on a shell model is not supported: the shell "
                        "element has no thermal strain (neither a uniform change nor a "
                        "gradient through the thickness)");
+    case StressState::Beam:
+      throw ModelError("a temperature field on a beam model is not supported: the beam "
+                       "element has no thermal strain");
   }
   throw ConfigError("unhandled stress state");
 }
@@ -156,6 +159,13 @@ Matrix IsotropicMaterial::constitutive(StressState state) const {
     case StressState::ThreeDimensional: return three_dimensional_matrix();
     // The shell's in-plane law; the element adds the transverse shear.
     case StressState::Shell: return plane_stress_matrix();
+    // The beam's section stiffnesses take E and G (Beam2.hpp).
+    case StressState::Beam: {
+      Matrix d = Matrix::Zero(2, 2);
+      d(0, 0) = e_;
+      d(1, 1) = shear_modulus();
+      return d;
+    }
   }
   throw ConfigError("unhandled stress state");
 }

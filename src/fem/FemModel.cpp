@@ -2,11 +2,13 @@
 
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
+#include "sparlab/elements/Beam2.hpp"
 #include "sparlab/elements/Shell4.hpp"
 #include "sparlab/fem/HeatConduction.hpp"
 #include "sparlab/fem/LinearSolver.hpp"
 #include "sparlab/fem/Loads.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numeric>
@@ -34,6 +36,15 @@ FemModel::FemModel(Mesh mesh, IsotropicMaterial material, Scalar thickness,
       d_{materials_.front().constitutive(stress_state)},
       dofs_(mesh_.num_nodes(), element_->dofs_per_node()) {
   const bool shell_mesh = sparlab::is_shell(mesh_.element_type());
+  const bool beam_mesh = sparlab::is_beam(mesh_.element_type());
+  if (beam_mesh != (stress_state_ == StressState::Beam)) {
+    std::ostringstream os;
+    os << (beam_mesh ? "a beam mesh (Beam2 elements) needs the stress state 'beam'"
+                     : "the stress state 'beam' needs a beam mesh (Beam2 elements)")
+       << ", got '" << to_string(stress_state_) << "' with " << to_string(mesh_.element_type())
+       << " elements";
+    throw ConfigError(os.str());
+  }
   if (shell_mesh != (stress_state_ == StressState::Shell)) {
     std::ostringstream os;
     os << (shell_mesh ? "a shell mesh (Shell4 elements) needs the stress state 'shell'"
@@ -57,10 +68,12 @@ FemModel::FemModel(Mesh mesh, IsotropicMaterial material, Scalar thickness,
   }
   if (mesh_.dim() == 3 && !shell_mesh && thickness_ != 1.0) {
     std::ostringstream os;
-    os << "a 3-D model has no thickness (got " << thickness_
-       << " m); leave model.thickness at its default of 1 for a solid mesh";
+    os << "a " << (beam_mesh ? "beam" : "3-D") << " model has no thickness (got " << thickness_
+       << " m); leave model.thickness at its default of 1 for a "
+       << (beam_mesh ? "beam mesh, whose elements take cross-sections" : "solid mesh");
     throw ConfigError(os.str());
   }
+  if (beam_mesh) element_section_.assign(static_cast<std::size_t>(mesh_.num_elements()), -1);
   mesh_.validate();
   if (shell_mesh) {
     element_ = std::make_unique<Shell4Element>(shell_options_.drilling_factor);
@@ -186,7 +199,53 @@ void FemModel::compute_directors() {
   }
 }
 
+void FemModel::assign_section(const BeamSection& section, const std::vector<Index>& elements) {
+  if (!is_beam()) throw ModelError("only a beam model takes cross-sections");
+  if (finalized_) throw ModelError("sections must be assigned before FemModel::finalize()");
+  resolve(section, material().poisson_ratio());  // throws ConfigError if invalid
+  const Index ne = mesh_.num_elements();
+  for (Index e : elements) {
+    if (e < 0 || e >= ne) {
+      std::ostringstream os;
+      os << "section '" << section.name << "' assigned to element " << e << ", outside [0, "
+         << ne - 1 << "]";
+      throw ModelError(os.str());
+    }
+  }
+  sections_.push_back(section);
+  const int id = static_cast<int>(sections_.size()) - 1;
+  for (Index e : elements) element_section_[static_cast<std::size_t>(e)] = id;
+}
+
+bool FemModel::sections_complete() const {
+  return std::none_of(element_section_.begin(), element_section_.end(),
+                      [](int id) { return id < 0; });
+}
+
+BeamSection FemModel::section_of(Index e) const {
+  if (!is_beam()) throw ModelError("only a beam model has cross-sections");
+  const int id = element_section_[static_cast<std::size_t>(e)];
+  if (id < 0) {
+    std::ostringstream os;
+    os << "beam element " << e << " has no cross-section: assign one to every element";
+    throw ModelError(os.str());
+  }
+  return resolve(sections_[static_cast<std::size_t>(id)], material_of(e).poisson_ratio());
+}
+
+Scalar FemModel::volume_factor(Index e) const {
+  if (is_beam()) return section_of(e).area;
+  if (is_shell()) return thickness_of(e);
+  return mesh_.dim() == 2 ? thickness_ : 1.0;
+}
+
 Matrix FemModel::element_geometry(Index e) const {
+  if (is_beam()) {
+    const Matrix x = mesh_.element_coordinates(e);
+    const IsotropicMaterial& m = material_of(e);
+    return Beam2Element::geometry(x.col(0), x.col(1), section_of(e), m.youngs_modulus(),
+                                  m.shear_modulus());
+  }
   if (directors_.empty()) return mesh_.element_coordinates(e);
   Matrix g(6, 4);
   g.topRows(3) = mesh_.element_coordinates(e);
@@ -229,6 +288,15 @@ void FemModel::finalize(bool require_load_cases) {
   if (load_case_specs_.empty() && require_load_cases) {
     throw ConfigError("model has no load cases; define at least one");
   }
+  if (is_beam() && !sections_complete()) {
+    const auto first = std::find(element_section_.begin(), element_section_.end(), -1);
+    std::ostringstream os;
+    os << std::count(element_section_.begin(), element_section_.end(), -1) << " of "
+       << mesh_.num_elements() << " beam elements have no cross-section (the first is element "
+       << (first - element_section_.begin())
+       << "): the sections' regions must cover every element";
+    throw ConfigError(os.str());
+  }
   const Index constrained = apply_constraints(mesh_, constraints_, dofs_);
   log::info("applied ", constraints_.size(), " boundary condition group(s): ",
             constrained, " of ", dofs_.num_dofs(), " DOFs prescribed, ",
@@ -257,6 +325,12 @@ void FemModel::finalize(bool require_load_cases) {
                           "integrated)");
       }
       data.mechanical = assemble_shell_load_vector(*this, spec);
+    } else if (is_beam()) {
+      if (spec.has_temperature()) {
+        throw ConfigError("load case '" + spec.name + "': a beam model takes no temperature "
+                          "field - the beam element has no thermal strain");
+      }
+      data.mechanical = assemble_beam_load_vector(*this, spec);
     } else {
       data.mechanical = assemble_load_vector(mesh_, *element_, spec, thickness_, integration_);
     }
@@ -348,13 +422,7 @@ std::vector<Scalar> FemModel::normalised_weights() const {
 Vector FemModel::element_volumes() const {
   const Index ne = mesh_.num_elements();
   Vector v(ne);
-  if (is_shell()) {
-    for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e) * thickness_of(e);
-  } else if (mesh_.dim() == 2) {
-    for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e) * thickness_;
-  } else {
-    for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e);
-  }
+  for (Index e = 0; e < ne; ++e) v(e) = mesh_.element_measure(e) * volume_factor(e);
   return v;
 }
 

@@ -25,6 +25,11 @@
 ///     `shell` set) become MITC4 shell cells anywhere in space, in the node
 ///     order of the file, which sets each one's normal; other shell cells are
 ///     refused;
+///   * **beams.** Abaqus B31 and B31H elements (or any file's 2-node lines
+///     with `beam` set) become Timoshenko beam elements anywhere in space, in
+///     the node order of the file, which sets each one's x' axis; the other
+///     beams (B32, B33, the planar B2x), trusses and connectors are refused as
+///     cells;
 ///   * **unused and duplicate nodes.** Nodes no cell references (geometry
 ///     points, dropped entities) are removed and counted. Coincident nodes,
 ///     which leave the cells on either side unconnected, are counted and
@@ -68,6 +73,10 @@ struct MeshReadOptions {
   /// Read the file's quadrilaterals as MITC4 shell cells in 3-D. An .inp
   /// file's S4 family (S4, S4R, S4R5) is read as shells without it.
   bool shell = false;
+  /// Read the file's 2-node lines as Timoshenko beam elements in 3-D (a
+  /// Gmsh frame). An .inp file's B31 and B31H elements are read as beams
+  /// without it; its trusses and connectors never are.
+  bool beam = false;
 };
 
 /// What the reader found and what it did about it.

@@ -35,6 +35,7 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/elements/Beam2.hpp"
 #include "sparlab/elements/Shell4.hpp"
 #include "sparlab/fem/Assembler.hpp"
 #include "sparlab/fem/FemModel.hpp"
@@ -102,6 +103,33 @@ struct ShellField {
 /// \throws ModelError when the model is not a shell or the field does not fit it.
 ShellField recover_shell_resultants(const FemModel& model, const Assembler& assembler,
                                     const Vector& displacement);
+
+/// The section resultants of a beam model (Beam2.hpp) at both ends of every
+/// element.
+struct BeamField {
+  std::vector<BeamEndForces> element;  ///< per element, in its local axes
+  /// Per element, the largest normal stress of its two end sections [Pa]:
+  /// \f$|N|/A + |M_y| c_z / I_y + |M_z| c_y / I_z\f$ over the extreme fibres
+  /// c_y, c_z of the section (exact for a rectangle, a bound for a section
+  /// inside that box), or \f$|N|/A + \sqrt{M_y^2 + M_z^2}\, r / I\f$ for a
+  /// round one; NaN for a section without extreme fibres.
+  Vector element_normal_stress;
+  Vector element_strain_energy;  ///< 1/2 u_e^T K_e u_e [J]
+  Vector nodal_normal_stress;    ///< length-weighted average of the elements' [Pa]
+};
+
+/// The uniform distributed load [N/m] every beam element carries in a load
+/// case: its line loads, and its self-weight and body forces as
+/// \f$A(\rho g + b)\f$ per unit length (Loads.hpp).
+std::vector<Vector3> beam_distributed_loads(const FemModel& model, const LoadCaseSpec& load_case);
+
+/// Recover the end resultants of a beam model's displacement field in load
+/// case `load_case`: \f$K_e u_e - f_q\f$ in each element's axes, with
+/// \f$f_q\f$ the consistent forces of its distributed load, so that they
+/// are the exact end forces of the element in equilibrium.
+/// \throws ModelError when the model is not a beam or the field does not fit it.
+BeamField recover_beam_forces(const FemModel& model, const Assembler& assembler,
+                              const Vector& displacement, const LoadCaseSpec& load_case);
 
 /// Recover all strain / stress data for a displacement field.
 /// \param stiffness_scale optional per-element SIMP factors \f$E(\rho)/E_0\f$.

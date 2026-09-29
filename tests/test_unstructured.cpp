@@ -109,6 +109,7 @@ int gmsh_type(ElementType type) {
     case ElementType::Hex8: return 5;
     case ElementType::Tet10: return 11;
     case ElementType::Shell4: return 3;  // a quadrangle in 3-D
+    case ElementType::Beam2: return 1;   // a line
   }
   return -1;
 }

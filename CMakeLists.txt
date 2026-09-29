@@ -56,6 +56,8 @@ add_library(sparlab STATIC
   src/elements/Element.cpp
   src/elements/Quad4.cpp
   src/elements/Shell4.cpp
+  src/elements/Beam2.cpp
+  src/elements/BeamSection.cpp
   src/elements/Hex8.cpp
   src/elements/Tri3.cpp
   src/elements/Tet4.cpp
@@ -156,7 +158,8 @@ if(SPARLAB_BUILD_APPS)
   endforeach()
   target_sources(sparlab_verify PRIVATE apps/verify_loads.cpp apps/verify_nonlinear.cpp
                                      apps/verify_plasticity.cpp apps/verify_dynamics.cpp
-                                     apps/verify_contact.cpp apps/verify_shell.cpp)
+                                     apps/verify_contact.cpp apps/verify_shell.cpp
+                                     apps/verify_beam.cpp)
 endif()
 
 # ----------------------------------------------------------------------------

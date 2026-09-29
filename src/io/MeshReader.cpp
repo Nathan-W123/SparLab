@@ -26,7 +26,7 @@ namespace {
 // Element kinds shared by both formats
 // ---------------------------------------------------------------------------
 
-enum class Kind { Point, Line, Tri3, Quad4, Shell4, Tet4, Hex8, Tet10, Unsupported };
+enum class Kind { Point, Line, Beam2, Tri3, Quad4, Shell4, Tet4, Hex8, Tet10, Unsupported };
 
 struct KindInfo {
   Kind kind = Kind::Unsupported;
@@ -44,6 +44,9 @@ const char* kSecondOrderAdvice =
 const char* kShellAdvice =
     "SparLab's shell element is the 4-node MITC4 quadrilateral; re-mesh the surface with "
     "quadrilaterals only (Abaqus/CalculiX: S4 or S4R; Gmsh: Mesh.RecombineAll = 1)";
+const char* kBeamAdvice =
+    "SparLab's beam is the 2-node 3-D Timoshenko element; mesh the frame with 2-node lines "
+    "(Abaqus/CalculiX: B31 or B31H; Gmsh: first-order lines, read with mesh.beam = true)";
 const char* kPrismAdvice =
     "SparLab supports tetrahedra or hexahedra only; re-mesh the volume with "
     "tetrahedra (Gmsh: Mesh.RecombineAll = 0, no Recombine in extrusions)";
@@ -136,6 +139,14 @@ KindInfo abaqus_kind(const std::string& type_in) {
     }
     if (digits.empty()) continue;
     const int n = std::atoi(digits.c_str());
+    // Beams: the 2-node linear B31 (and its hybrid B31H) is SparLab's
+    // Timoshenko beam; the others are lines, which may mark sets.
+    if (prefix == "B3" && (type == "B31" || type == "B31H")) {
+      return make_kind(Kind::Beam2, 1, 2, type + " (2-node beam)");
+    }
+    if (prefix == "B3" || prefix == "B2") {
+      return make_kind(Kind::Line, 1, -1, type + " beam element", kBeamAdvice);
+    }
     if (f.dim == 1) return make_kind(Kind::Line, 1, -1, type + " line element");
     if (f.dim == 3) {
       if (n == 4) return make_kind(Kind::Tet4, 3, 4, type + " (4-node tetrahedron)");
@@ -250,10 +261,40 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
   }
   int dim = -1;
   for (const RawElement& e : raw.elements) dim = std::max(dim, e.info.dim);
-  if (dim < 2) {
+  if (options.beam && dim > 1) {
+    throw MeshError(src + " is read as a beam mesh (mesh.beam = true), but it holds " +
+                    std::to_string(dim) + "-D cells; a frame is made of lines only. " +
+                    kBeamAdvice);
+  }
+  // A frame: its lines are the cells - an .inp file's B31 beams, or a Gmsh
+  // file's 2-node lines read with `beam` set.
+  bool beam = false;
+  if (dim == 1) {
+    Index beams = 0;
+    const RawElement* other = nullptr;
+    for (const RawElement& e : raw.elements) {
+      if (e.info.dim != 1) continue;
+      const bool gmsh_line = options.beam && report.format == "gmsh" &&
+                             e.info.kind == Kind::Line && e.info.nodes == 2;
+      if (e.info.kind == Kind::Beam2 || gmsh_line) {
+        ++beams;
+      } else if (other == nullptr) {
+        other = &e;
+      }
+    }
+    if (other != nullptr && (beams > 0 || options.beam)) {
+      throw MeshError(src + (beams > 0 ? " mixes beams with other lines" : " is read as a beam mesh") +
+                      ", but element " + std::to_string(other->tag) + " is a " +
+                      other->info.name + " (a truss or connector carries no bending). " +
+                      kBeamAdvice);
+    }
+    beam = beams > 0;
+  }
+  if (dim < 2 && !beam) {
     throw MeshError(src + " contains only points and lines; SparLab needs cells: "
                           "triangles or quadrilaterals for a plane model, tetrahedra or "
-                          "hexahedra for a solid");
+                          "hexahedra for a solid, or beams for a frame (an .inp file's B31 "
+                          "elements, or a file's 2-node lines read with mesh.beam = true)");
   }
 
   // The cells are the elements of the highest dimension, all of one type.
@@ -261,7 +302,8 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
   for (const RawElement& e : raw.elements) {
     if (e.info.dim == dim) ++cell_types[e.info.name];
   }
-  if (cell_types.size() > 1) {
+  // A frame's beams were all checked above (B31 and B31H may mix).
+  if (cell_types.size() > 1 && !beam) {
     std::ostringstream os;
     os << src << " mixes " << cell_types.size() << " kinds of " << dim << "-D cell (";
     bool first = true;
@@ -298,9 +340,11 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
                     cell.name + "s. " + kShellAdvice);
   }
   const bool shell = cell.kind == Kind::Shell4 || options.shell;
-  const int coord_dim = shell ? 3 : dim;
+  const int coord_dim = shell || beam ? 3 : dim;
   ElementType type = ElementType::Tri3;
   switch (cell.kind) {
+    case Kind::Line:
+    case Kind::Beam2: type = ElementType::Beam2; break;
     case Kind::Tri3: type = ElementType::Tri3; break;
     case Kind::Quad4: type = shell ? ElementType::Shell4 : ElementType::Quad4; break;
     case Kind::Shell4: type = ElementType::Shell4; break;
@@ -481,9 +525,10 @@ Mesh build_mesh(RawMesh& raw, const MeshReadOptions& options, MeshReadReport& re
     }
     for (int a = 0; a < npe; ++a) xe.col(a) = coords.col(n[static_cast<std::size_t>(a)]);
     bool flipped = false;
-    if (type == ElementType::Shell4) {
+    if (type == ElementType::Shell4 || type == ElementType::Beam2) {
       // A shell has no inside: its node order sets the side its normal, and
-      // a pressure, act on, and is kept as the file gives it.
+      // a pressure, act on, and is kept as the file gives it. A beam's sets
+      // the direction of its x' axis.
     } else if (type == ElementType::Tri3) {
       const Scalar twice = (xe(0, 1) - xe(0, 0)) * (xe(1, 2) - xe(1, 0)) -
                            (xe(0, 2) - xe(0, 0)) * (xe(1, 1) - xe(1, 0));
@@ -959,11 +1004,13 @@ Mesh read_gmsh(std::istream& in, const std::string& source, const MeshReadOption
     for (const RawElement& e : raw.elements) top = std::max(top, e.info.dim);
     bool any_group = false;
     for (const RawElement& e : raw.elements) any_group = any_group || !e.groups.empty();
-    if (top >= 0 && top < 2 && any_group) {
+    // A frame's lines are its cells (`beam`).
+    if (top >= 0 && top < 2 && any_group && !(options.beam && top == 1)) {
       throw MeshError(source + " holds only boundary elements: Gmsh writes only the "
                                "elements of physical groups once any group is defined. "
                                "Add a physical surface (2-D) or volume (3-D), or set "
-                               "Mesh.SaveAll = 1");
+                               "Mesh.SaveAll = 1" +
+                      std::string(top == 1 ? "; for a frame of beams set mesh.beam = true" : ""));
     }
   }
   return build_mesh(raw, options, report);

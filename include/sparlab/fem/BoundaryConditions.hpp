@@ -99,6 +99,13 @@ struct PressureLoadSpec {
   Scalar pressure = 0.0;  ///< [Pa]
 };
 
+/// Uniform force per unit length on the beam elements a region selects (at
+/// their centroids, or an element set), in global components.
+struct LineLoadSpec {
+  SelectorGroup region;
+  Vector3 force_per_length = Vector3::Zero();  ///< [N/m]
+};
+
 /// Uniform body force density on the elements of a region, or of the whole
 /// model when `whole_model` is set.
 struct BodyForceSpec {
@@ -164,6 +171,8 @@ struct LoadCaseSpec {
   std::vector<PointLoadSpec> point_loads;
   std::vector<TractionLoadSpec> tractions;
   std::vector<PressureLoadSpec> pressures;
+  /// Beam models only.
+  std::vector<LineLoadSpec> line_loads;
   /// Gravitational (or any uniform) acceleration of the whole model [m/s^2]:
   /// the body force \f$\rho\,g\f$ of every element, its self-weight.
   Vector3 gravity = Vector3::Zero();
@@ -184,7 +193,7 @@ struct LoadCaseSpec {
   /// Any applied loading at all, of any kind.
   bool has_loads() const {
     return !point_loads.empty() || !tractions.empty() || !pressures.empty() ||
-           has_body_loads() || has_temperature();
+           !line_loads.empty() || has_body_loads() || has_temperature();
   }
 };
 
@@ -223,5 +232,17 @@ Vector assemble_load_vector(const Mesh& mesh, const Element& element,
 /// \throws ConfigError for empty regions, and a traction or pressure region
 ///         that matches no free edge or element.
 Vector assemble_shell_load_vector(const FemModel& model, const LoadCaseSpec& load_case);
+
+/// The uniform line load [N/m] every element of a beam model carries in one
+/// load case: the sum of the case's line loads whose regions select it.
+/// \throws ConfigError for a line load that selects no element.
+std::vector<Vector3> beam_line_loads(const FemModel& model, const LoadCaseSpec& load_case);
+
+/// Assemble the global force vector [N and N m] of one load case of a beam
+/// model: point forces and moments as on any model, and the consistent
+/// nodal forces of each element's line load (Beam2.hpp). A beam has no
+/// faces: tractions and pressures are refused with the reason.
+/// \throws ConfigError for empty regions, tractions or pressures.
+Vector assemble_beam_load_vector(const FemModel& model, const LoadCaseSpec& load_case);
 
 }  // namespace sparlab

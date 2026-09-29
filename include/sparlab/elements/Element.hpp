@@ -71,8 +71,7 @@ class Element {
 
   /// Lump the mass matrix by scaling its diagonal to the element mass per
   /// DOF component (Hinton, Rock and Zienkiewicz) rather than by row sums:
-  /// the quadratic tetrahedron, whose corner row sums are negative, and the
-  /// structural elements, whose rotational rows carry rotary inertia.
+  /// the quadratic tetrahedron, whose corner row sums are negative.
   virtual bool diagonal_scaled_lumping() const { return false; }
 
   /// Natural coordinates of the element centroid: the origin of the
@@ -98,6 +97,16 @@ class Element {
   /// \f$ M_e = \int_{\Omega_e} \rho\, t\, N^T N \, d\Omega \f$ [kg].
   virtual Matrix consistent_mass(const Matrix& coords, Scalar density, Scalar thickness,
                                  const IntegrationOptions& opts) const = 0;
+
+  /// The element's own lumped mass, for a structural element: its nodal
+  /// masses on the translations and each node's share of its rotary-inertia
+  /// tensor, a 3 x 3 block on the node's rotations. No diagonal holds that
+  /// tensor in every frame - its axes turn with the element - so lumping the
+  /// rotational rows per global component would give the wrong inertia to an
+  /// inclined element. Empty (the default) when the assembler lumps the
+  /// consistent matrix.
+  virtual Matrix lumped_mass(const Matrix& coords, Scalar density, Scalar thickness,
+                             const IntegrationOptions& opts) const;
 
   /// Strain-displacement operator and Jacobian determinant at a natural point.
   /// \throws MeshError when detJ <= 0 (inverted or degenerate element).

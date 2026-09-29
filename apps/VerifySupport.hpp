@@ -5,8 +5,9 @@
 /// volume, pressure and thermal loads live in verify_loads.cpp, those of the
 /// geometrically non-linear analysis in verify_nonlinear.cpp, those of
 /// plasticity in verify_plasticity.cpp, those of dynamics in
-/// verify_dynamics.cpp, those of contact in verify_contact.cpp and those of
-/// shells in verify_shell.cpp. All report a
+/// verify_dynamics.cpp, those of contact in verify_contact.cpp, those of
+/// shells in verify_shell.cpp and those of beams in verify_beam.cpp. All
+/// report a
 /// `StudyOutcome` that the driver prints and writes to summary.json.
 #pragma once
 
@@ -91,6 +92,15 @@ StudyOutcome study_shell_scordelis_lo(const std::string& out_dir, json::Value& s
 StudyOutcome study_shell_pinched_cylinder(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_pinched_hemisphere(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_box_beam(const std::string& out_dir, json::Value& summary);
+/// \}
+
+/// Studies of the Timoshenko beam (verify_beam.cpp).
+/// \{
+StudyOutcome study_beam_exact(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_beam_modes(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_beam_harmonic(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_beam_buckling(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_beam_curved(const std::string& out_dir, json::Value& summary);
 /// \}
 
 /// Quarter sections of a cylinder (verify_loads.cpp).

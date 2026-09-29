@@ -28,6 +28,7 @@ int nodes_per_element(ElementType type) {
     case ElementType::Tet4: return 4;
     case ElementType::Tet10: return 10;
     case ElementType::Shell4: return 4;
+    case ElementType::Beam2: return 2;
   }
   throw MeshError("unhandled element type");
 }
@@ -40,15 +41,19 @@ int element_dimension(ElementType type) {
     case ElementType::Tet4: return 3;
     case ElementType::Tet10: return 3;
     case ElementType::Shell4: return 3;
+    case ElementType::Beam2: return 3;
   }
   throw MeshError("unhandled element type");
 }
 
 int topological_dimension(ElementType type) {
+  if (type == ElementType::Beam2) return 1;
   return type == ElementType::Shell4 ? 2 : element_dimension(type);
 }
 
 bool is_shell(ElementType type) { return type == ElementType::Shell4; }
+
+bool is_beam(ElementType type) { return type == ElementType::Beam2; }
 
 bool is_simplex(ElementType type) {
   return type == ElementType::Tri3 || type == ElementType::Tet4 ||
@@ -67,6 +72,7 @@ int face_corner_nodes(ElementType type) {
     case ElementType::Hex8: return 4;
     case ElementType::Tet4:
     case ElementType::Tet10: return 3;
+    case ElementType::Beam2: return 1;
   }
   throw MeshError("unhandled element type");
 }
@@ -79,6 +85,7 @@ std::string to_string(ElementType type) {
     case ElementType::Tet4: return "Tet4";
     case ElementType::Tet10: return "Tet10";
     case ElementType::Shell4: return "Shell4";
+    case ElementType::Beam2: return "Beam2";
   }
   return "Unknown";
 }
@@ -98,6 +105,7 @@ const std::vector<std::vector<int>>& element_local_faces(ElementType type) {
       {0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2}};
   static const std::vector<std::vector<int>> tet10_faces = {
       {0, 2, 1, 6, 5, 4}, {0, 1, 3, 4, 8, 7}, {1, 2, 3, 5, 9, 8}, {0, 3, 2, 7, 9, 6}};
+  static const std::vector<std::vector<int>> no_faces;
   switch (type) {
     case ElementType::Quad4: return quad_edges;
     case ElementType::Hex8: return hex_faces;
@@ -105,6 +113,7 @@ const std::vector<std::vector<int>>& element_local_faces(ElementType type) {
     case ElementType::Tet4: return tet_faces;
     case ElementType::Tet10: return tet10_faces;
     case ElementType::Shell4: return quad_edges;
+    case ElementType::Beam2: return no_faces;
   }
   throw MeshError("unhandled element type");
 }
@@ -330,6 +339,7 @@ Scalar Mesh::element_measure(Index e) const {
     return 0.5 * twice_area;
   }
   if (type_ == ElementType::Shell4) return Shell4Element::area(element_coordinates(e));
+  if (type_ == ElementType::Beam2) return (coords_.col(nodes[1]) - coords_.col(nodes[0])).norm();
   if (type_ == ElementType::Tet4) return tet4_volume(element_coordinates(e));
   if (type_ == ElementType::Tet10) return tet10_volume(element_coordinates(e));
   Scalar min_det = 0.0;
@@ -344,8 +354,8 @@ Scalar Mesh::mean_element_size() const {
     Scalar measure_sum = 0.0;
     for (Index e = 0; e < ne; ++e) measure_sum += element_measure(e);
     const Scalar mean_measure = measure_sum / static_cast<Scalar>(ne);
-    return topological_dimension(type_) == 2 ? std::sqrt(mean_measure)
-                                             : std::cbrt(mean_measure);
+    const int td = topological_dimension(type_);
+    return td == 1 ? mean_measure : td == 2 ? std::sqrt(mean_measure) : std::cbrt(mean_measure);
   }
   // Mean edge length, the quantity a mesh generator's size field controls;
   // the corners span a Tet10's edges.
@@ -384,6 +394,9 @@ MeshQuality Mesh::quality() const {
       q.metric = "6 sqrt(2) V / rms edge length cubed of the corners, times the nodal "
                  "Jacobian ratio";
       break;
+    case ElementType::Beam2:
+      q.metric = "1: a straight two-node segment cannot be distorted";
+      break;
   }
   q.min = std::numeric_limits<Scalar>::max();
   Scalar sum = 0.0;
@@ -403,6 +416,8 @@ MeshQuality Mesh::quality() const {
       }
     } else if (type_ == ElementType::Shell4) {
       value = shell4_corner_quality(element_coordinates(e));
+    } else if (type_ == ElementType::Beam2) {
+      value = 1.0;
     } else if (type_ == ElementType::Hex8) {
       value = std::numeric_limits<Scalar>::max();
       for (int a = 0; a < 8; ++a) {
@@ -520,8 +535,9 @@ void Mesh::validate() const {
   }
 
   const Index ne = num_elements();
-  const bool areas = topological_dimension(type_) == 2;
-  const char* unit = areas ? " m^2" : " m^3";
+  const int cells = topological_dimension(type_);
+  const bool areas = cells == 2;
+  const char* unit = cells == 1 ? " m" : areas ? " m^2" : " m^3";
   Scalar min_measure = std::numeric_limits<Scalar>::max();
   Scalar max_measure = 0.0;
   for (Index e = 0; e < ne; ++e) {
@@ -537,7 +553,16 @@ void Mesh::validate() const {
         }
       }
     }
-    if (type_ == ElementType::Shell4) {
+    if (type_ == ElementType::Beam2) {
+      const Scalar length = element_measure(e);
+      if (!(length > 0.0)) {
+        std::ostringstream os;
+        os << "beam element " << e << " has length " << length << " m: its nodes coincide";
+        throw MeshError(os.str());
+      }
+      min_measure = std::min(min_measure, length);
+      max_measure = std::max(max_measure, length);
+    } else if (type_ == ElementType::Shell4) {
       // A shell cell has no orientation to invert, but a corner may not be
       // concave or fold back against the element's normal.
       const Scalar quality = shell4_corner_quality(element_coordinates(e));
@@ -624,7 +649,7 @@ void Mesh::validate() const {
   }
 
   if (max_measure / min_measure > 1.0e8) {
-    log::warn("extreme element ", (areas ? "area" : "volume"), " ratio ",
+    log::warn("extreme element ", (cells == 1 ? "length" : areas ? "area" : "volume"), " ratio ",
               max_measure / min_measure, " (min ", min_measure, unit, ", max ",
               max_measure, unit, "); conditioning of the stiffness matrix may suffer");
   }

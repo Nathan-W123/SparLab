@@ -539,7 +539,8 @@ std::vector<Index> tube_ladder(ElementType type) {
     case ElementType::Hex8: return {4, 8, 16, 32};
     case ElementType::Tet4: return {4, 8, 16};
     case ElementType::Tet10: return {2, 4, 8, 16};
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   return {};
 }

@@ -3,8 +3,10 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <numeric>
 #include <set>
 #include <sstream>
 
@@ -16,8 +18,9 @@ StressState parse_stress_state(const std::string& text) {
   if (text == "plane_strain") return StressState::PlaneStrain;
   if (text == "three_dimensional" || text == "3d") return StressState::ThreeDimensional;
   if (text == "shell") return StressState::Shell;
+  if (text == "beam") return StressState::Beam;
   throw ConfigError("unknown stress state '" + text +
-                    "' (expected plane_stress|plane_strain|three_dimensional|shell)");
+                    "' (expected plane_stress|plane_strain|three_dimensional|shell|beam)");
 }
 
 MassType parse_mass_type(const std::string& text) {
@@ -156,12 +159,13 @@ std::string to_string(MeshKind kind) {
     case MeshKind::StructuredTri: return "structured_tri";
     case MeshKind::StructuredTet: return "structured_tet";
     case MeshKind::StructuredShell: return "structured_shell";
+    case MeshKind::Frame: return "frame";
     case MeshKind::File: return "file";
   }
   return "unknown";
 }
 
-bool is_structured(MeshKind kind) { return kind != MeshKind::File; }
+bool is_structured(MeshKind kind) { return kind != MeshKind::File && kind != MeshKind::Frame; }
 
 SelectorGroup parse_region(const ConfigNode& node, const std::string& default_name,
                            int dim) {
@@ -313,7 +317,8 @@ int Configuration::dim() const {
     case MeshKind::StructuredTri: return 2;
     case MeshKind::StructuredHex:
     case MeshKind::StructuredTet:
-    case MeshKind::StructuredShell: return 3;
+    case MeshKind::StructuredShell:
+    case MeshKind::Frame: return 3;
     case MeshKind::File:
       if (file_mesh == nullptr) {
         throw ConfigError("the configuration names a mesh file that has not been read");
@@ -337,6 +342,13 @@ std::string Configuration::describe_mesh() const {
   if (mesh_kind == MeshKind::StructuredShell) {
     os << to_string(mesh_kind) << " " << to_string(shell_mesh.shape) << " " << shell_mesh.n1
        << " x " << shell_mesh.n2;
+    return os.str();
+  }
+  if (mesh_kind == MeshKind::Frame) {
+    Index elements = 0;
+    for (const FrameMember& m : frame_mesh.members) elements += m.elements;
+    os << to_string(mesh_kind) << " of " << frame_mesh.members.size() << " member(s), "
+       << elements << " elements";
     return os.str();
   }
   os << to_string(mesh_kind) << " " << mesh_spec.nx << " x " << mesh_spec.ny;
@@ -438,6 +450,83 @@ void parse_buckling_solver(const ConfigNode& node, BucklingOptions& options) {
   options.seed = static_cast<unsigned int>(node.integer_or("seed", static_cast<int>(options.seed)));
 }
 
+/// A beam section: a shape and its dimensions, or a general section's
+/// properties, checked against the primary material's Poisson ratio (each
+/// element's own is used for its Cowper coefficient, FemModel::section_of).
+BeamSectionSpec parse_beam_section(const ConfigNode& node, const std::string& default_name,
+                                   int dim, Scalar nu) {
+  BeamSectionSpec spec;
+  BeamSection& s = spec.section;
+  s.name = node.string_or("name", default_name);
+  if (node.child("region").exists()) {
+    spec.whole_model = false;
+    spec.region = parse_region(node.require("region"), s.name, dim);
+  } else {
+    spec.region.name = s.name;
+  }
+  const ConfigNode shape = node.require("shape");
+  try {
+    s.shape = parse_beam_section_shape(shape.string());
+  } catch (const ConfigError& e) {
+    throw ConfigError("'" + shape.path() + "': " + e.what());
+  }
+  // Each shape takes its own keys, and no other's.
+  const std::vector<std::string> all_keys{"width", "height", "radius", "inner_radius",
+                                          "area",  "iy",     "iz",     "torsion",
+                                          "extreme_fibres"};
+  std::vector<std::string> own;
+  switch (s.shape) {
+    case BeamSectionShape::Rectangle: own = {"width", "height"}; break;
+    case BeamSectionShape::Circle: own = {"radius"}; break;
+    case BeamSectionShape::Tube: own = {"radius", "inner_radius"}; break;
+    case BeamSectionShape::General: own = {"area", "iy", "iz", "torsion", "extreme_fibres"}; break;
+  }
+  for (const std::string& key : all_keys) {
+    if (std::find(own.begin(), own.end(), key) == own.end() && node.child(key).exists()) {
+      throw ConfigError("'" + node.path() + "." + key + "' does not apply to a " +
+                        to_string(s.shape) + " section");
+    }
+  }
+  switch (s.shape) {
+    case BeamSectionShape::Rectangle:
+      s.width = node.require("width").number();
+      s.height = node.require("height").number();
+      break;
+    case BeamSectionShape::Circle: s.radius = node.require("radius").number(); break;
+    case BeamSectionShape::Tube:
+      s.radius = node.require("radius").number();
+      s.inner_radius = node.require("inner_radius").number();
+      break;
+    case BeamSectionShape::General: {
+      s.area = node.require("area").number();
+      s.iy = node.require("iy").number();
+      s.iz = node.require("iz").number();
+      s.torsion = node.require("torsion").number();
+      const ConfigNode fibres = node.child("extreme_fibres");
+      if (fibres.exists()) {
+        const Vector2 c = fibres.vector2();
+        s.fibre_y = c(0);
+        s.fibre_z = c(1);
+      }
+      break;
+    }
+  }
+  s.shear_deformation = node.boolean_or("shear_deformation", true);
+  const ConfigNode shear = node.child("shear_coefficients");
+  if (shear.exists()) {
+    const Vector2 k = shear.vector2();
+    s.shear_y = k(0);
+    s.shear_z = k(1);
+  }
+  s.orientation = node.vector3_or("orientation", Vector3::Zero(), 3);
+  try {
+    (void)resolve(s, nu);
+  } catch (const ConfigError& e) {
+    throw ConfigError("'" + node.path() + "': " + e.what());
+  }
+  return spec;
+}
+
 std::vector<std::string> string_list(const ConfigNode& parent, const std::string& key) {
   std::vector<std::string> out;
   for (const ConfigNode& item : parent.array(key)) out.push_back(item.string());
@@ -475,12 +564,14 @@ Configuration parse_configuration(const json::Value& document, const std::string
       config.mesh_kind = MeshKind::StructuredTet;
     } else if (type == "structured_shell") {
       config.mesh_kind = MeshKind::StructuredShell;
+    } else if (type == "frame") {
+      config.mesh_kind = MeshKind::Frame;
     } else if (type == "file") {
       config.mesh_kind = MeshKind::File;
     } else {
       throw ConfigError("'" + mesh.path() + ".type' must be one of structured_quad, "
-                        "structured_tri, structured_hex, structured_tet, structured_shell "
-                        "or file; got '" + type + "'");
+                        "structured_tri, structured_hex, structured_tet, structured_shell, "
+                        "frame or file; got '" + type + "'");
     }
     if (config.mesh_kind == MeshKind::File) {
       for (const char* key : {"nx", "ny", "nz", "lx", "ly", "lz", "x0", "y0", "z0"}) {
@@ -508,6 +599,11 @@ Configuration parse_configuration(const json::Value& document, const std::string
       }
       file.read.merge_duplicate_nodes = mesh.boolean_or("merge_duplicate_nodes", false);
       file.read.shell = mesh.boolean_or("shell", false);
+      file.read.beam = mesh.boolean_or("beam", false);
+      if (file.read.shell && file.read.beam) {
+        throw ConfigError("'" + mesh.path() + "' sets both \"shell\" and \"beam\"; a mesh "
+                          "file holds one kind of cell");
+      }
       const ConfigNode order_node = mesh.child("order");
       file.read.duplicate_tolerance = mesh.number_or("duplicate_tolerance", 0.0);
       // The reader's messages name the file and line; the deck key is added
@@ -548,6 +644,44 @@ Configuration parse_configuration(const json::Value& document, const std::string
           config.mesh_elevated = true;
         }
         config.mesh_order = static_cast<int>(order);
+      }
+    } else if (config.mesh_kind == MeshKind::Frame) {
+      FrameMeshSpec& f = config.frame_mesh;
+      for (const ConfigNode& point : mesh.array("points")) {
+        f.points.push_back({point.require("name").string(), point.require("position").vector3(3)});
+      }
+      int index = 0;
+      for (const ConfigNode& m : mesh.array("members")) {
+        FrameMember member;
+        member.name = m.string_or("name", "member" + std::to_string(index++));
+        member.from = m.require("from").string();
+        member.to = m.require("to").string();
+        const long long n = m.integer_or("elements", 1);
+        if (n < 1) {
+          throw ConfigError("'" + m.path() + ".elements' must be at least 1, got " +
+                            std::to_string(n));
+        }
+        member.elements = static_cast<Index>(n);
+        const ConfigNode arc = m.child("arc");
+        if (arc.exists()) {
+          member.arc = true;
+          member.arc_centre = arc.require("centre").vector3(3);
+          member.arc_axis = arc.vector3_or("axis", Vector3::UnitZ(), 3);
+        }
+        f.members.push_back(std::move(member));
+      }
+      if (f.points.empty() || f.members.empty()) {
+        throw ConfigError("'" + mesh.path() + "' of type frame lists its 'points' (each a "
+                          "name and a position) and its 'members' (each from one point to "
+                          "another, in a number of elements)");
+      }
+      // Built here so that a wrong point name or arc fails with the deck.
+      try {
+        (void)make_frame_mesh(f);
+      } catch (const ConfigError& e) {
+        throw ConfigError("'" + mesh.path() + "': " + e.what());
+      } catch (const MeshError& e) {
+        throw MeshError("'" + mesh.path() + "': " + e.what());
       }
     } else if (config.mesh_kind == MeshKind::StructuredShell) {
       ShellMeshSpec& s = config.shell_mesh;
@@ -624,6 +758,11 @@ Configuration parse_configuration(const json::Value& document, const std::string
   const bool shell = config.mesh_kind == MeshKind::StructuredShell ||
                      (config.mesh_kind == MeshKind::File && config.file_mesh != nullptr &&
                       is_shell(config.file_mesh->element_type()));
+  const bool beam = config.mesh_kind == MeshKind::Frame ||
+                    (config.mesh_kind == MeshKind::File && config.file_mesh != nullptr &&
+                     is_beam(config.file_mesh->element_type()));
+  // The nodes of a shell or a beam carry rotations.
+  const bool structural = shell || beam;
 
   // --- material -----------------------------------------------------------
   {
@@ -649,26 +788,40 @@ Configuration parse_configuration(const json::Value& document, const std::string
                         config.describe_mesh() + "): the thickness of its shell [m], which "
                         "'model.shell.sections' may override by region");
     }
+    if (beam && model.child("thickness").exists()) {
+      throw ConfigError("'model.thickness' does not apply to the beam mesh (" +
+                        config.describe_mesh() + "): a beam's elements take cross-sections, "
+                        "'model.beam.sections'. Remove the key");
+    }
     config.thickness = model.number_or("thickness", 1.0);
     if (!(config.thickness > 0.0)) {
       std::ostringstream os;
       os << "'model.thickness' must be positive, got " << config.thickness << " m";
       throw ConfigError(os.str());
     }
-    if (dim == 3 && !shell && config.thickness != 1.0) {
+    if (dim == 3 && !structural && config.thickness != 1.0) {
       std::ostringstream os;
       os << "'model.thickness' is " << config.thickness << " m but the "
          << config.describe_mesh() << " mesh is a solid with no thickness; remove the key";
       throw ConfigError(os.str());
     }
     config.stress_state = parse_stress_state(model.string_or(
-        "stress_state", shell ? "shell" : (dim == 3 ? "three_dimensional" : "plane_stress")));
+        "stress_state",
+        shell ? "shell" : (beam ? "beam" : (dim == 3 ? "three_dimensional" : "plane_stress"))));
     if (shell != (config.stress_state == StressState::Shell)) {
       throw ConfigError("'model.stress_state' = \"" + to_string(config.stress_state) +
                         "\" does not fit the " + config.describe_mesh() + " mesh: " +
                         (shell ? "a shell mesh takes the stress state \"shell\""
                                : "the stress state \"shell\" needs a shell mesh "
                                  "(structured_shell, or S4 cells in a file)"));
+    }
+    if (beam != (config.stress_state == StressState::Beam)) {
+      throw ConfigError("'model.stress_state' = \"" + to_string(config.stress_state) +
+                        "\" does not fit the " + config.describe_mesh() + " mesh: " +
+                        (beam ? "a beam mesh takes the stress state \"beam\""
+                              : "the stress state \"beam\" needs a beam mesh (a frame, or "
+                                "B31 elements or 2-node lines read with \"beam\": true from a "
+                                "file)"));
     }
     if (stress_state_dimension(config.stress_state) != dim) {
       std::ostringstream os;
@@ -693,6 +846,25 @@ Configuration parse_configuration(const json::Value& document, const std::string
         section.region = parse_region(sec.require("region"), section.name, dim);
         section.thickness = sec.positive_number("thickness");
         config.shell_sections.push_back(std::move(section));
+      }
+    }
+    const ConfigNode beam_node = model.child("beam");
+    if (beam_node.exists() && !beam) {
+      throw ConfigError("'" + beam_node.path() + "' applies to a beam mesh; the " +
+                        config.describe_mesh() + " mesh is not one");
+    }
+    if (beam) {
+      const std::vector<ConfigNode> sections = beam_node.array("sections");
+      if (sections.empty()) {
+        throw ConfigError("'model.beam.sections' is required for the beam mesh (" +
+                          config.describe_mesh() + "): each element takes a cross-section, "
+                          "e.g. {\"shape\": \"rectangle\", \"width\": 0.04, "
+                          "\"height\": 0.1}");
+      }
+      int index = 0;
+      for (const ConfigNode& sec : sections) {
+        config.beam_sections.push_back(parse_beam_section(
+            sec, "section" + std::to_string(index++), dim, config.material().poisson_ratio()));
       }
     }
     const ConfigNode integ = model.child("integration");
@@ -736,18 +908,18 @@ Configuration parse_configuration(const json::Value& document, const std::string
         } else if (c == "z") {
           throw ConfigError("'" + component.path() +
                             "' fixes \"z\" but the mesh is two-dimensional");
-        } else if (shell && (c == "rx" || c == "ry" || c == "rz")) {
+        } else if (structural && (c == "rx" || c == "ry" || c == "rz")) {
           constraint.set(c == "rx" ? 3 : (c == "ry" ? 4 : 5), true);
         } else if (c == "rx" || c == "ry" || c == "rz") {
           throw ConfigError("'" + component.path() + "' fixes the rotation \"" + c +
                             "\", but the nodes of the " + config.describe_mesh() +
                             " mesh carry translations only; rotations are degrees of "
-                            "freedom of a shell");
+                            "freedom of a shell or a beam");
         } else {
           throw ConfigError("'" + component.path() + "' must be \"x\", \"y\"" +
                             (dim == 3 ? ", \"z\"" : "") +
-                            (shell ? ", \"rx\", \"ry\" or \"rz\"" : "") + ", got \"" + c +
-                            "\"");
+                            (structural ? ", \"rx\", \"ry\" or \"rz\"" : "") + ", got \"" +
+                            c + "\"");
         }
       }
       const Vector3 values = bc.vector3_or("value", Vector3::Zero(), dim);
@@ -756,9 +928,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
       constraint.value_z = values.z();
       const ConfigNode rotation = bc.child("rotation");
       if (rotation.exists()) {
-        if (!shell) {
+        if (!structural) {
           throw ConfigError("'" + rotation.path() + "' prescribes rotations, which only a "
-                            "shell model's nodes carry");
+                            "shell or beam model's nodes carry");
         }
         const Vector3 r = rotation.vector3(3);
         constraint.value_rx = r.x();
@@ -797,10 +969,10 @@ Configuration parse_configuration(const json::Value& document, const std::string
             parse_region(pl.require("region"), pl.string_or("name", ln.str()), dim);
         const ConfigNode moment = pl.child("moment");
         if (moment.exists()) {
-          if (!shell) {
+          if (!structural) {
             throw ConfigError("'" + moment.path() + "' applies a moment, which needs a shell "
-                              "model (on a continuum mesh apply a couple of forces or a "
-                              "traction)");
+                              "or beam model (on a continuum mesh apply a couple of forces "
+                              "or a traction)");
           }
           load.moment = moment.vector3(3);
           load.force = pl.child("force").exists() ? pl.require("force").vector3(dim)
@@ -829,6 +1001,21 @@ Configuration parse_configuration(const json::Value& document, const std::string
             parse_region(tr.require("region"), tr.string_or("name", ln.str()), dim);
         load.traction = tr.require("traction").vector3(dim);
         spec.tractions.push_back(std::move(load));
+      }
+
+      int line_index = 0;
+      for (const ConfigNode& ll : lc.array("line_loads")) {
+        if (!beam) {
+          throw ConfigError("'" + ll.path() + "' is a load per unit length along beams; the " +
+                            config.describe_mesh() + " mesh has none (use tractions, "
+                            "pressures or point loads)");
+        }
+        LineLoadSpec load;
+        std::ostringstream ln;
+        ln << spec.name << "_line" << line_index++;
+        load.region = parse_region(ll.require("region"), ll.string_or("name", ln.str()), dim);
+        load.force_per_length = ll.require("force_per_length").vector3(3);
+        spec.line_loads.push_back(std::move(load));
       }
 
       int pressure_index = 0;
@@ -876,9 +1063,9 @@ Configuration parse_configuration(const json::Value& document, const std::string
       if (!spec.has_loads() && !spec.prescribed_displacement_only) {
         throw ConfigError(
             "load case '" + spec.name +
-            "' defines no load (point_loads, tractions, pressures, gravity, body_forces, "
-            "centrifugal or temperature). If it is meant to be driven by prescribed "
-            "displacements alone, set \"prescribed_displacement_only\": true");
+            "' defines no load (point_loads, tractions, pressures, line_loads, gravity, "
+            "body_forces, centrifugal or temperature). If it is meant to be driven by "
+            "prescribed displacements alone, set \"prescribed_displacement_only\": true");
       }
       config.load_cases.push_back(std::move(spec));
     }
@@ -1593,6 +1780,52 @@ Configuration parse_configuration(const json::Value& document, const std::string
     }
   }
 
+  // --- beams --------------------------------------------------------------
+  // A beam model is linear (small rotations) and its loads act along its
+  // axis: what it cannot do is refused here, with the reason.
+  if (config.is_beam()) {
+    const auto refuse = [](const std::string& what, const std::string& why) {
+      throw ConfigError(what + " is not available for a beam model: " + why);
+    };
+    if (config.nonlinear.enabled) {
+      refuse("'nonlinear'", "the Timoshenko beam is formulated with small rotations; its "
+                            "analyses are linear static, modal, buckling, transient and "
+                            "harmonic");
+    }
+    if (config.nonlinear.options.contact.enabled) {
+      refuse("'contact'", "contact is formulated between continuum bodies");
+    }
+    if (config.topology.enabled) {
+      refuse("'topology'", "the densities, filters and sensitivities are those of "
+                           "continuum cells, and a beam's design variable would be its "
+                           "section");
+    }
+    for (const LoadCaseSpec& lc : config.load_cases) {
+      if (lc.has_temperature()) {
+        refuse("the temperature of load case '" + lc.name + "'",
+               "the beam element has no thermal strain");
+      }
+      if (lc.centrifugal.enabled) {
+        refuse("the centrifugal load of load case '" + lc.name + "'",
+               "it varies over the section in a way the axis's loads cannot carry");
+      }
+      if (!lc.tractions.empty() || !lc.pressures.empty()) {
+        refuse("the " + std::string(lc.tractions.empty() ? "pressures" : "tractions") +
+                   " of load case '" + lc.name + "'",
+               "a beam has no faces; apply 'line_loads' (a force per unit length) or point "
+               "loads");
+      }
+    }
+    for (const MaterialRegion& mr : config.material_regions) {
+      if (mr.material.plasticity().enabled()) {
+        refuse("plasticity (material region '" + mr.name + "')", "the beam is linear elastic");
+      }
+    }
+    if (config.material().plasticity().enabled()) {
+      refuse("plasticity", "the beam is linear elastic");
+    }
+  }
+
   // --- unknown keys -------------------------------------------------------
   const std::vector<std::string> unused = root.unused_keys();
   if (!unused.empty()) {
@@ -1623,6 +1856,7 @@ Mesh build_mesh(const Configuration& config) {
       return config.mesh_order == 2 ? make_structured_tet10_mesh(config.mesh_spec)
                                     : make_structured_tet_mesh(config.mesh_spec);
     case MeshKind::StructuredShell: return make_structured_shell_mesh(config.shell_mesh);
+    case MeshKind::Frame: return make_frame_mesh(config.frame_mesh);
     case MeshKind::File:
       if (config.file_mesh == nullptr) {
         throw ConfigError("the configuration names a mesh file that has not been read");
@@ -1647,6 +1881,25 @@ FemModel build_model(const Configuration& config) {
       model.assign_thickness(section.thickness, elements);
       log::info("shell section '", section.name, "': ", elements.size(),
                 " element(s) of thickness ", section.thickness, " m");
+    }
+  }
+  if (model.is_beam()) {
+    // Later sections win where regions overlap.
+    for (const BeamSectionSpec& spec : config.beam_sections) {
+      std::vector<Index> elements;
+      if (spec.whole_model) {
+        elements.resize(static_cast<std::size_t>(model.mesh().num_elements()));
+        std::iota(elements.begin(), elements.end(), Index{0});
+      } else {
+        elements = spec.region.select_elements(model.mesh());
+      }
+      if (elements.empty()) {
+        throw ConfigError("beam section '" + spec.section.name + "' selected no element; "
+                          "check its coordinates or group name");
+      }
+      model.assign_section(spec.section, elements);
+      log::info("beam section '", spec.section.name, "' (", to_string(spec.section.shape),
+                "): ", elements.size(), " element(s)");
     }
   }
   for (const MaterialRegion& mr : config.material_regions) {

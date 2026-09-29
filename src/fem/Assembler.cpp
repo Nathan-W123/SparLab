@@ -41,7 +41,7 @@ void check_scale(const Vector* scale, Index num_elements, const char* what) {
 Assembler::Assembler(const FemModel& model) : model_(model) {
   // One cached element matrix pair needs identical cells *and* one material;
   // a shell's elements differ in their directors and thicknesses.
-  uniform_ = mesh_is_uniform(model_.mesh()) && model_.single_material() && !model_.is_shell();
+  uniform_ = mesh_is_uniform(model_.mesh()) && model_.single_material() && !model_.is_structural();
   build_cache();
 }
 
@@ -280,18 +280,33 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
   triplets.reserve(static_cast<std::size_t>(ne) * edofs * edofs);
 
   // The corner rows of a quadratic tetrahedron's consistent mass sum to a
-  // negative number, and the rotational rows of a shell or beam hold rotary
-  // inertia rather than mass, so those elements are lumped by scaling the
-  // diagonal to the element's total per DOF component instead (Hinton, Rock
-  // and Zienkiewicz 1976).
+  // negative number, so it is lumped by scaling the diagonal to the
+  // element's total per DOF component instead (Hinton, Rock and Zienkiewicz
+  // 1976). A shell or beam lumps its own mass: its rotational rows hold a
+  // rotary-inertia tensor that turns with the element (Element.hpp).
   const bool scaled_diagonal = model_.element().diagonal_scaled_lumping();
   const int dim = model_.dofs_per_node();
   std::vector<Index> gdofs(static_cast<std::size_t>(edofs));
   for (Index e = 0; e < ne; ++e) {
     const Scalar s = scale ? (*scale)(e) : 1.0;
     if (s == 0.0) continue;
-    const Matrix& me = element_mass(e);
     model_.dofs().element_dofs(mesh.element_nodes(e), npe, gdofs.data());
+    if (type == MassType::Lumped) {
+      const Matrix own = model_.element().lumped_mass(
+          model_.element_geometry(e), model_.material_of(e).density(), model_.thickness_of(e),
+          model_.integration());
+      if (own.size() > 0) {
+        for (int i = 0; i < edofs; ++i) {
+          for (int j = 0; j < edofs; ++j) {
+            if (own(i, j) == 0.0) continue;
+            triplets.emplace_back(gdofs[static_cast<std::size_t>(i)],
+                                  gdofs[static_cast<std::size_t>(j)], s * own(i, j));
+          }
+        }
+        continue;
+      }
+    }
+    const Matrix& me = element_mass(e);
     if (type == MassType::Consistent) {
       for (int i = 0; i < edofs; ++i) {
         for (int j = 0; j < edofs; ++j) {
@@ -302,9 +317,7 @@ SparseMatrix Assembler::assemble_mass(MassType type, const Vector* scale) const 
     } else if (scaled_diagonal) {
       // HRZ: per displacement component, the diagonal scaled so it sums to
       // the element mass, which conserves the mass and keeps every entry
-      // positive. A component the element gives no inertia at all - the
-      // rotation about the normal of a flat shell along a global axis, which
-      // moves no point of it - stays massless.
+      // positive.
       for (int k = 0; k < dim; ++k) {
         Scalar total = 0.0;
         Scalar diagonal = 0.0;
@@ -383,14 +396,13 @@ SparseMatrix Assembler::assemble_elementwise(
 Scalar Assembler::total_mass(const Vector* scale) const {
   const Mesh& mesh = model_.mesh();
   check_scale(scale, mesh.num_elements(), "mass");
-  // The thickness factor is 1 for a solid mesh, which leaves the product exact;
-  // a shell's is its element's (the mid-surface area times the thickness).
-  const bool thick = mesh.dim() == 2 || model_.is_shell();
+  // The volume factor is 1 for a solid mesh, which leaves the product exact;
+  // a shell's is its element's thickness, a beam's its section's area.
   Scalar mass = 0.0;
   for (Index e = 0; e < mesh.num_elements(); ++e) {
     const Scalar s = scale ? (*scale)(e) : 1.0;
     mass += s * model_.material_of(e).density() * mesh.element_measure(e) *
-            (thick ? model_.thickness_of(e) : 1.0);
+            model_.volume_factor(e);
   }
   return mass;
 }

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace sparlab {
@@ -144,14 +145,94 @@ ShellField recover_shell_resultants(const FemModel& model, const Assembler& asse
   return field;
 }
 
+std::vector<Vector3> beam_distributed_loads(const FemModel& model,
+                                            const LoadCaseSpec& load_case) {
+  if (!model.is_beam()) throw ModelError("beam_distributed_loads needs a beam model");
+  const Mesh& mesh = model.mesh();
+  std::vector<Vector3> q = beam_line_loads(model, load_case);
+  const Index ne = mesh.num_elements();
+  std::vector<Vector3> density(static_cast<std::size_t>(ne), Vector3::Zero());
+  for (Index e = 0; e < ne; ++e) {
+    density[static_cast<std::size_t>(e)] = model.material_of(e).density() * load_case.gravity;
+  }
+  for (const BodyForceSpec& body : load_case.body_forces) {
+    if (body.whole_model) {
+      for (Vector3& b : density) b += body.force_density;
+    } else {
+      for (Index e : body.region.select_elements(mesh)) {
+        density[static_cast<std::size_t>(e)] += body.force_density;
+      }
+    }
+  }
+  for (Index e = 0; e < ne; ++e) {
+    const Vector3& b = density[static_cast<std::size_t>(e)];
+    if (b.squaredNorm() > 0.0) q[static_cast<std::size_t>(e)] += model.section_of(e).area * b;
+  }
+  return q;
+}
+
+BeamField recover_beam_forces(const FemModel& model, const Assembler& assembler,
+                              const Vector& displacement, const LoadCaseSpec& load_case) {
+  check_displacement(model, displacement);
+  const auto* beam = dynamic_cast<const Beam2Element*>(&model.element());
+  if (beam == nullptr) {
+    throw ModelError("recover_beam_forces needs a beam model; a continuum model's stresses "
+                     "come from recover_stresses");
+  }
+  const Mesh& mesh = model.mesh();
+  const Index ne = mesh.num_elements();
+  const Index nn = mesh.num_nodes();
+  const std::vector<Vector3> q = beam_distributed_loads(model, load_case);
+  BeamField field;
+  field.element.resize(static_cast<std::size_t>(ne));
+  field.element_normal_stress.setZero(ne);
+  field.element_strain_energy.setZero(ne);
+  field.nodal_normal_stress.setZero(nn);
+  Vector nodal_weight = Vector::Zero(nn);
+  Vector ue;
+  for (Index e = 0; e < ne; ++e) {
+    gather_element_displacement(model, e, displacement, ue);
+    const BeamSection s = model.section_of(e);
+    const BeamEndForces f = beam->end_forces(model.element_geometry(e), model.constitutive_of(e),
+                                             ue, q[static_cast<std::size_t>(e)]);
+    field.element[static_cast<std::size_t>(e)] = f;
+    Scalar sigma = std::numeric_limits<Scalar>::quiet_NaN();
+    if (s.fibre_y > 0.0 || s.fibre_z > 0.0) {
+      sigma = 0.0;
+      for (const auto* r : {&f.start, &f.end}) {
+        const Scalar n = std::abs((*r)(0)) / s.area;
+        const Scalar bending =
+            s.round() ? std::hypot((*r)(4), (*r)(5)) * s.fibre_y / s.iy
+                      : std::abs((*r)(4)) * s.fibre_z / s.iy + std::abs((*r)(5)) * s.fibre_y / s.iz;
+        sigma = std::max(sigma, n + bending);
+      }
+    }
+    field.element_normal_stress(e) = sigma;
+    field.element_strain_energy(e) = 0.5 * ue.dot(assembler.element_stiffness(e) * ue);
+    if (std::isfinite(sigma)) {
+      const Scalar w = mesh.element_measure(e);
+      const Index* nodes = mesh.element_nodes(e);
+      for (int a = 0; a < 2; ++a) {
+        field.nodal_normal_stress(nodes[a]) += w * sigma;
+        nodal_weight(nodes[a]) += w;
+      }
+    }
+  }
+  for (Index n = 0; n < nn; ++n) {
+    if (nodal_weight(n) > 0.0) field.nodal_normal_stress(n) /= nodal_weight(n);
+  }
+  return field;
+}
+
 StressField recover_stresses(const FemModel& model, const Assembler& assembler,
                              const Vector& displacement,
                              const Vector* stiffness_scale,
                              const Vector* temperature) {
   check_displacement(model, displacement);
   if (model.dofs_per_node() != model.dim()) {
-    throw ModelError("recover_stresses is the continuum recovery; a shell model reports "
-                     "its resultants through recover_shell_resultants");
+    throw ModelError("recover_stresses is the continuum recovery; a shell or beam model "
+                     "reports its resultants through recover_shell_resultants or "
+                     "recover_beam_forces");
   }
   if (temperature != nullptr && temperature->size() != model.mesh().num_nodes()) {
     throw ModelError("recover_stresses: the temperature field does not match the mesh");

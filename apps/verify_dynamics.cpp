@@ -4,6 +4,7 @@
 ///
 /// Studies:
 ///   * `transient-modal`      the HHT-alpha transient of Q4 and Hex8 cantilevers
+///                            and of an L-frame of Timoshenko beams
 ///                            against the exact solution of the same discrete
 ///                            equations by modal superposition - every mode of
 ///                            a dense eigensolve, each advanced by its own
@@ -76,7 +77,13 @@ Selector x_box(Scalar xmin, Scalar xmax) {
   return s;
 }
 
-std::string element_name(ElementType type) { return type == ElementType::Quad4 ? "Q4" : "Hex8"; }
+std::string element_name(ElementType type) {
+  switch (type) {
+    case ElementType::Quad4: return "Q4";
+    case ElementType::Beam2: return "Beam2";
+    default: return "Hex8";
+  }
+}
 
 Vector free_part(const FemModel& model, const Vector& full) {
   const std::vector<Index>& free = model.dofs().free_dofs();
@@ -104,7 +111,54 @@ DynamicMonitor x_monitor(const std::string& name, Scalar at, DynamicMonitor::Qua
 /// A cantilever 1 m long, 0.1 m deep (Q4 in plane stress, 0.01 m thick) or
 /// 0.1 m x 0.1 m (Hex8), steel, clamped at x = 0 with a tip load of -100 N
 /// in y shared by the end nodes.
+/// An L-shaped frame of Timoshenko beams - 0.6 m along x from the clamp,
+/// 0.4 m along y, 10 elements each, a 0.1 x 0.05 m steel rectangle - under a
+/// tip load that bends both arms in both planes and twists them.
+FemModel frame_model() {
+  FrameMeshSpec spec;
+  spec.points = {{"A", Vector3::Zero()}, {"B", Vector3(0.6, 0.0, 0.0)}, {"C", Vector3(0.6, 0.4, 0.0)}};
+  FrameMember ab;
+  ab.name = "AB";
+  ab.from = "A";
+  ab.to = "B";
+  ab.elements = 10;
+  FrameMember bc = ab;
+  bc.name = "BC";
+  bc.from = "B";
+  bc.to = "C";
+  spec.members = {ab, bc};
+  Mesh mesh = make_frame_mesh(spec);
+  std::vector<Index> all(static_cast<std::size_t>(mesh.num_elements()));
+  for (std::size_t e = 0; e < all.size(); ++e) all[e] = static_cast<Index>(e);
+  FemModel model(std::move(mesh), IsotropicMaterial(200.0e9, 0.3, 7850.0, "steel"), 1.0,
+                 StressState::Beam, IntegrationOptions());
+  BeamSection section;
+  section.name = "rectangle";
+  section.shape = BeamSectionShape::Rectangle;
+  section.width = 0.1;
+  section.height = 0.05;
+  model.assign_section(section, all);
+  DisplacementConstraint root;
+  root.region.name = "root";
+  root.region.members.push_back(x_box(-std::numeric_limits<Scalar>::infinity(), 0.0));
+  for (int k = 0; k < 6; ++k) root.set(k, true);
+  model.constraints().push_back(root);
+  LoadCaseSpec lc;
+  lc.name = "tip";
+  PointLoadSpec tip;
+  tip.region.name = "tip";
+  tip.region.members.emplace_back();
+  tip.region.members.back().kind = SelectorKind::Group;
+  tip.region.members.back().group = "C";
+  tip.force = Vector3(20.0, -100.0, -50.0);
+  lc.point_loads.push_back(tip);
+  model.load_case_specs().push_back(lc);
+  model.finalize();
+  return model;
+}
+
 FemModel cantilever_model(ElementType type) {
+  if (type == ElementType::Beam2) return frame_model();
   const bool plane = type == ElementType::Quad4;
   StructuredMeshSpec spec;
   spec.nx = plane ? 20 : 10;
@@ -258,7 +312,7 @@ StudyOutcome study_transient_modal(const std::string& out_dir, json::Value& summ
                                    {"sudden load undamped", -0.3, false, 0},
                                    {"released from the static state", -0.05, true, 2}};
   json::Value precision = json::Value::make_object();
-  for (const ElementType type : {ElementType::Quad4, ElementType::Hex8}) {
+  for (const ElementType type : {ElementType::Quad4, ElementType::Hex8, ElementType::Beam2}) {
     const FemModel model = cantilever_model(type);
     const Assembler assembler(model);
     for (const MassType mass : {MassType::Consistent, MassType::Lumped}) {
@@ -397,7 +451,10 @@ StudyOutcome study_transient_modal(const std::string& out_dir, json::Value& summ
             json::Value::make_string(
                 "Cantilever 1 m x 0.1 m, steel (E = 200 GPa, nu = 0.3, rho = 7850 kg/m^3), Q4 "
                 "20 x 4 in plane stress 0.01 m thick and Hex8 10 x 2 x 2, clamped, tip load "
-                "-100 N; 120 steps of T1/40. The reference: every mode of a dense generalized "
+                "-100 N; and an L-frame of Timoshenko beams (0.6 m along x, 0.4 m along y, 10 "
+                "elements each, rectangle 0.1 x 0.05 m), clamped, tip load (20, -100, -50) N, "
+                "whose lumped mass carries each node's rotary-inertia tensor; 120 steps of "
+                "T1/40. The reference: every mode of a dense generalized "
                 "eigensolve (K, M) of the free DOFs, each integrated by the scalar HHT-alpha "
                 "recursion in acceleration form, summed. Rayleigh damping 2 % of critical in "
                 "the first mode from each of a M and b K; the harmonic load at 1.3 f1; the "
@@ -425,7 +482,7 @@ StudyOutcome study_transient_modal(const std::string& out_dir, json::Value& summ
        << "; in 80-bit arithmetic it falls " << app::format(ratio, 3) << " times (eps "
        << app::format(precision.find("eps_ratio")->number_value(), 3) << " times)";
   StudyOutcome outcome;
-  outcome.name = "HHT-alpha transient vs exact discrete modal solution (Q4, Hex8)";
+  outcome.name = "HHT-alpha transient vs exact discrete modal solution (Q4, Hex8, Beam2)";
   outcome.kind = "verification";
   outcome.metric =
       "largest relative difference over steps, models, masses and cases";

@@ -3,6 +3,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/elements/FaceGeometry.hpp"
+#include "sparlab/elements/Beam2.hpp"
 #include "sparlab/elements/Shell4.hpp"
 #include "sparlab/fem/FemModel.hpp"
 
@@ -146,6 +147,12 @@ Vector assemble_load_vector(const Mesh& mesh, const Element& element,
   const int dim = mesh.dim();
   const int ndpn = element.dofs_per_node();
   Vector f = Vector::Zero(mesh.num_nodes() * ndpn);
+  if (!load_case.line_loads.empty()) {
+    throw ConfigError("load case '" + load_case.name +
+                      "': line loads (force per unit length) belong to beam models; a " +
+                      to_string(mesh.element_type()) +
+                      " model takes tractions, pressures and body forces");
+  }
 
   add_point_loads(mesh, ndpn, load_case, f);
 
@@ -233,6 +240,11 @@ Vector assemble_shell_load_vector(const FemModel& model, const LoadCaseSpec& loa
   if (shell == nullptr) {
     throw ModelError("assemble_shell_load_vector needs a model of shell elements");
   }
+  if (!load_case.line_loads.empty()) {
+    throw ConfigError("load case '" + load_case.name +
+                      "': line loads (force per unit length) belong to beam models; a shell "
+                      "takes edge tractions and pressures");
+  }
   const int ndpn = model.dofs_per_node();
   const int npe = mesh.nodes_per_elem();
   Vector f = Vector::Zero(mesh.num_nodes() * ndpn);
@@ -287,6 +299,52 @@ Vector assemble_shell_load_vector(const FemModel& model, const LoadCaseSpec& loa
                load.pressure, " Pa");
   }
 
+  return f;
+}
+
+std::vector<Vector3> beam_line_loads(const FemModel& model, const LoadCaseSpec& load_case) {
+  const Mesh& mesh = model.mesh();
+  std::vector<Vector3> q(static_cast<std::size_t>(mesh.num_elements()), Vector3::Zero());
+  for (const LineLoadSpec& load : load_case.line_loads) {
+    const std::vector<Index> elements = load.region.select_elements(mesh);
+    if (elements.empty()) {
+      throw ConfigError("line load region '" + load.region.name + "' in load case '" +
+                        load_case.name +
+                        "' selected no beam element; a line load acts on the elements whose "
+                        "centroids lie in its region (or an element set)");
+    }
+    if (!load.force_per_length.allFinite()) {
+      throw ConfigError("line load '" + load.region.name + "' in load case '" + load_case.name +
+                        "' is not finite");
+    }
+    for (Index e : elements) q[static_cast<std::size_t>(e)] += load.force_per_length;
+  }
+  return q;
+}
+
+Vector assemble_beam_load_vector(const FemModel& model, const LoadCaseSpec& load_case) {
+  const Mesh& mesh = model.mesh();
+  const auto* beam = dynamic_cast<const Beam2Element*>(&model.element());
+  if (beam == nullptr) throw ModelError("assemble_beam_load_vector needs a model of beam elements");
+  if (!load_case.tractions.empty() || !load_case.pressures.empty()) {
+    throw ConfigError("load case '" + load_case.name +
+                      "': a beam model has no faces to carry a traction or a pressure; "
+                      "load it with line loads (force per unit length), point loads or "
+                      "gravity");
+  }
+  const int ndpn = model.dofs_per_node();
+  const int npe = mesh.nodes_per_elem();
+  Vector f = Vector::Zero(mesh.num_nodes() * ndpn);
+  add_point_loads(mesh, ndpn, load_case, f);
+  if (!load_case.line_loads.empty()) {
+    const std::vector<Vector3> q = beam_line_loads(model, load_case);
+    for (Index e = 0; e < mesh.num_elements(); ++e) {
+      const Vector3& qe = q[static_cast<std::size_t>(e)];
+      if (qe.squaredNorm() == 0.0) continue;
+      const Vector fe = beam->line_load(model.element_geometry(e), qe);
+      model.dofs().scatter_add(mesh.element_nodes(e), npe, fe, f);
+    }
+  }
   return f;
 }
 

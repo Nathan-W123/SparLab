@@ -103,7 +103,6 @@ class Shell4Element final : public Element {
   int num_nodes() const override { return 4; }
   int num_faces() const override { return 4; }
   int dofs_per_node() const override { return 6; }
-  bool diagonal_scaled_lumping() const override { return true; }
   Scalar drilling_factor() const { return drilling_factor_; }
 
   /// \param d the 3 x 3 plane-stress constitutive matrix [Pa].
@@ -113,6 +112,17 @@ class Shell4Element final : public Element {
 
   Matrix consistent_mass(const Matrix& geometry, Scalar density, Scalar thickness,
                          const IntegrationOptions& opts) const override;
+
+  /// Lumped mass: the translations' diagonal of the consistent mass scaled
+  /// to the element's mass (Hinton, Rock and Zienkiewicz), and on each
+  /// node's rotations the same share of the element's rotary-inertia tensor
+  /// - the consistent rotational blocks summed over all node pairs, the
+  /// inertia \f$\int \rho\, z^2 (|d|^2 I - d d^T)\,dV\f$ of a uniform
+  /// rotation of the fibres (d the interpolated director, z the distance from
+  /// the mid-surface). On a flat element that is \f$\rho t^3/12\f$ per unit
+  /// area about the in-plane axes and nothing about the normal, in any frame.
+  Matrix lumped_mass(const Matrix& geometry, Scalar density, Scalar thickness,
+                     const IntegrationOptions& opts) const override;
 
   /// The local strain operator at (r, s, zeta) - six rows in the Voigt order
   /// of a solid, (11, 22, 33, 12, 23, 13) in the local frame, the 33 row

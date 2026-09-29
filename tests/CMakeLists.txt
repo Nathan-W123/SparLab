@@ -39,6 +39,7 @@ set(SPARLAB_TEST_SOURCES
   test_dynamics.cpp
   test_contact.cpp
   test_shell.cpp
+  test_beam.cpp
 )
 
 add_executable(sparlab_tests ${SPARLAB_TEST_SOURCES})

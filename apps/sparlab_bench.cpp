@@ -77,7 +77,8 @@ Mesh build_bench_mesh(ElementType element, const StructuredMeshSpec& spec) {
     case ElementType::Hex8: return make_structured_hex_mesh(spec);
     case ElementType::Tet4: return make_structured_tet_mesh(spec);
     case ElementType::Tet10: return make_structured_tet10_mesh(spec);
-    case ElementType::Shell4: break;
+    case ElementType::Shell4:
+    case ElementType::Beam2: break;
   }
   throw ConfigError("the benchmark meshes are continuum boxes; " + to_string(element) +
                     " is not one of them");

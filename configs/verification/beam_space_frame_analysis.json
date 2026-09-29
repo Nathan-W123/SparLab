@@ -1,0 +1,72 @@
+{
+  // ---------------------------------------------------------------------------
+  // A one-storey space frame of Timoshenko beams: four columns 3 m high on a
+  // 4 m x 3 m plan, clamped at their feet, four edge beams joining their
+  // heads, and one diagonal brace from a foot to the opposite head of the
+  // first bay. Steel rectangles: the columns 0.2 x 0.3 m with their deep side
+  // along y (an orientation vector), the beams 0.15 x 0.3 m deep in z (the
+  // default frame: z' up), the brace 0.1 x 0.1 m. Load cases: the frame's
+  // weight with a floor load of 5 kN/m on the edge beams, and a lateral load
+  // at one head with a moment at another. Static, modal (consistent mass) and
+  // buckling of the gravity case - cross-validated by an independent
+  // Timoshenko frame in NumPy, and by CalculiX's B31 (expanded into bricks)
+  // for information.
+  // ---------------------------------------------------------------------------
+  "name": "beam_space_frame_analysis",
+  "description": "Space frame of Timoshenko beams: columns, edge beams and a brace",
+  "units": "SI (m, N, Pa, kg)",
+  "mesh": {
+    "type": "frame",
+    "points": [
+      { "name": "A1", "position": [0.0, 0.0, 0.0] }, { "name": "A2", "position": [4.0, 0.0, 0.0] },
+      { "name": "A3", "position": [4.0, 3.0, 0.0] }, { "name": "A4", "position": [0.0, 3.0, 0.0] },
+      { "name": "B1", "position": [0.0, 0.0, 3.0] }, { "name": "B2", "position": [4.0, 0.0, 3.0] },
+      { "name": "B3", "position": [4.0, 3.0, 3.0] }, { "name": "B4", "position": [0.0, 3.0, 3.0] }
+    ],
+    "members": [
+      { "name": "C1", "from": "A1", "to": "B1", "elements": 8 },
+      { "name": "C2", "from": "A2", "to": "B2", "elements": 8 },
+      { "name": "C3", "from": "A3", "to": "B3", "elements": 8 },
+      { "name": "C4", "from": "A4", "to": "B4", "elements": 8 },
+      { "name": "E12", "from": "B1", "to": "B2", "elements": 8 },
+      { "name": "E23", "from": "B2", "to": "B3", "elements": 6 },
+      { "name": "E34", "from": "B3", "to": "B4", "elements": 8 },
+      { "name": "E41", "from": "B4", "to": "B1", "elements": 6 },
+      { "name": "brace", "from": "A1", "to": "B2", "elements": 10 }
+    ]
+  },
+  "material": { "name": "steel", "youngs_modulus": 210.0e9, "poisson_ratio": 0.3, "density": 7850.0 },
+  "model": {
+    "beam": {
+      "sections": [
+        { "name": "edge", "shape": "rectangle", "width": 0.15, "height": 0.3 },
+        { "name": "column", "shape": "rectangle", "width": 0.3, "height": 0.2,
+          "orientation": [0.0, 1.0, 0.0],
+          "region": { "any_of": [ { "group": "C1" }, { "group": "C2" }, { "group": "C3" }, { "group": "C4" } ] } },
+        { "name": "brace", "shape": "rectangle", "width": 0.1, "height": 0.1,
+          "region": { "group": "brace" } }
+      ]
+    }
+  },
+  "boundary_conditions": [
+    { "name": "feet", "fix": ["x", "y", "z", "rx", "ry", "rz"],
+      "region": { "box": { "zmax": 0.0 } } }
+  ],
+  "load_cases": [
+    { "name": "gravity_floor",
+      "gravity": [0.0, 0.0, -9.81],
+      "line_loads": [
+        { "force_per_length": [0.0, 0.0, -5.0e3],
+          "region": { "any_of": [ { "group": "E12" }, { "group": "E23" }, { "group": "E34" }, { "group": "E41" } ] } }
+      ] },
+    { "name": "lateral",
+      "point_loads": [
+        { "name": "push", "force": [10.0e3, 2.0e3, 0.0], "region": { "group": "B1" } },
+        { "name": "twist", "force": [0.0, 0.0, 0.0], "moment": [0.0, 0.0, 4.0e3], "region": { "group": "B3" } }
+      ] }
+  ],
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+  "modal": { "enabled": true, "num_modes": 8 },
+  "buckling": { "enabled": true, "num_modes": 3, "load_cases": ["gravity_floor"] },
+  "output": { "csv": true, "vtk": true, "mode_shapes": true }
+}

@@ -11,8 +11,10 @@
 /// and a positive thickness; a solid mesh takes `StressState::ThreeDimensional`
 /// and no thickness (the value must be 1); a shell mesh takes
 /// `StressState::Shell` and a positive thickness, which regions may override
-/// (`assign_thickness`). Any mismatch is rejected in the constructor, so a
-/// deck cannot pair a solid mesh with a plane idealisation.
+/// (`assign_thickness`); a beam mesh takes `StressState::Beam`, no thickness
+/// (1), and a cross-section for every element (`assign_section`). Any
+/// mismatch is rejected in the constructor, so a deck cannot pair a solid
+/// mesh with a plane idealisation.
 ///
 /// **Shell directors.** The director of a shell element at a node is the
 /// surface's exact normal there when the mesh carries one (a generated
@@ -24,6 +26,7 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/elements/BeamSection.hpp"
 #include "sparlab/elements/Element.hpp"
 #include "sparlab/fem/BoundaryConditions.hpp"
 #include "sparlab/fem/DofManager.hpp"
@@ -42,7 +45,11 @@ struct LinearSolverOptions;
 /// Mass-matrix formulation.
 enum class MassType {
   Consistent,  ///< M_e = rho t int N^T N dOmega (default)
-  Lumped       ///< row-sum lumping of the consistent matrix (diagonal)
+  /// Row sums of the consistent matrix (diagonal; the quadratic
+  /// tetrahedron's diagonal scaled to its mass); a shell or beam lumps its
+  /// own, nodal masses plus each node's rotary-inertia tensor on its
+  /// rotations, 3 x 3 blocks (Element::lumped_mass).
+  Lumped
 };
 
 std::string to_string(MassType type);
@@ -82,6 +89,28 @@ class FemModel {
   }
   /// True for a shell model (StressState::Shell, Shell4 elements).
   bool is_shell() const { return stress_state_ == StressState::Shell; }
+  /// True for a beam model (StressState::Beam, Beam2 elements).
+  bool is_beam() const { return stress_state_ == StressState::Beam; }
+  /// True for a model whose nodes carry rotations (a shell or a beam).
+  bool is_structural() const { return is_shell() || is_beam(); }
+  /// Give the listed beam elements the cross-section `section` (a later
+  /// assignment overrides an earlier one). Its shear coefficients, if a
+  /// shape's, are Cowper's for the Poisson ratio of each element's material.
+  /// 	hrows ModelError on a model that is not a beam or for an element out
+  ///         of range; ConfigError for an invalid section.
+  void assign_section(const BeamSection& section, const std::vector<Index>& elements);
+  /// The sections assigned so far, in order of assignment.
+  const std::vector<BeamSection>& sections() const { return sections_; }
+  /// True when every beam element has a section.
+  bool sections_complete() const;
+  /// The resolved section of beam element `e` (BeamSection.hpp `resolve`,
+  /// with the Poisson ratio of its material).
+  /// 	hrows ModelError for an element without a section.
+  BeamSection section_of(Index e) const;
+  /// The factor that turns element `e`'s measure into its volume: the
+  /// thickness of a plane or shell element, the area of a beam's section, 1
+  /// for a solid.
+  Scalar volume_factor(Index e) const;
   /// Give the listed shell elements the thickness `t` [m] (a later
   /// assignment overrides an earlier one).
   /// \throws ModelError on a model that is not a shell, for an element out
@@ -92,7 +121,8 @@ class FemModel {
   void set_shell_options(const ShellOptions& options);
   const ShellOptions& shell_options() const { return shell_options_; }
   /// What the element kernels take for element `e`: its nodal coordinates
-  /// (dim x nodes), and for a shell its directors beneath them (6 x 4).
+  /// (dim x nodes), for a shell its directors beneath them (6 x 4), for a
+  /// beam its orientation, section and moduli (14 x 2, Beam2.hpp).
   Matrix element_geometry(Index e) const;
   StressState stress_state() const { return stress_state_; }
   const IntegrationOptions& integration() const { return integration_; }
@@ -161,8 +191,8 @@ class FemModel {
   /// Total solid-material volume of the design domain [m^3].
   Scalar domain_volume() const;
 
-  /// Per-element volume [m^3]: area * thickness in 2-D and for a shell, cell
-  /// volume for a solid.
+  /// Per-element volume [m^3]: area * thickness in 2-D and for a shell,
+  /// length * section area for a beam, cell volume for a solid.
   Vector element_volumes() const;
 
  private:
@@ -184,6 +214,9 @@ class FemModel {
   ShellOptions shell_options_;
   /// Shell directors per element, one column per node; empty otherwise.
   std::vector<Eigen::Matrix<Scalar, 3, 4>> directors_;
+  /// Beam sections, and the index into them of each element (-1: none yet).
+  std::vector<BeamSection> sections_;
+  std::vector<int> element_section_;
   bool finalized_ = false;
 
   void compute_directors();

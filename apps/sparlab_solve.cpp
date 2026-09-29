@@ -190,14 +190,20 @@ int main(int argc, char** argv) {
       }
     }
 
-    // Stresses of a continuum model; resultants of a shell model.
+    // Stresses of a continuum model; resultants of a shell or beam model.
     std::vector<StressField> stresses;
     std::vector<ShellField> shells;
+    std::vector<BeamField> beams;
     {
       ScopedTimer t(timings, "stress_recovery");
       for (std::size_t l = 0; l < solutions.size(); ++l) {
         if (model.is_shell()) {
           shells.push_back(recover_shell_resultants(model, assembler, solutions[l].displacement));
+          continue;
+        }
+        if (model.is_beam()) {
+          beams.push_back(recover_beam_forces(model, assembler, solutions[l].displacement,
+                                              model.load_case_specs()[l]));
           continue;
         }
         const Vector& temperature = model.load_case_data(l).temperature;
@@ -225,6 +231,8 @@ int main(int argc, char** argv) {
           writer.write_displacement(model.mesh(), name, solutions[l].displacement);
           if (model.is_shell()) {
             writer.write_shell_resultants(model, name, shells[l]);
+          } else if (model.is_beam()) {
+            writer.write_beam_forces(model, name, beams[l]);
           } else {
             writer.write_stress(model.mesh(), name, stresses[l]);
           }
@@ -237,6 +245,8 @@ int main(int argc, char** argv) {
         }
         if (config.output.write_vtk && model.is_shell()) {
           writer.write_shell_vtk(model, name, solutions[l].displacement, shells[l]);
+        } else if (config.output.write_vtk && model.is_beam()) {
+          writer.write_beam_vtk(model, name, solutions[l].displacement, beams[l]);
         } else if (config.output.write_vtk) {
           writer.write_static_vtk(model.mesh(), name, solutions[l].displacement,
                                   stresses[l], nullptr, nullptr,
@@ -308,7 +318,8 @@ int main(int argc, char** argv) {
     timings.add("total", wall.elapsed_seconds());
     json::Value summary = make_static_summary(config, model, diagnostics, solutions,
                                               stresses, modal.get(), timings,
-                                              model.is_shell() ? &shells : nullptr);
+                                              model.is_shell() ? &shells : nullptr,
+                                              model.is_beam() ? &beams : nullptr);
     if (!buckling.empty()) {
       summary.set("buckling", buckling_json(buckling, config.buckling.options,
                                             "the model as meshed"));
@@ -345,10 +356,25 @@ int main(int argc, char** argv) {
       std::cout << "  load case '" << s.load_case_name << "': compliance "
                 << app::format(s.compliance) << " J, strain energy "
                 << app::format(s.strain_energy) << " J, max |u| "
-                << app::format(s.max_displacement_magnitude) << " m, max von Mises "
-                << app::format(model.is_shell() ? shells[l].element_von_mises.maxCoeff()
-                                                : stresses[l].element_von_mises.maxCoeff())
-                << " Pa" << (model.is_shell() ? " (shell faces and mid-surface)" : "") << "\n";
+                << app::format(s.max_displacement_magnitude) << " m, ";
+      if (model.is_beam()) {
+        Scalar sigma = 0.0;
+        bool known = false;
+        for (Index e = 0; e < beams[l].element_normal_stress.size(); ++e) {
+          if (!std::isfinite(beams[l].element_normal_stress(e))) continue;
+          sigma = std::max(sigma, beams[l].element_normal_stress(e));
+          known = true;
+        }
+        std::cout << "max normal stress "
+                  << (known ? app::format(sigma) + " Pa (extreme fibres)"
+                            : std::string("unknown (no section states its extreme fibres)"))
+                  << "\n";
+      } else {
+        std::cout << "max von Mises "
+                  << app::format(model.is_shell() ? shells[l].element_von_mises.maxCoeff()
+                                                  : stresses[l].element_von_mises.maxCoeff())
+                  << " Pa" << (model.is_shell() ? " (shell faces and mid-surface)" : "") << "\n";
+      }
       const auto vec = [&](const Vector3& v) {
         std::string text = "(" + app::format(v.x()) + ", " + app::format(v.y());
         if (model.dim() == 3) text += ", " + app::format(v.z());

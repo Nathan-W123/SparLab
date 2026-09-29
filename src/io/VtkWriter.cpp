@@ -18,6 +18,7 @@ int vtk_cell_type(ElementType type) {
     case ElementType::Tet4: return 10;   // VTK_TETRA
     case ElementType::Tet10: return 24;  // VTK_QUADRATIC_TETRA (same node order)
     case ElementType::Shell4: return 9;  // VTK_QUAD, its points in 3-D
+    case ElementType::Beam2: return 3;   // VTK_LINE
   }
   throw IoError("no VTK cell type registered for this element type");
 }
