@@ -134,8 +134,8 @@ struct ContactOptions {
   /// It weighs gap against pressure while the set is still changing; the
   /// converged solution does not depend on it.
   Scalar complementarity = 1.0;
-  /// Master faces are searched for within this multiple of a slave face's
-  /// size (plus its initial gap to them).
+  /// A master face is paired with a slave face when their bounding boxes
+  /// come within this multiple of the slave face's size of each other.
   Scalar search_factor = 2.0;
   /// The solver of the symmetric Newton steps (no node slipping under
   /// friction): by default the static analysis' `auto` choice - LDL^T up to
@@ -279,6 +279,16 @@ class ContactProblem {
                                               Scalar lambda_start) const;
   /// Pair totals of node_results.
   std::vector<ContactPairResult> pair_results(const std::vector<ContactNodeResult>& nodes) const;
+
+  /// The nodal contact forces on the bodies at a converged state `nodes`
+  /// (node_results), over every DOF of the model: D_j (p_j nu_j + t_j) on
+  /// slave node j and, against a master surface, -M_jl (p_j nu_j + t_j) on
+  /// its master node l - at prescribed components too, where the supports
+  /// take them. `total` receives every pair's, `rigid` those the rigid
+  /// obstacles exert (external forces; a master surface's are internal and
+  /// sum to zero).
+  void nodal_forces(const std::vector<ContactNodeResult>& nodes, Vector& total,
+                    Vector& rigid) const;
 
   /// Accept a converged step: accumulate the slip of the nodes in contact.
   void commit(const Vector& u, Scalar lambda, const std::vector<ContactStatus>& status,

@@ -941,7 +941,8 @@ def plot_cross_validation(directory: str, path: str) -> str:
     # diamond, set just below, for the large-deflection state, a triangle,
     # set just above, for the elastoplastic one; on a dynamic deck, which has
     # neither, a downward triangle, set below, for the transient history and a
-    # pentagon for the harmonic response.
+    # pentagon for the harmonic response; on a contact deck, compared through
+    # its non-linear analysis alone, a hexagon for the final contact state.
     code_names = ["scikit-fem", "calculix"]
     st.require_scatter_series(len(code_names), "codes")
     kinds_of = {
@@ -955,6 +956,8 @@ def plot_cross_validation(directory: str, path: str) -> str:
              "scikit-fem, transient (its own HHT-alpha integration)"),
             ("scikit-fem harmonic", "p", -0.22, "harmonic",
              "scikit-fem, harmonic response (a direct complex solve)"),
+            ("scikit-fem contact", "h", 0.0, "contact",
+             "scikit-fem, contact (its own semismooth Newton solve)"),
         ],
         "calculix": [
             ("calculix", "o", 0.0, "linear", None),
@@ -964,6 +967,8 @@ def plot_cross_validation(directory: str, path: str) -> str:
              "calculix, elastoplastic (*PLASTIC)"),
             ("calculix *DYNAMIC", "v", -0.22, "transient",
              "calculix, transient (*DYNAMIC, DIRECT)"),
+            ("calculix contact", "h", 0.0, "contact",
+             "calculix, contact (dual mortar, LINMORTAR)"),
         ],
     }
     present = [code for code in code_names
@@ -1025,7 +1030,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
             if not (judged_x or info_x):
                 continue
             label = name or f"{code} {version}".strip() + f", {kind}"
-            size = 7 if marker in ("o", "p") else 6
+            size = 7 if marker in ("o", "p", "h") else 6
             if judged_x:
                 ax.plot(judged_x, judged_y, marker, color=colour, markersize=size, label=label)
             if info_x:
@@ -1066,7 +1071,7 @@ def plot_cross_validation(directory: str, path: str) -> str:
         fig, "Cross-validation: nodal displacements vs independent codes",
         f"{len(rows)} load cases, {len(present)} "
         f"code{'s' if len(present) != 1 else ''}; linear, large-deflection, "
-        f"elastoplastic, transient and harmonic; {verdict}",
+        f"elastoplastic, transient, harmonic and contact; {verdict}",
     )
     handles, labels = ax.get_legend_handles_labels()
     legend_ax.legend(handles, labels, loc="center", ncol=2, fontsize=7.4, frameon=False,
@@ -1096,7 +1101,12 @@ def plot_cross_validation(directory: str, path: str) -> str:
         "integrating HHT-alpha itself and, on the solid elements, CalculiX's *DYNAMIC; the "
         "harmonic responses at every frequency with scikit-fem's direct complex solve. The "
         "static cases of the two shaken-base decks are rigid translations, which both codes "
-        "reproduce to round-off. CalculiX results are read from the .frd file, which carries six "
+        "reproduce to round-off. The contact decks are compared at their final states: "
+        "scikit-fem solving the same discrete contact problem itself (its own dual-mortar "
+        "integrals and gaps, a semismooth Newton method on the Alart-Curnier functions), "
+        "CalculiX with its linear dual mortar contact on the solid decks it can take (a "
+        "mortar pair or a flat rigid obstacle). CalculiX results are read from the .frd file, "
+        "which carries six "
         "significant digits, so differences below the dotted floor are its output "
         "rounding.",
     )
@@ -2523,5 +2533,293 @@ def plot_nonlinear_oscillator(directory: str, path: str) -> str:
         "the yield point falls at a different place within a step. The final energy balance "
         "of the plastic run tends to the plastic dissipation, the plastic work less the stored "
         "hardening energy.",
+    )
+    return st.save_figure(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Contact: Hertz line and point contact
+# ---------------------------------------------------------------------------
+#: The cases of sparlab_verify's hertz-line and hertz-point studies, as their
+#: CSVs name them, with the slot and legend label each keeps in every panel:
+#: an elastic body on a rigid flat in slot 0, the mortar pair in slot 2.
+HERTZ_LINE_CASES = [
+    ("elastic cylinder on a rigid flat", 0, "elastic cylinder on a rigid flat"),
+    ("rigid cylinder into an elastic block", 1, "rigid cylinder into an elastic block"),
+    ("elastic cylinder on an elastic block (mortar, non-matching)", 2,
+     "elastic cylinder on an elastic block (mortar)"),
+]
+HERTZ_POINT_CASES = [
+    ("elastic sphere on a rigid flat", 0, "elastic sphere on a rigid flat"),
+    ("elastic sphere on an elastic block (mortar, non-matching)", 2,
+     "elastic sphere on an elastic block (mortar)"),
+]
+
+
+def _order_guide(ax, xs, anchor: float, order: float, label_offset=(4, -14)) -> None:
+    """A dotted slope of `order` (the error falling as h^order) ending at
+    (max xs, anchor), labelled below its middle."""
+    xs = np.asarray(sorted(xs), dtype=float)
+    guide = anchor * (xs / xs[-1]) ** -order
+    ax.plot(xs, guide, ":", color=st.INK_MUTED, linewidth=1.0)
+    middle = len(xs) // 2
+    ax.annotate(f"order {order:g}", (xs[middle], guide[middle]), xytext=label_offset,
+                textcoords="offset points", fontsize=7.5, color=st.INK_MUTED)
+
+
+def _measured_order(ax, xs, errors, sizes, first: int = -2) -> None:
+    """Annotate beside the last point the order at which `errors` fall with
+    `sizes` (an element size h, or a model's 1 / length) between point
+    `first` and the last one; `xs` are the points' plotted abscissae."""
+    xs = np.asarray(xs, dtype=float)
+    errors = np.asarray(errors, dtype=float)
+    sizes = np.asarray(sizes, dtype=float)
+    order = np.log(errors[first] / errors[-1]) / np.log(sizes[first] / sizes[-1])
+    ax.annotate(f"order {order:.2f}", (xs[-1], errors[-1]), xytext=(6, 0),
+                textcoords="offset points", va="center", fontsize=7.5,
+                color=st.INK_SECONDARY)
+
+
+def _sci(value: float) -> str:
+    """1.7e-3 rather than Python's 1.7e-03."""
+    return f"{value:.1e}".replace("e-0", "e-").replace("e+0", "e")
+
+
+#: "a / h" that line wrapping cannot split (no-break spaces).
+A_OVER_H = "a\u00a0/\u00a0h"
+
+
+def _ratio_ticks(ax, values) -> None:
+    """Label a log x axis at the mesh ratios a / h the runs used."""
+    values = sorted(set(round(float(v), 1) for v in values))
+    ax.set_xticks(values)
+    ax.set_xticklabels([f"{v:.3g}" for v in values])
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+
+
+def _hertz_profile(ax, profile: pd.DataFrame, case: str, slot: int, coordinate: str,
+                   extent: float = 2.0) -> Tuple[float, float]:
+    """The nodal pressures of `case` on its coarsest and finest meshes against
+    Hertz's semi-ellipse, in units of a and p0 (both from the computed load).
+    Returns the two meshes' a / h."""
+    rows = profile[profile["case"] == case]
+    ratios = sorted(rows["a_over_h[-]"].unique())
+    x = np.linspace(0.0, extent, 801)
+    # Hertz as a wide halo: the fine mesh's nodes lie on it.
+    ax.plot(x, np.sqrt(np.clip(1.0 - x * x, 0.0, None)), "-", color=st.INK_MUTED,
+            linewidth=4.0, alpha=0.45, label="Hertz")
+    colour = st.series_color(slot)
+    for ratio, marker, size, hollow in ((ratios[0], "s", 5.5, True),
+                                        (ratios[-1], "o", 2.6, False)):
+        sub = rows[np.isclose(rows["a_over_h[-]"], ratio) & (rows[coordinate] <= extent)]
+        sub = sub.sort_values(coordinate)
+        ax.plot(sub[coordinate], sub["p_over_p0[-]"], marker, color=colour, markersize=size,
+                markerfacecolor="none" if hollow else colour,
+                markeredgewidth=1.1 if hollow else 0.0, label=f"a / h = {ratio:.3g}")
+    ax.set_xlim(0.0, extent)
+    ax.set_ylim(-0.03, 1.08)
+    ax.set_ylabel("p / p0 [-]")
+    return float(ratios[0]), float(ratios[-1])
+
+
+def plot_hertz_line(directory: str, path: str) -> str:
+    """Line contact in plane strain against Hertz: the pressure profile, its
+    convergence, the floor the finite model sets, and a curved master meshed
+    coarser than its slave."""
+    table = load_csv(os.path.join(directory, "hertz_line.csv"))
+    profile = load_csv(os.path.join(directory, "hertz_line_profile.csv"))
+    fig, axes = st.figure(11.0, 8.6, nrows=2, ncols=2)
+    mesh = table[table["series"] == "mesh"]
+
+    ax = axes[0, 0]
+    case, slot, name = HERTZ_LINE_CASES[0]
+    coarse, fine = _hertz_profile(ax, profile, case, slot, "x_over_a[-]")
+    ax.set_xlabel("x / a [-]")
+    missed = int((table["edge_within_an_element"] != "yes").sum())
+    edge = ("on every mesh of the study the discrete edge lies within an element of Hertz's"
+            if missed == 0 else f"on {missed} mesh(es) of the study the discrete edge lies "
+            "more than an element from Hertz's")
+    st.title(ax, "Pressure under an elastic cylinder on a rigid flat",
+             f"the nodes of the coarsest and the finest mesh; {edge}", wrap=48)
+    del coarse, fine  # the legend gives both meshes' a / h
+    st.legend(ax, loc="lower left", fontsize=7.5)
+
+    ax = axes[0, 1]
+    for case, slot, name in HERTZ_LINE_CASES:
+        sub = mesh[mesh["case"] == case].sort_values("a_over_h[-]")
+        ax.plot(sub["a_over_h[-]"], sub["interior_error[-]"], "-o", color=st.series_color(slot),
+                markersize=4.5, label=name)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    _ratio_ticks(ax, mesh["a_over_h[-]"])
+    ax.set_xlabel("contact half-width / element size, a / h [-]")
+    ax.set_ylabel("RMS (p - p_Hertz) over |x| <= 0.8 a / p0 [-]")
+    st.title(ax, "Convergence to a floor",
+             "R = 50 a, bodies 25 a across; the error falls with the element size until "
+             "the finite model's own difference to Hertz is reached", wrap=48)
+    st.legend(ax, loc="upper right", fontsize=7.0)
+
+    ax = axes[1, 0]
+    size = table[table["series"] == "body size"].sort_values("L_over_a_target[-]")
+    curvature = table[table["series"] == "curvature"].sort_values("R_over_a_target[-]")
+    ax.plot(size["L_over_a_target[-]"], size["centre_error[-]"], "-o",
+            color=st.series_color(HERTZ_LINE_CASES[0][1]), markersize=4.5,
+            label="bodies L across (elastic cylinder, rigid flat, R = 200 a): x = L / a")
+    ax.plot(curvature["R_over_a_target[-]"], curvature["centre_error[-]"], "-s",
+            color=st.series_color(HERTZ_LINE_CASES[1][1]), markersize=4.5,
+            label="cylinder radius R (rigid cylinder, bodies 100 a across): x = R / a")
+    if len(curvature) >= 2:
+        _order_guide(ax, curvature["R_over_a_target[-]"],
+                     0.55 * float(curvature["centre_error[-]"].min()), 1.0)
+        # The order over the whole series, as the study reports it.
+        _measured_order(ax, curvature["R_over_a_target[-]"], curvature["centre_error[-]"],
+                        1.0 / curvature["R_over_a_target[-]"].to_numpy(), first=0)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ticks = sorted(set(size["L_over_a_target[-]"]) | set(curvature["R_over_a_target[-]"]))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f"{t:g}" for t in ticks])
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.set_xlim(0.85 * min(ticks), 1.6 * max(ticks))
+    lowest = float(pd.concat([size, curvature])["centre_error[-]"].min())
+    ax.set_ylim(bottom=0.25 * lowest)  # the legend sits beneath the curves
+    ax.set_xlabel("model length over the half-width: L / a or R / a [-]")
+    ax.set_ylabel("|p(0) - p0| / p0 [-]")
+    ratio = float(pd.concat([size, curvature])["a_over_h[-]"].mean())
+    st.title(ax, "The floor is the model's",
+             f"{A_OVER_H} = {ratio:.3g}; Hertz assumes half-spaces and a force normal to the "
+             "flat, a rigid cylinder presses along its own normal, tilted by x / R", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.0)
+
+    ax = axes[1, 1]
+    pair, slot, name = HERTZ_LINE_CASES[2]
+    same = mesh[mesh["case"] == pair].sort_values("a_over_h[-]")
+    coarse_master = table[(table["case"] == pair) &
+                          (table["series"] == "master twice as coarse")].sort_values(
+                              "a_over_h[-]")
+    ax.plot(same["a_over_h[-]"], same["centre_error[-]"], "-o", color=st.series_color(slot),
+            markersize=4.5, label="master element 3/4 of the slave's (finer)")
+    ax.plot(coarse_master["a_over_h[-]"], coarse_master["centre_error[-]"], "-D",
+            color=st.series_color(3), markersize=4.5, label="master element twice the slave's")
+    if len(coarse_master) >= 2:
+        _order_guide(ax, coarse_master["a_over_h[-]"],
+                     0.45 * float(coarse_master["centre_error[-]"].min()), 1.0)
+        _measured_order(ax, coarse_master["a_over_h[-]"], coarse_master["centre_error[-]"],
+                        coarse_master["h[m]"])
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    _ratio_ticks(ax, pd.concat([same, coarse_master])["a_over_h[-]"])
+    ax.set_xlim(right=1.45 * float(pd.concat([same, coarse_master])["a_over_h[-]"].max()))
+    ax.set_xlabel("contact half-width / slave element size, a / h [-]")
+    ax.set_ylabel("|p(0) - p0| / p0 [-]")
+    st.title(ax, "A curved master meshed coarser than its slave",
+             "elastic cylinder (master) on an elastic block (slave), non-matching: the slave "
+             "nodes between the master's vertices see its chords", wrap=48)
+    st.legend(ax, loc="center right", fontsize=7.0)
+
+    st.annotate_note(
+        fig,
+        "Plane strain, steel (E = 200 GPa, nu = 0.3), Q4 half models graded outward from a "
+        "uniform zone 1.5 a wide; a and p0 from the computed load P per unit length, a = "
+        "sqrt(4 P R / (pi E*)), p0 = 2 P / (pi a), E* = E / (1 - nu^2) against a rigid body "
+        "and half that for two bodies of the same material. The interior error weights each "
+        "node by its D_j. Refinement takes each case to a floor that is not a discretisation "
+        "error: the bodies are finite and a rigid cylinder's contact force has a component "
+        "along the flat of order x / R, while Hertz's theory has neither; growing the bodies "
+        "or the radius lowers the floor, the radius at first order. A curved master meshed "
+        "coarser than its slave adds the error of its chords, first order in h; meshed as "
+        "finely as the slave or finer it stays at the floor.",
+    )
+    return st.save_figure(fig, path)
+
+
+def plot_hertz_point(directory: str, path: str) -> str:
+    """Point contact (Hex8 quarter models) against Hertz: the pressure over
+    the contact area and its convergence, on a rigid flat and for a mortar
+    pair with non-matching meshes."""
+    table = load_csv(os.path.join(directory, "hertz_point.csv"))
+    profile = load_csv(os.path.join(directory, "hertz_point_profile.csv"))
+    fig, axes = st.figure(11.0, 8.4, nrows=2, ncols=2)
+
+    missed = int((table["edge_within_an_element"] != "yes").sum())
+    edge = ("on every mesh the discrete edge lies within an element of Hertz's" if missed == 0
+            else f"on {missed} mesh(es) the discrete edge lies more than an element from "
+            "Hertz's")
+    subtitles = [
+        f"every node of the contact surface on the coarsest and the finest mesh; {edge}",
+        "the same for a mortar pair with non-matching meshes: the sphere (master) meshed 4/3 "
+        "as finely as the block's top (slave)",
+    ]
+    for panel, (case, slot, name) in enumerate(HERTZ_POINT_CASES):
+        ax = axes[0, panel]
+        _hertz_profile(ax, profile, case, slot, "r_over_a[-]")
+        ax.set_xlabel("r / a [-]")
+        title = "Pressure under an elastic sphere on " + (
+            "a rigid flat" if panel == 0 else "an elastic block")
+        st.title(ax, title, subtitles[panel], wrap=48)
+        st.legend(ax, loc="lower left", fontsize=7.5)
+
+    mesh = table[table["series"] == "mesh"]
+    short = {HERTZ_POINT_CASES[0][0]: "rigid flat", HERTZ_POINT_CASES[1][0]: "mortar pair"}
+    right = 1.45 * float(mesh["a_over_h[-]"].max())
+    ax = axes[1, 0]
+    for case, slot, name in HERTZ_POINT_CASES:
+        sub = mesh[mesh["case"] == case].sort_values("a_over_h[-]")
+        ax.plot(sub["a_over_h[-]"], sub["rms_error[-]"], "-o", color=st.series_color(slot),
+                markersize=4.5, label=name)
+        if len(sub) >= 2:
+            _measured_order(ax, sub["a_over_h[-]"], sub["rms_error[-]"], sub["h[m]"])
+    ax.axhline(0.05, color=st.INK_MUTED, linewidth=1.0, linestyle="--",
+               label="tolerance on the rigid flat at a / h = 9")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    _ratio_ticks(ax, mesh["a_over_h[-]"])
+    ax.set_xlim(right=right)
+    ax.set_xlabel("contact radius / element size, a / h [-]")
+    ax.set_ylabel("RMS (p - p_Hertz) over the surface / p0 [-]")
+    st.title(ax, "Error over the whole surface",
+             "set by the square-root edge of the pressure, which the mesh meets at every "
+             "angle", wrap=48)
+    st.legend(ax, loc="lower left", fontsize=7.0)
+
+    ax = axes[1, 1]
+    for case, slot, name in HERTZ_POINT_CASES:
+        sub = mesh[mesh["case"] == case].sort_values("a_over_h[-]")
+        colour = st.series_color(slot)
+        ax.plot(sub["a_over_h[-]"], sub["interior_error[-]"], "-o", color=colour,
+                markersize=4.5, label=f"{short[case]}: RMS over r <= 0.8 a")
+        ax.plot(sub["a_over_h[-]"], sub["centre_error[-]"], "--D", color=colour,
+                markersize=4.5, markerfacecolor="none", markeredgewidth=1.1,
+                label=f"{short[case]}: at the centre")
+        if case == HERTZ_POINT_CASES[1][0] and len(sub) >= 2:
+            _measured_order(ax, sub["a_over_h[-]"], sub["interior_error[-]"], sub["h[m]"])
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    _ratio_ticks(ax, mesh["a_over_h[-]"])
+    ax.set_xlim(right=right)
+    ax.set_xlabel("contact radius / element size, a / h [-]")
+    ax.set_ylabel("pressure error / p0 [-]")
+    flat = mesh[mesh["case"] == HERTZ_POINT_CASES[0][0]].sort_values("a_over_h[-]")
+    if len(flat) >= 2:
+        level = float(flat.iloc[1:][["interior_error[-]", "centre_error[-]"]].to_numpy().max())
+        flat_text = (f"on the rigid flat both stay within {_sci(level)} from {A_OVER_H} = "
+                     f"{float(flat['a_over_h[-]'].iloc[1]):.2g} on")
+    else:
+        flat_text = "one mesh on the rigid flat"
+    st.title(ax, "Error in the interior and at the centre",
+             f"{flat_text}; the mortar pair's interior error falls fast, its master's facets "
+             "shrinking", wrap=48)
+    st.legend(ax, loc="upper right", fontsize=7.0)
+
+    st.annotate_note(
+        fig,
+        "Hex8 quarter models (symmetry at x = 0 and z = 0), steel (E = 200 GPa, nu = 0.3), "
+        "R = 50 a, each body 15 a wide and deep, graded outward from a uniform zone 1.5 a "
+        "wide; a and p0 from the computed load P, a = (3 P R / (4 E*))^(1/3), p0 = 3 P / (2 "
+        "pi a^2), E* = E / (1 - nu^2) on the rigid flat and half that for the mortar pair. The "
+        "interior and RMS errors weight each node by its D_j. On the rigid flat "
+        "the refinement stops lowering the centre and interior errors from a / h = 6 on, as "
+        "in plane strain, where the finite bodies and the curvature set the floor (a 3-D "
+        "series separating the two has not been run).",
     )
     return st.save_figure(fig, path)

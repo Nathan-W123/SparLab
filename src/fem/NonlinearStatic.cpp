@@ -993,28 +993,29 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
   result.reactions = Vector::Zero(n);
   for (Index d : fixed) result.reactions(d) = final_ev.residual(d);
 
-  // Contact at the final state (its slip committed). A rigid obstacle is a
-  // support: the forces it exerts - the residual at the free DOFs of its
-  // slave nodes - join the reactions in the force balance below.
+  // Contact at the final state (its slip committed). At a prescribed
+  // component of a node in contact the residual holds the contact force as
+  // well as the support's reaction: the reactions are the residual less the
+  // contact forces. A rigid obstacle is a support: the forces it exerts join
+  // the reactions in the force balance below; a master surface's are
+  // internal and cancel.
   Vector obstacle = Vector::Zero(n);
   if (contact) {
     result.contact_nodes =
         contact->node_results(u, lambda, final_ev.residual, contact_status, u, lambda);
     result.contact_pairs = contact->pair_results(result.contact_nodes);
-    for (const ContactProblem::Node& c : contact->nodes()) {
-      if (!options_.contact.pairs[c.pair].rigid) continue;
-      for (int comp : c.free) {
-        const Index d = c.node * dim + comp;
-        obstacle(d) = final_ev.residual(d);
-      }
-    }
+    Vector contact_forces;
+    contact->nodal_forces(result.contact_nodes, contact_forces, obstacle);
+    for (Index d : fixed) result.reactions(d) -= contact_forces(d);
     for (const std::string& note : contact->exclusions()) {
       result.warnings.push_back(note);
       log::warn("load case '", spec.name, "': ", note);
     }
   }
 
-  // Force and moment balance of the deformed body.
+  // Force and moment balance: of the deformed body with finite kinematics,
+  // of the reference one with small strain, whose equilibrium is written
+  // there (moments about the deformed positions would miss by order u / L).
   EquilibriumCheck& eq = result.equilibrium;
   Scalar force_scale = 0.0;
   Scalar moment_scale = 0.0;
@@ -1024,7 +1025,7 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
     Vector3 fa = Vector3::Zero();
     Vector3 fr = Vector3::Zero();
     for (int k = 0; k < dim; ++k) {
-      xd(k) += u(node * dim + k);
+      if (!small) xd(k) += u(node * dim + k);
       fa(k) = final_ev.external(node * dim + k);
       fr(k) = result.reactions(node * dim + k) + obstacle(node * dim + k);
     }

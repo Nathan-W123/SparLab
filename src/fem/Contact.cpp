@@ -1105,6 +1105,30 @@ std::vector<ContactPairResult> ContactProblem::pair_results(
   return out;
 }
 
+void ContactProblem::nodal_forces(const std::vector<ContactNodeResult>& nodes, Vector& total,
+                                  Vector& rigid) const {
+  if (nodes.size() != nodes_.size()) {
+    throw ModelError("the contact forces need this contact problem's node results (" +
+                     std::to_string(nodes_.size()) + " nodes, given " +
+                     std::to_string(nodes.size()) + ")");
+  }
+  const int dim = model_.dim();
+  total = Vector::Zero(model_.dofs().num_dofs());
+  rigid = Vector::Zero(total.size());
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const ContactNodeResult& r = nodes[i];
+    if (r.status == ContactStatus::Open) continue;
+    const Node& n = nodes_[i];
+    const Vector3 force = r.weight * (r.pressure * r.normal + r.traction);
+    const bool obstacle = options_.pairs[n.pair].rigid;
+    for (int k = 0; k < dim; ++k) {
+      total(n.node * dim + k) += force(k);
+      if (obstacle) rigid(n.node * dim + k) += force(k);
+      for (const auto& [l, m] : n.masters) total(l * dim + k) -= (m / n.weight) * force(k);
+    }
+  }
+}
+
 void ContactProblem::commit(const Vector& u, Scalar lambda,
                             const std::vector<ContactStatus>& status, const Vector& u_start,
                             Scalar lambda_start) {

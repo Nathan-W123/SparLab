@@ -929,3 +929,108 @@ TEST_CASE("a body its contact alone would hold must touch its support at the sta
   REQUIRE_FALSE(r.completed);
   REQUIRE(r.termination.find("must touch its support at the start") != std::string::npos);
 }
+
+TEST_CASE("the reactions are the supports' alone where contact meets a held component",
+          "[contact][friction]") {
+  // A punch drives the upper of two blocks (non-matching meshes) down onto
+  // and along the lower one, whose plane x = 0 is held against sliding - and
+  // in 3-D both blocks' plane z = 0: the friction of the slave nodes near
+  // those planes reaches master nodes on them through M_jl, at held
+  // components, as does the pressure of slave nodes on them. The reactions
+  // are what the supports exert, so each block balances its own under the
+  // contact force on it - F on the slave block, -F on the master one - and
+  // the model's forces and moments (about the reference positions: small
+  // strain) balance to round-off; counting the contact forces at held
+  // components as reactions would not.
+  const IsotropicMaterial m = default_material();
+  const Scalar lx = 0.4;
+  const Scalar lz = 0.3;
+  const Scalar h1 = 0.2;
+  const Scalar h2 = 0.15;
+  const Scalar delta = 1.0e-4;
+  for (const ElementType type : {ElementType::Quad4, ElementType::Hex8}) {
+    INFO(to_string(type));
+    const Mesh lower = block(type, 4, 3, 3, lx, h1, lz, 0.0, 11u);
+    const Mesh upper = block(type, 5, 2, 4, lx, h2, lz, h1, 17u);
+    Mesh mesh = merge(lower, upper);
+    const int dim = mesh.dim();
+    const Scalar thickness = dim == 2 ? 0.01 : 1.0;
+    FemModel model(std::move(mesh), m, thickness, state_of(lower), IntegrationOptions());
+    const Index split = lower.num_nodes();  // the upper block's nodes follow
+    const auto nodes_where = [&](auto&& keep) {
+      SelectorGroup g;
+      Selector ids;
+      ids.kind = SelectorKind::NodeIds;
+      for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+        if (keep(n, model.mesh().node(n))) ids.ids.push_back(n);
+      }
+      g.members.push_back(ids);
+      return g;
+    };
+    const SelectorGroup punch = box(-kInf, 0.5 * lx, h1 + h2, kInf);
+    model.constraints().push_back(fix(punch, 1, -delta));
+    model.constraints().push_back(fix(punch, 0, 0.1 * delta));
+    model.constraints().push_back(fix(box(-kInf, kInf, -kInf, 0.0), 1));
+    model.constraints().push_back(
+        fix(nodes_where([&](Index n, const Vector3& x) { return n < split && x.x() == 0.0; }),
+            0));
+    if (dim == 3) model.constraints().push_back(fix(box(-kInf, kInf, -kInf, kInf, -kInf, 0.0), 2));
+    LoadCaseSpec lc;
+    lc.name = "press_and_drag";
+    lc.prescribed_displacement_only = true;
+    model.load_case_specs().push_back(lc);
+    model.finalize();
+    Assembler assembler(model);
+    ContactPairSpec pair;
+    pair.name = "interface";
+    pair.rigid = false;
+    pair.friction = 0.3;
+    pair.slave =
+        nodes_where([&](Index n, const Vector3& x) { return n >= split && x.y() == h1; });
+    pair.master =
+        nodes_where([&](Index n, const Vector3& x) { return n < split && x.y() == h1; });
+    NonlinearOptions options = contact_options(pair);
+    options.steps = 2;
+    NonlinearStaticAnalysis analysis(model, assembler, options);
+    const NonlinearResult r = analysis.solve(0);
+    REQUIRE(r.completed);
+    const ContactPairResult& pr = r.contact_pairs.at(0);
+    REQUIRE(pr.active > 0);
+    REQUIRE(pr.sticking + pr.slipping == pr.active);
+    const Vector3 f = pr.force;  // on the slave (upper) block
+    REQUIRE(f.y() > 0.0);
+
+    // The contact forces: internal (they sum to zero), and the test's point
+    // - they act at held components of the lower block.
+    ContactProblem problem(model, options.contact);
+    Vector total;
+    Vector rigid;
+    problem.nodal_forces(r.contact_nodes, total, rigid);
+    REQUIRE(rigid.norm() == 0.0);
+    Vector3 sum = Vector3::Zero();
+    Scalar held = 0.0;
+    const DofManager& dofs = model.dofs();
+    for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+      for (int k = 0; k < dim; ++k) {
+        const Index d = n * dim + k;
+        sum(k) += total(d);
+        if (n < split && dofs.is_constrained(d)) held = std::max(held, std::abs(total(d)));
+      }
+    }
+    REQUIRE(sum.norm() <= 1.0e-12 * f.norm());
+    REQUIRE(held > 1.0e-3 * f.norm());
+
+    // Each block's supports hold the contact force on it.
+    Vector3 lower_reaction = Vector3::Zero();
+    Vector3 upper_reaction = Vector3::Zero();
+    for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+      for (int k = 0; k < dim; ++k) {
+        (n < split ? lower_reaction : upper_reaction)(k) += r.reactions(n * dim + k);
+      }
+    }
+    REQUIRE((lower_reaction - f).norm() <= 1.0e-9 * f.norm());
+    REQUIRE((upper_reaction + f).norm() <= 1.0e-9 * f.norm());
+    REQUIRE(r.equilibrium.relative_force_error <= 1.0e-10);
+    REQUIRE(r.equilibrium.relative_moment_error <= 1.0e-10);
+  }
+}

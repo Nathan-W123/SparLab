@@ -155,7 +155,9 @@ beam or shell elements.
   along x.
 * Reactions are reported as the force the *supports apply to the structure*, so
   applied load plus reaction sums to zero. Every static result records that sum
-  and its relative error.
+  and its relative error. With contact they are the supports' alone (a contact
+  force at a held component of a node is not part of them), and the balance
+  counts a rigid obstacle's contact forces as reactions too.
 * Positive moment is counter-clockwise about `+z`, i.e. `M = x F_y - y F_x`,
   taken about the origin. On a solid mesh the moment is the full vector
   `M = x cross F` about the origin, reported component by component.
@@ -192,6 +194,17 @@ beam or shell elements.
   at low frequency. A velocity amplitude is `i omega U`, an acceleration
   `-omega^2 U`; "the largest displacement over a cycle" is the semi-major
   axis of the ellipse a node traces.
+* Contact: the pressure is positive in compression and acts on the slave body
+  along `n` - into it: the obstacle's normal at the node, or minus the slave
+  surface's outward normal (the `n` columns of `contact_<lc>.csv`). The gap is
+  positive when open and negative for a penetration; in contact it is zero to
+  round-off. The tangential traction `t` is the friction the slave body
+  feels, against its slip in slip; the slip is the slave's relative to the
+  master surface (or to the moving obstacle), accumulated over the converged
+  steps. A pair's force is the resultant contact force on the slave body; the
+  master body or the obstacle feels its opposite. A rigid obstacle's normal
+  (`normal` of a plane) points out of the obstacle towards the body, and its
+  `motion` is its translation at `lambda = 1`.
 * A build direction `+y` means the part grows along `+y` from a plate at the
   low-`y` end of the domain; `-y` from a plate at the high end. Layer 0 is
   the layer on the plate.
@@ -305,6 +318,10 @@ Every tolerance is configurable and every run records the value it used in
 | harmonic solve backward error | `1e-10` | `\|\|A U - f\|\| / \|\| \|A\|\|U\| + \|f\| \|\|` of the complex solve at every frequency; above it the frequency is too close to an undamped natural frequency and the run stops |
 | harmonic amplification | `1e6` | a response this many times the static one is flagged as round-off near a natural frequency |
 | non-linear transient energy balance | `1e-2` | energy created (or, without plasticity, lost) beyond this share of the energies involved draws a warning (trapezoidal rule only) |
+| contact convergence | `nonlinear.residual_tolerance` | a contact step has converged when every node's status is that of the previous iteration and the condensed residual (equilibrium, the gaps of the nodes in contact, the slip conditions) is within the tolerance of the force scale, which includes the contact forces - or at its round-off floor |
+| contact, a touching node | `1e-9` | a slave node whose gap is within this multiple of its face size of zero touches: in the first iteration of an analysis it starts in contact |
+| contact, master coverage | `0.99` to `1.01` | the share of a slave node's weight `D_j` the master surface must cover for the node to take part; outside it the node lies at the master's edge (or the master overlaps itself) and is left out with a warning |
+| `contact.complementarity` | `1` | scales `c = E / h` of the active-set test; it does not change the converged solution |
 
 The decks that use the multigrid solver (`bracket_3d_projected`,
 `bracket_3d_large`, `engine_mount_3d`) set `iterative_tolerance` to `1e-10`.

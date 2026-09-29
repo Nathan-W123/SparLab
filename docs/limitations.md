@@ -46,10 +46,10 @@ method through limit points. What it does not do:
   pattern, and fully integrated Q4 and Hex8 lock without the mean
   dilatation that is their default - a locked collapse load comes out high,
   which is unconservative;
-* no contact; the static path is quasi-static, and a snap-through that the
-  arc-length method follows is a sequence of equilibria, not the dynamic jump
-  a real structure would make - the non-linear transient (below) integrates
-  that jump, with its own limits;
+* the static path is quasi-static, and a snap-through that the arc-length
+  method follows is a sequence of equilibria, not the dynamic jump a real
+  structure would make - the non-linear transient (below) integrates that
+  jump, with its own limits; contact has limits of its own (below);
 * at a bifurcation of a perfect structure there is no branch switching: load
   control stops there, and the arc-length method stays on the fundamental
   path. A post-buckling analysis needs an imperfection built into the mesh
@@ -116,6 +116,57 @@ What they do not do:
 * a natural frequency of the modal analysis is the undamped eigenvalue of the
   constrained model; the dynamic analyses are not coupled to the topology
   optimisation (`sparlab_topopt` refuses their blocks).
+
+**Contact: small sliding, in statics.** The non-linear static analysis
+models unilateral contact between a surface and a rigid plane, cylinder or
+sphere, or between two surfaces of the model (dual mortar), frictionless or
+with Coulomb friction (`docs/formulation.md`, section 7f). What it does not
+do:
+
+* the contact geometry is that of the reference configuration and the gap is
+  linear in the displacement: small displacements and small sliding. Surfaces
+  that slide by more than a fraction of an element, rotate, or come into
+  contact after a large motion are outside the model, and contact refuses
+  `finite` kinematics and the arc-length method (load control only, so a
+  contact problem with a limit point cannot be followed past it);
+* linear elements only (Q4, Tri3, Hex8, Tet4): the dual basis does not exist
+  on a Tet10 face, so a quadratic mesh has no contact;
+* statics only: the linear static, modal, buckling, transient and
+  frequency-response analyses ignore contact - no impact, no contact in a
+  transient, no modes or buckling of a model held by its contact - and the
+  topology optimisation does not take it;
+* a body that only its contact holds must touch its support at the start. A
+  gap under a load that nothing else resists is not closed (the stiffness is
+  singular until it closes); a gap is closed by prescribed displacements or
+  a moving obstacle, and a body held only by frictionless contact that can
+  slide stops with the reason. There is no stabilisation (no artificial
+  damping or soft springs) to carry such a body into contact;
+* friction is isotropic Coulomb with one constant coefficient: no static and
+  kinetic coefficients, no dependence on velocity, pressure or temperature,
+  no anisotropy. The slip is measured over each load step, so with friction
+  the load steps are part of the answer, as they are physically - a
+  frictional path is not reversible;
+* the constraint is enforced on the slave side. A curved master surface
+  meshed coarser than its slave adds the error of its chords, first order in
+  its element size (a centre-pressure error of `3.6e-2` at `a / h = 10.6`
+  for a master twice as coarse, in the Hertz study) - mesh the master as finely
+  as the slave or finer. Slave nodes at the edge of the master surface, which
+  it covers only in part, are left out of contact with a warning, as are
+  nodes with nothing opposite them within the search distance;
+* rigid obstacles are analytic planes, cylinders and spheres that translate
+  with the load factor: no rotation, no other shapes and no meshed rigid
+  bodies. Against a curved obstacle the gap is taken at the nodes (exact on
+  a plane), and its force acts along its own normal: the Hertz study shows
+  the `a / R` difference to the half-space theory this makes;
+* no automatic contact search: every pair is declared, a node takes one
+  constraint (it cannot be on two slave surfaces, or on a slave and a master
+  one), and there is no self-contact detection. No tied (bonded) interfaces,
+  adhesion, cohesive zones, wear, thermal contact conductance or contact
+  between shells or beams (which do not exist here);
+* two mortar surfaces that start a gap apart transmit friction across it, as
+  the small-sliding model on the reference geometry does in every code: the
+  couple of that force pair (the gap times the tangential force) remains in
+  the moment balance.
 
 **Body loads: self-weight, force densities and steady rotation.** Gravity,
 uniform body force densities on element regions and the centrifugal load of a
@@ -215,8 +266,10 @@ The bolt holes, bearing collars and pin lug in the aerospace bracket are
   look like plausible hardware, not derived from a bearing-stress allowable;
 * no fretting, no bushing, no through-thickness load transfer.
 
-A real joint analysis needs 3-D contact and a fastener model. Nothing here
-should be read as a joint substantiation.
+A real joint analysis needs contact at the bolt and bearing faces - which
+the non-linear analysis now provides for small sliding, and the benchmark
+decks do not use - and a fastener model. Nothing here should be read as a
+joint substantiation.
 
 ## Loads
 
@@ -420,6 +473,16 @@ one solve from scratch, Jacobi-preconditioned CG is as fast as multigrid up
 to 28 413 unknowns on the Hex8 block, and a modal analysis with CG repeats
 the whole solve for every vector of the subspace. The two modal analyses
 of the 356 475-DOF bracket take a fifth of its run.
+
+**The non-linear analysis factorises its tangents.** Without contact every
+Newton step factorises the tangent directly - LDL^T, whose inertia the
+stability checks need, or LU for a non-symmetric one - whatever
+`solver.linear` says, so a large solid non-linear model meets the direct
+solver's limit above. With contact the symmetric steps follow
+`solver.linear` - multigrid CG above the `auto` limits, which carries the
+frictionless 3-D Hertz study to 62 544 unknowns, with LDL^T taking over
+where it does not converge - but a step in which a node slips under friction
+is factorised by sparse LU.
 
 **Element loops are serial; only the iterative solvers are threaded.**
 Assembly, sensitivities, filtering and stress recovery loop over elements

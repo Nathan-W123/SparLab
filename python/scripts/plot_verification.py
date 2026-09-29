@@ -122,6 +122,12 @@ def main(argv=None) -> int:
         ("non-linear oscillators",
          lambda: studies.plot_nonlinear_oscillator(
              args.verification, figure("verify_nonlinear_oscillator.png"))),
+        ("Hertz line contact",
+         lambda: studies.plot_hertz_line(
+             args.verification, figure("verify_hertz_line.png"))),
+        ("Hertz point contact",
+         lambda: studies.plot_hertz_point(
+             args.verification, figure("verify_hertz_point.png"))),
     ]
 
     for label, task in tasks:

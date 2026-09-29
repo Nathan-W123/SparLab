@@ -4,6 +4,7 @@
 
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Timer.hpp"
+#include "sparlab/fem/Contact.hpp"
 #include "sparlab/io/CalculixWriter.hpp"
 #include "sparlab/io/Config.hpp"
 #include "sparlab/io/CsvWriter.hpp"
@@ -17,8 +18,11 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -997,6 +1001,148 @@ TEST_CASE("CalculiX transient decks carry *DYNAMIC, the amplitude and the dampin
   REQUIRE_THROWS_AS(write_calculix_decks(model, "results/_test_tmp/dyn2", "unit", nullptr,
                                          &refused),
                     IoError);
+}
+
+TEST_CASE("CalculiX contact decks carry LINMORTAR pairs, the penalty, friction and a slab",
+          "[io][writers][cross-validation][contact]") {
+  ensure_directory("results/_test_tmp");
+  SolidCantileverCase solid;
+  FemModel model = make_cantilever_3d(solid, 4, 1, 1);
+  const auto box = [](Scalar xmin, Scalar xmax, Scalar ymin, Scalar ymax) {
+    SelectorGroup g;
+    Selector b;
+    b.kind = SelectorKind::Box;
+    b.xmin = xmin;
+    b.xmax = xmax;
+    b.ymin = ymin;
+    b.ymax = ymax;
+    g.members.push_back(b);
+    return g;
+  };
+  constexpr Scalar inf = std::numeric_limits<Scalar>::infinity();
+  // A rigid plane 10 um under the bottom face, rising 20 um, and a
+  // frictional mortar pair of the root half of the top face against the tip
+  // face: what is tested is the deck, not the pairing's physics.
+  ContactOptions contact;
+  contact.enabled = true;
+  ContactPairSpec floor;
+  floor.name = "floor";
+  floor.slave = box(-inf, inf, -inf, 0.0);
+  floor.obstacle.kind = RigidObstacle::Kind::Plane;
+  floor.obstacle.point = Vector3(0.0, -1.0e-5, 0.0);
+  floor.obstacle.direction = Vector3::UnitY();
+  floor.obstacle.motion = Vector3(0.0, 2.0e-5, 0.0);
+  ContactPairSpec pair;
+  pair.name = "pair";
+  pair.rigid = false;
+  pair.slave = box(-inf, 0.5 * solid.length, solid.height, inf);
+  pair.master = box(solid.length, inf, -inf, inf);
+  pair.friction = 0.3;
+  contact.pairs = {floor, pair};
+  REQUIRE(calculix_contact_obstacle(model, contact).empty());
+
+  CalculixNonlinearExport nonlinear;
+  nonlinear.load_cases = {0};
+  nonlinear.increments = 1;
+  nonlinear.nlgeom = false;
+  nonlinear.contact = &contact;
+  const std::vector<std::string> decks =
+      write_calculix_decks(model, "results/_test_tmp/contact", "unit", &nonlinear);
+  const auto deck = std::find_if(decks.begin(), decks.end(), [](const std::string& d) {
+    return d.find("_small_strain.inp") != std::string::npos;
+  });
+  REQUIRE(deck != decks.end());
+  const std::string text = read_text(*deck);
+
+  // The slave surfaces - four bottom faces, two top faces - and the master
+  // ones: the slab's face towards the body (element 5, after the model's
+  // four) and the tip face.
+  REQUIRE(card_lines(text, "*SURFACE, NAME=CS1, TYPE=ELEMENT").size() == 4);
+  REQUIRE(card_lines(text, "*SURFACE, NAME=CS2, TYPE=ELEMENT").size() == 2);
+  REQUIRE(card_lines(text, "*SURFACE, NAME=CM1, TYPE=ELEMENT") ==
+          std::vector<std::string>{"5, S1"});
+  const std::vector<std::string> tip = card_lines(text, "*SURFACE, NAME=CM2, TYPE=ELEMENT");
+  REQUIRE(tip.size() == 1);
+  REQUIRE(tip[0].rfind("4, S", 0) == 0);
+  REQUIRE(text.find("*CONTACT PAIR, INTERACTION=CI1, TYPE=LINMORTAR\nCS1, CM1\n") !=
+          std::string::npos);
+  REQUIRE(text.find("*CONTACT PAIR, INTERACTION=CI2, TYPE=LINMORTAR\nCS2, CM2\n") !=
+          std::string::npos);
+  // HARD contact as the penalty 1e7 E / h (h the slave faces' size), and the
+  // friction of the mortar pair only.
+  const Scalar penalty = 1.0e7 * solid.youngs / std::sqrt(0.25 * solid.length * solid.width);
+  const std::vector<std::string> hard =
+      card_lines(text, "*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=HARD");
+  REQUIRE(hard.size() == 2);
+  for (const std::string& line : hard) {
+    REQUIRE(std::stod(line.substr(0, line.find(','))) == Approx(penalty).epsilon(1e-6));
+    REQUIRE(line.substr(line.find(',')) == ", 1.E6, 0.");
+  }
+  const std::vector<std::string> friction = card_lines(text, "*FRICTION");
+  REQUIRE(friction.size() == 1);
+  REQUIRE(std::stod(friction[0].substr(0, friction[0].find(','))) == Approx(0.3));
+  REQUIRE(std::stod(friction[0].substr(friction[0].find(',') + 1)) ==
+          Approx(penalty).epsilon(1e-6));
+
+  // The slab: nodes 21-28 after the model's 20, its face 1-2-3-4 on the
+  // plane and facing the body (5-8 below it), covering the bottom face.
+  REQUIRE(card_lines(text, "*ELEMENT, TYPE=C3D8, ELSET=RIGID1") ==
+          std::vector<std::string>{"5, 21, 22, 23, 24, 25, 26, 27, 28"});
+  const std::vector<std::string> slab = card_lines(text, "*NODE");
+  REQUIRE(slab.size() == 8);
+  std::vector<Vector3> x;
+  for (std::size_t a = 0; a < slab.size(); ++a) {
+    std::istringstream row(slab[a]);
+    std::string cell;
+    std::vector<double> v;
+    while (std::getline(row, cell, ',')) v.push_back(std::stod(cell));
+    REQUIRE(v.size() == 4);
+    REQUIRE(static_cast<Index>(v[0]) == 21 + static_cast<Index>(a));
+    x.emplace_back(v[1], v[2], v[3]);
+  }
+  for (std::size_t a = 0; a < 4; ++a) {
+    REQUIRE(x[a].y() == Approx(-1.0e-5).margin(1e-12));
+    REQUIRE(x[a + 4].y() < x[a].y());
+  }
+  REQUIRE((x[1] - x[0]).cross(x[3] - x[0]).dot(Vector3::UnitY()) < 0.0);
+  for (int k : {0, 2}) {
+    Scalar lo = inf;
+    Scalar hi = -inf;
+    for (std::size_t a = 0; a < 4; ++a) {
+      lo = std::min(lo, x[a](k));
+      hi = std::max(hi, x[a](k));
+    }
+    REQUIRE(lo < 0.0);
+    REQUIRE(hi > (k == 0 ? solid.length : solid.width));
+  }
+  // It moves with the obstacle: all 24 of its DOFs prescribed, y by 20 um.
+  int moved = 0;
+  for (const std::string& line : card_lines(text, "*BOUNDARY")) {
+    std::istringstream row(line);
+    std::string cell;
+    std::vector<double> v;
+    while (std::getline(row, cell, ',')) v.push_back(std::stod(cell));
+    if (v.size() != 4 || v[0] < 21.0) continue;
+    ++moved;
+    REQUIRE(v[3] == Approx(v[1] == 2.0 ? 2.0e-5 : 0.0).margin(1e-15));
+  }
+  REQUIRE(moved == 24);
+  for (const std::string& path : decks) std::remove(path.c_str());
+
+  // What CalculiX cannot take as the same problem is refused, with the
+  // reason: a curved rigid obstacle, and a plane model.
+  ContactOptions curved = contact;
+  curved.pairs[0].obstacle.kind = RigidObstacle::Kind::Cylinder;
+  curved.pairs[0].obstacle.radius = 1.0;
+  REQUIRE(calculix_contact_obstacle(model, curved).find("analytical rigid surfaces") !=
+          std::string::npos);
+  CalculixNonlinearExport refused = nonlinear;
+  refused.contact = &curved;
+  REQUIRE_THROWS_AS(write_calculix_decks(model, "results/_test_tmp/contact2", "unit", &refused),
+                    IoError);
+  CantileverCase plate;
+  const FemModel plane = make_cantilever(plate, 4, 2);
+  REQUIRE(calculix_contact_obstacle(plane, contact).find("plane elements") != std::string::npos);
 }
 
 TEST_CASE("path_join handles separators", "[io]") {

@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 271 cases, 18 509 assertions
+make test              # the Catch2 suite: 284 cases, 20 538 assertions
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -61,6 +61,9 @@ All numbers in this document come from `results/verification/summary.json`,
 | Harmonic response of a rod vs the exact discrete and continuum solutions (Q4, Hex8) | verification | largest relative difference to the exact discrete solution (continuum order `>= 1.9` on the finest pair also required) | `2.94e-10` | `1e-9` | PASS |
 | Transient of a rod under a ramped end force vs the exact continuum solution (Q4, Hex8) | verification | smallest observed convergence order, `h` and `dt` halved together | `2.004` | `>= 1.9` | PASS |
 | Non-linear oscillators, finite-strain elastic and elastoplastic, vs exact motion (Q4, Hex8) | verification | largest relative difference to the scalar HHT-alpha recursion (order `>= 1.8` to the exact motion also required) | `1.74e-11` | `1e-9` | PASS |
+| Contact patch tests: a rigid plane with and without a gap, a mortar pair with non-matching meshes, full slip (distorted Q4, Tri3, Hex8, Tet4) | verification | largest relative error of the nodal pressures, the displacement fields and the full-slip traction and force ratio, 14 cases | `6.19e-13` | `1e-9` | PASS |
+| Hertz line contact: a cylinder on a rigid flat, a rigid cylinder into a block, an elastic pair (mortar, non-matching); plane-strain Q4 | verification + validation | largest centre or interior pressure error vs Hertz, finest meshes (`a / h = 42`; `<= 1e-3` on the flat and the pair, the edge within an element, the model floors and the coarse master's error falling also required) | `1.95e-03` | `3e-3` | PASS |
+| Hertz point contact: a sphere on a rigid flat and on a block (mortar, non-matching); Hex8 | verification + validation | RMS pressure error vs Hertz on the rigid flat, `a / h = 9.3` (falling with every refinement, the edge within an element, the centre `<= 3e-3`, the pair's interior order `>= 2` also required) | `2.57e-02` | `0.05` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -81,6 +84,10 @@ Supporting measurements from the same runs:
 | Transient: trapezoidal energy balance; its fall from double to 80-bit arithmetic; numerical dissipation over the work | `<= 2.98e-11`; `1.71e3` times for `2.05e3` in eps; `0.36 %` to `0.40 %` (`alpha = -0.1`, harmonic load), `36 %` to `49 %` (`alpha = -0.3`, sudden load) |
 | Rod: continuum error on 160 elements; transient order and error on 160 elements | harmonic `<= 3.61e-03` (third resonance), order `2.00`; transient order `2.01` / `2.00`, error `2.59e-05` / `8.00e-05` (consistent / lumped) |
 | Oscillators: order to the exact motion; plastic dissipation at 320 steps a period | `1.98` to `2.00` (elastic), `1.94` to `2.04` (plastic); `174.794 J` against the exact `174.802 J` |
+| Hertz line, finest meshes: centre / interior error | cylinder on the rigid flat `3.76e-04` / `3.00e-04`; rigid cylinder `1.94e-03` / `1.54e-03`; mortar pair `3.83e-04` / `4.57e-04` |
+| Hertz line, the model's floor (centre error at `a / h = 42`) | bodies `25 a` -> `100 a` across: `4.36e-04 -> 9.82e-05`; rigid cylinder `R = 50 a -> 200 a`: `2.51e-03 -> 5.84e-04`, order `1.05` in `a / R` |
+| Hertz line, curved master twice as coarse as the slave | centre error `3.57e-02 -> 1.06e-02` from `a / h = 10.6` to `42`, order `1.00` on the finest pair |
+| Hertz point: RMS error over the surface (order); the mortar pair's interior error | rigid flat `0.085 -> 0.047 -> 0.026` (`1.35`); mortar `0.092 -> 0.055` (`1.27`); interior `1.46e-02 -> 4.74e-03` (`2.78`) |
 
 And from the cross-validation against two independent codes (section 14):
 
@@ -124,6 +131,8 @@ And from the cross-validation against two independent codes (section 14):
 | The same two | CalculiX `*DYNAMIC`, `C3D8`, with `*PLASTIC` / under `NLGEOM` | `6.21e-07` / `1.46e-06` | `1e-5` | PASS |
 | Harmonic response: a Q4 cantilever plate through four resonances / a Hex8 block on a shaken base (lumped mass) | scikit-fem, a direct complex solve | `1.02e-10` / `8.15e-13` | `1e-7` | PASS |
 | The Q4 plate's static solution (plane stress, `nu = 0.3`) | CalculiX, `CPS4` | `1.52e-03` | - | INFO |
+| Contact: a Hex8 block held by its contact alone on another (non-matching meshes) / a punch pressing and dragging a Hex8 block along another with friction / a rigid plane rising under a Tet4 block / a rigid cylinder pressed and dragged along a plane-strain Q4 block with friction / a rigid sphere indenting a Hex8 block with friction / a cylinder cap on a Q4 block (a curved master) | scikit-fem, an independent contact solve (pressures, tractions and every node's status compared too) | `4.94e-13` / `1.20e-13` / `5.00e-13` / `3.33e-13` / `4.79e-13` / `8.58e-13` | `1e-9` | PASS |
+| The three solid decks with a mortar pair or a flat obstacle | CalculiX LINMORTAR, `C3D8` / `C3D8` / `C3D4` | `3.93e-06` / `4.02e-06` / `2.47e-06` | `1e-5` | PASS |
 
 And the linear buckling load factors of the same three columns, four modes
 each (section 20):
@@ -801,8 +810,8 @@ iteration; the growth limit is judged over the multi-level meshes only
 `results/verification/multigrid_scaling.csv` and the larger comparison in
 `docs/benchmarks.md`: for one solve at these sizes Jacobi CG is about as fast
 as multigrid, because its cheap iterations cost about what the multigrid
-setup does; the direct solver is about 40 times slower at 47 775 Hex8 DOFs
-(31.4 s against 0.72 s in the run behind `docs/results`; wall-clock times
+setup does; the direct solver is about 50 times slower at 47 775 Hex8 DOFs
+(36.2 s against 0.745 s in the run behind `docs/results`; wall-clock times
 vary from run to run on a shared machine, the iteration counts do not).
 
 ## 18. The Heaviside projection
@@ -1792,6 +1801,190 @@ What the cross-validation found, and how it was resolved:
   fully integrated Hex8 is stiffer (the tip load had to rise from 13.5 kN to
   20 kN to yield the root), which is the element, not the dynamics.
 
+## 26. Contact
+
+**Unit tests** (`tests/test_contact.cpp`, 11 cases; in `tests/test_io.cpp`
+the deck block and the CalculiX export):
+
+* *homogeneous states, exact on distorted meshes* (Q4, Tri3, Hex8, Tet4): a
+  block pressed onto a rigid plane, touching it and 2.5e-5 m above it, takes
+  the uniaxial pressure `E (delta - g0) / H` at every node to `1e-9` and the
+  linear displacement field to `1e-10 delta`, and the plane's force is the
+  pressure over the bottom area;
+* *the contact patch test*: two blocks with non-matching meshes pressed
+  together transmit the uniform pressure exactly, as the dual mortar method
+  must (node-to-segment contact fails this test);
+* *friction*: a block dragged along a rigid plane slips at every node with a
+  traction `mu p` against the slip, and in 2-D the tangential force is `mu`
+  times the normal one to `1e-9`; dragged less far, its nodes stick with
+  `|t| <= mu p` and no slip; stacked blocks of one material, which expand
+  sideways alike, stick everywhere with no traction, and an upper block
+  dragged over a lower one slips everywhere;
+* *plasticity*: a block pressed past yield onto a rigid plane follows the
+  exact uniaxial curve (J2, linear hardening) at every step;
+* *the symmetric step* equals the LU step of the condensed system at an
+  arbitrary state of a mortar pair (part penetrating, part open),
+  frictionless and sticking, on Q4, Hex8 and Tet4, and closes every active
+  gap;
+* *a body held by its contact alone*: a block pressed by a pressure onto a
+  rigid plane, and the upper of two stacked blocks (non-matching meshes, with
+  and without friction), nothing else holding them, on Q4, Tri3, Hex8 and
+  Tet4: the pressure at every node and the linear displacement field to
+  round-off; the same block with a gap under it stops, saying that it must
+  touch its support;
+* *the reactions*: a punch drives the upper of two blocks down and along the
+  lower, whose plane x = 0 is held (and in 3-D both planes z = 0), on Q4 and
+  Hex8, so that contact forces act at held components; each block's
+  supports hold the contact force on it to `1e-9` and the model's forces and
+  moments balance to `1e-10`. Counting the contact forces at held components
+  as reactions - as the analysis did until this test - leaves the lower Q4
+  block's supports 927 N from a 49 kN contact force;
+* *obstacles and refusals*: the signed distances and normals of planes,
+  cylinders (from outside and as a cavity) and spheres; refused with the
+  reason: finite kinematics, the arc-length method, a slave surface that
+  selects nothing, a node on both surfaces, negative friction, a Tet10 face;
+  a block held only by frictionless contact stops, naming the rigid-body
+  motion left free;
+* *the deck and the export*: the `contact` block parses, and is refused
+  without the non-linear analysis, with finite kinematics or the arc-length
+  method, and without pairs; the CalculiX deck carries a `LINMORTAR` pair
+  per contact pair with the penalty `1e7 E / h` and, where there is
+  friction, `*FRICTION`, and a flat rigid obstacle as one C3D8 element whose
+  face 1-2-3-4 lies on the plane facing the body, covers the slave faces and
+  moves with the obstacle; a curved obstacle and a plane model are refused
+  with the reason.
+
+**Contact patch tests** (`contact-patch`, 14 cases, 0.07 s). Blocks
+0.4 x 0.2 (x 0.3) m, `E = 70 GPa`, `nu = 0.3`, their interior nodes
+distorted, the top pushed down by 1e-4 m: on a frictionless rigid plane,
+touching it and 2.5e-5 m above it, and as the upper of two blocks with
+non-matching meshes, every block is in uniaxial stress. The largest error
+over the 14 cases - nodal pressure against the exact one, nodal
+displacement against the exact field over the push, and the full-slip
+traction against `mu p` - is `6.19e-13` (tolerance `1e-9`): `1.2e-13` to
+`6.2e-13` for the mortar pairs, at most `7.0e-15` on the rigid plane without
+slip and `4.1e-14` in full slip. Pushed sideways by 5e-4 m as
+well with `mu = 0.3`, every node slips with `|t| = mu p`, and the Q4 block's
+tangential force is `0.3` times its normal force exactly; the Hex8 block's
+is `0.2997`, part of its traction turned into z by its sideways expansion.
+
+**Hertz line contact** (`hertz-line`, plane strain, Q4, 12.5 s). Steel
+(`E = 200 GPa`, `nu = 0.3`); half models graded outward from a uniform zone
+1.5 a wide; `a_target = 1 mm`, the approach chosen by one coarse solve so
+that the computed half-width `a` falls near it; `a` and `p0` from the
+computed load P per unit length, `a = sqrt(4 P R / (pi E*))`,
+`p0 = 2 P / (pi a)`. Three problems, `R = 50 a`, bodies `25 a` across,
+`a / h` from 5.6 to 42: an elastic cylinder on a rigid flat, a rigid
+cylinder pressed into an elastic block, and an elastic cylinder on an
+elastic block of the same material (a mortar pair, the cylinder the master,
+meshed 4/3 as finely as the block's top). On every mesh the edge of the
+discrete contact lies within an element of Hertz's. The errors, over `p0`,
+on the finest meshes (`a / h = 42`):
+
+| Problem | Centre | Interior (RMS within 0.8 a of the centre) | Whole surface (RMS) |
+|---------|-------:|-------------------------------:|--------------------:|
+| Elastic cylinder on a rigid flat | `3.76e-04` | `3.00e-04` | `3.05e-03` |
+| Rigid cylinder into an elastic block | `1.94e-03` | `1.54e-03` | `2.03e-03` |
+| Elastic cylinder on an elastic block (mortar) | `3.83e-04` | `4.57e-04` | `2.82e-03` |
+
+Refinement takes each to a floor that is not a discretisation error but the
+finite model's own difference to Hertz's half-space theory, which two
+further series (at `a / h = 42`) identify: growing the bodies from `25 a` to
+`100 a` across (the elastic cylinder, `R = 200 a`) takes the centre error
+from `4.36e-04` to `9.82e-05`; and the rigid cylinder's contact force acts
+along its own normal, tilted by `x / R` from the vertical Hertz assumes, so
+its floor falls with `a / R` - from `2.51e-03` at `R = 50 a` to `5.84e-04`
+at `R = 200 a` (bodies `100 a` across), order `1.05`. A curved master meshed
+twice as coarse as its slave shows the error of its chords, which the slave
+nodes between its vertices see: the centre error falls from `3.57e-02` to
+`1.06e-02` between `a / h = 10.6` and `42`, first order (`1.00` on the finest
+pair); meshed as finely as the slave or finer, the pair stays at the floor.
+The tolerance is `1e-3` for the flat and the mortar pair and `3e-3` for the
+rigid cylinder, whose floor at `R = 50 a` is its `a / R` term.
+`docs/figures/verify_hertz_line.png` shows the pressure against Hertz's
+ellipse, the convergence to the floor, the two floor series and the coarse
+master.
+
+**Hertz point contact** (`hertz-point`, Hex8, 69.5 s). Quarter models
+(symmetry at x = 0 and z = 0), each body `15 a` wide and deep, `R = 50 a`;
+`a = (3 P R / (4 E*))^(1/3)`, `p0 = 3 P / (2 pi a^2)`. An elastic sphere on
+a rigid flat, `a / h = 4, 6, 9.3`, and on an elastic block (a mortar pair,
+non-matching, the sphere meshed 4/3 as finely as the block's top),
+`a / h = 4` and `6`; the largest model has 62 544 unknowns, which the `auto`
+solver takes to multigrid CG. The RMS error over the surface is set by the
+square-root edge of the pressure, which a mesh not aligned with the circle
+meets at every angle: on the rigid flat `0.085, 0.047, 0.026` (order
+`1.35`, tolerance `0.05` at `a / h = 9.3`), on the mortar pair `0.092` and
+`0.055` (order `1.27`). The interior tells the rest: on the rigid flat the
+centre and interior errors stay within `1.7e-3` from `a / h = 6` on (centre
+`1.44e-3` at `9.3`, tolerance `3e-3`) - the refinement no longer lowers
+them, as in plane strain where the finite bodies and the curvature set the
+floor (a 3-D series separating the two has not been run); on the mortar
+pair the interior error falls from `1.46e-02` to `4.74e-03`, order `2.78`,
+the facets of the curved master shrinking, and the centre error is
+`3.92e-03` at `a / h = 6` (tolerance `1e-2`). The edge lies within an
+element of Hertz's on every mesh. `docs/figures/verify_hertz_point.png`
+shows the nodal pressures against Hertz and the convergence.
+
+**The decks and the cross-validation** (section 14's two codes, six decks,
+`configs/verification/contact_*.json`, their meshes written by
+`python/scripts/make_contact_meshes.py`). scikit-fem solves the same
+discrete contact problem again with its own algorithm (the Alart-Curnier
+functions uncondensed, `docs/formulation.md` section 9); CalculiX runs the
+exported LINMORTAR decks of the solid models with a mortar pair or a flat
+obstacle:
+
+| Deck | In contact | Reference | Max relative difference: displacement / pressure / traction | Tolerance |
+|------|-----------|-----------|------------------------------------------------:|----------:|
+| A Hex8 block held by its contact alone on another, non-matching meshes, a pressure on half its top | 48 of 66 slave nodes | scikit-fem / CalculiX `C3D8 LINMORTAR` | `4.94e-13` / `7.30e-13` / - ; `3.93e-06` | `1e-9` ; `1e-5` |
+| A punch pressing and dragging a Hex8 block along another, 20 um below it, `mu = 0.3` | 30 stick, 36 slip | scikit-fem / CalculiX `C3D8 LINMORTAR` | `1.20e-13` / `8.12e-13` / `2.10e-13` ; `4.02e-06` | `1e-9` ; `1e-5` |
+| A rigid plane rising under a Tet4 block | 45 of 45 | scikit-fem / CalculiX `C3D4 LINMORTAR` | `5.00e-13` / `5.6e-15` / - ; `2.47e-06` | `1e-9` ; `1e-5` |
+| A rigid cylinder pressed and dragged along a plane-strain Q4 block, `mu = 0.3`, eight steps | 14 stick, 1 slip, 34 open | scikit-fem | `3.33e-13` / `5.5e-15` / `5.3e-15` | `1e-9` |
+| A rigid sphere indenting a Hex8 block, `mu = 0.2`, two steps | 4 stick, 7 slip | scikit-fem | `4.79e-13` / `1.7e-15` / `2.9e-16` | `1e-9` |
+| A cylinder cap (a curved master surface) pressed onto a Q4 block | 8 of 21 | scikit-fem | `8.58e-13` / `1.4e-14` / - | `1e-9` |
+
+The displacement differences are over the largest displacement, the
+pressure and traction differences over the largest pressure; every node's
+status is the same in both codes. The CalculiX differences are at its
+`.frd` output's rounding (`5e-6`). Every deck balances its forces to
+round-off (`<= 7.9e-16`) and, but for the friction punch, its moments too;
+the punch's moment residual, `4.4e-6`, is the couple of the friction forces
+across the 20 um between its surfaces, to `1e-11` (`docs/formulation.md`,
+section 7f).
+
+What the cross-validation found, and how it was resolved:
+
+* **scikit-fem's quadrature.** Its default rules (3 x 3 on a Q4, 4 x 4 x 4
+  on a Hex8) agree with SparLab's 2 x 2 (x 2) on parallelogram cells only -
+  the curved cap's differed by `1.8e-9` - so the contact comparison, like
+  the non-linear ones, assembles its stiffness with SparLab's rule.
+* **CalculiX's `HARD` contact is a linear penalty.** With its default slope
+  the two answers were `2.6e-2` apart, and the difference fell as `1/K`;
+  the export writes `1e7 E / h`, leaving CalculiX's answer at its output
+  rounding. `*FRICTION`'s stick slope had no effect on the answer.
+* **CalculiX updates the contact geometry every increment.** Two increments
+  moved its answer `2.3e-4` off the small-sliding problem, one left it at
+  `3.9e-6`: the decks it checks run in one increment.
+* **Normals.** CalculiX presses a mortar pair along the slave's normal and a
+  rigid obstacle along the obstacle's own: a plane tilted by 0.002 rad left
+  `3.2e-3` between the codes, and the deck's plane is level.
+* **What CalculiX cannot take.** Its mortar contact refuses expanded plane
+  elements (their nodes are tied by equations), and it has no analytical
+  rigid surfaces: the plane-strain decks and the sphere are scikit-fem's
+  alone.
+* **Friction on a rigid plane.** CalculiX's answer departed from SparLab's
+  by `1.7e-5`, and by `1.5e-4` with 22 nodes sticking, while scikit-fem
+  agreed with SparLab's to `5e-13`: the rigid-plane deck is frictionless,
+  and friction is judged against CalculiX on the mortar pair and against
+  scikit-fem on all four frictional decks.
+* **The equilibrium report.** The force balance of the friction punch read
+  `6.1e-3` until the reactions stopped counting the contact forces that act
+  at held components (the unit test above); the moment balance of the
+  contact decks (up to `9.1e-4`) was taken about the deformed positions of
+  an equilibrium written in the reference ones. The solutions were not
+  affected - every deck's displacements and contact results are identical,
+  byte for byte, before and after.
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
@@ -1803,10 +1996,11 @@ Stated plainly, since the absence matters as much as the presence:
   - linear buckling load factors on three, the final large-deflection
   states of four, eight comparisons in all, the final elastoplastic states
   of ten, fifteen comparisons, the transient histories of five, nine
-  comparisons (two of the decks non-linear), and the harmonic responses of
-  two. Stresses, natural frequencies, the non-linear static load paths (only
-  the final states are compared) and the optimised designs are not compared
-  with another code, and CalculiX's
+  comparisons (two of the decks non-linear), the harmonic responses of
+  two, and the final contact states of six, nine comparisons. Stresses,
+  natural frequencies, the non-linear static load paths (only the final
+  states are compared) and the optimised designs are not compared with
+  another code, and CalculiX's
   `*BUCKLE` factors for
   `C3D8` and `C3D10` differ from SparLab's by up to `8.3e-5` for a reason
   not identified (section 14);
@@ -1857,6 +2051,15 @@ Stated plainly, since the absence matters as much as the presence:
   `*DYNAMIC` response contradicts CalculiX's own `*FREQUENCY`); there is no
   experiment, no damping identified from a test, and no validation of
   Rayleigh or structural damping as a model of a real structure's damping;
+* contact is small-sliding, on linear elements, in statics: verified against
+  exact homogeneous states (the patch tests), Hertz's theory in plane strain
+  and in 3-D down to the finite model's own floor, and cross-validated
+  against scikit-fem on six decks and CalculiX on three. There is no exact
+  solution with friction beyond full slip and stick (no Cattaneo-Mindlin
+  partial slip), none for a conforming contact or a cavity, the 3-D floor is
+  not separated into its sources, CalculiX checks friction on a mortar pair
+  only (on a rigid plane with friction it departs from SparLab's answer,
+  section 26), and there is no experiment;
 * the overhang filter and check are verified for the 3- and 5-element
   stencils of structured square and cubic grids; the robust formulation for
   uniform erosion and dilation only. Neither is a process simulation;

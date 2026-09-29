@@ -1222,6 +1222,168 @@ ellipse `a cos(omega t) - b sin(omega t)` it traces (`U = a + i b`):
 `sqrt((|a|^2 + |b|^2)/2 + sqrt(((|a|^2 - |b|^2)/2)^2 + (a . b)^2))`, the
 modulus `sqrt(|a|^2 + |b|^2)` only when its components move in phase.
 
+## 7f. Contact
+
+The `contact` block adds unilateral contact to the non-linear static analysis
+(`src/fem/Contact.cpp`): a slave surface against a rigid obstacle given
+analytically or against a master surface of the model, frictionless or with
+Coulomb friction.
+
+**Assumptions.** Small displacements and small sliding: the contact
+geometry - the normals, the pairing of the two surfaces and the weights
+below - is that of the reference configuration, and the gap is linear in the
+displacement: the classical Signorini problem. It is consistent with the
+`small_strain` kinematics of section 7c (linear elasticity, or the J2
+plasticity of section 7d), which contact requires; the analysis refuses
+`finite` kinematics and the arc-length method with contact. Linear elements
+only (Q4, Tri3, Hex8, Tet4): the six-node face of a Tet10 has zero corner
+weights `int N dA`, for which the dual basis below does not exist.
+
+**Pairs.** A slave surface is every boundary face whose nodes all lie in a
+region, as a pressure selects its faces. Its partner is a rigid obstacle - a
+plane (a point of it and its normal towards the body), a cylinder (a point
+of its axis, the axis and the radius; in 2-D a circle in the model plane) or
+a sphere (centre and radius), the body outside it or inside it (a cavity),
+moved rigidly by `lambda d` along the load path - or a master surface of the
+model, selected the same way: another body, or another part of the same one.
+
+**The discrete contact conditions.** At slave node j, with its weight
+`D_j = int N_j dA` (times the thickness in 2-D) and the direction `nu_j` of
+the pressure on the slave body - the obstacle's normal at the node, or minus
+the averaged outward normal of the slave faces around it - the weighted gap is
+
+```
+  g_j = g0_j + D_j nu_j . u_j - sum_l M_jl nu_j . u_l      against a master surface,
+  g_j = D_j (g(X_j) + nu_j . (u_j - lambda d))              against a rigid obstacle,
+```
+
+with `g(X)` the obstacle's signed distance (positive on the body's side) and
+`g0_j` the weighted initial gap. With the pressure `p_j` and the friction
+force `lambda_t` that the slave node exerts along its slip (the tangential
+traction on the slave body is `t_j = -lambda_t`),
+
+```
+  g_j >= 0 ,   p_j >= 0 ,   p_j g_j = 0 ,
+  |lambda_t| <= mu p_j :  where |lambda_t| < mu p_j the node sticks (no slip over the step),
+                          where it slips, lambda_t = mu p_j s_j / |s_j| ,
+```
+
+`s_j` the node's weighted slip relative to the master over the step. The
+pressure is interpolated with the dual basis `psi_j` of each slave face
+(Wohlmuth, 2000), biorthogonal to its shape functions,
+`int psi_j N_k dA = delta_jk D_j` - per face `psi = A N` with
+`A = D_e M_e^-1`, `D_e` the diagonal of the face's weights and
+`M_e = int N N^T dA` - so the contact force on slave node j is
+`D_j (p_j nu_j + t_j)` alone and on master node l
+`-sum_j M_jl (p_j nu_j + t_j)`, with the mortar integrals
+`M_jl = int psi_j N_l^m dA` over the slave surface. The master shape functions
+are taken where the slave's continuous normal field meets the master
+surface: segment by segment in 2-D (Popp, Gee and Wall, 2009), and in 3-D on
+an auxiliary plane per slave face, the projected master face clipped against
+the slave one (Sutherland-Hodgman, counting a point within round-off of an
+edge's line as inside) and the intersection integrated by triangles (Puso and
+Laursen, 2004). Each row is scaled to `sum_l M_jl = D_j`, so a rigid
+translation of both surfaces leaves every gap unchanged (on a flat face the
+factor is 1 to round-off). A slave face is paired with the master faces
+whose bounding boxes come within `search_factor` times its size of its own.
+A slave node that none of them covers, that the master surface covers by
+less than 0.99 or more than 1.01 of `D_j` (its edge, or a master surface that
+overlaps itself in projection), or whose displacement along its normal is
+prescribed, is left out of contact with a warning. Against a curved rigid
+obstacle the nodal gap is a consistent nodal rule; on a flat one it is exact.
+
+Why dual mortar: it passes the contact patch test - two bodies with
+non-matching meshes pressed together transmit a uniform pressure exactly -
+which node-to-segment contact fails; mortar methods converge at the optimal
+rate for linear elements; and the dual basis ties each slave node's
+constraint to its own displacement and its master nodes', so the pressure
+can be condensed node by node.
+
+**Condensation and the semismooth Newton method.** Slave node j's
+equilibrium gives its pressure from the residual `R = f_int - f_ext` of its
+free components F,
+
+```
+  p_j = nu_F . R_F / (D_j |nu_F|^2) ,
+```
+
+so Newton's method works on the displacements alone. The status comes from
+the complementarity functions (a primal-dual active set method, Hueber and
+Wohlmuth, 2005): node j is in contact where `p_j - c g_j / D_j > 0`, with
+`c = complementarity E / h` (E the largest Young's modulus next to the node,
+h its face size), a weight between gap and pressure that matters only while
+the set changes - the converged solution does not depend on it. In contact
+the node's normal equation becomes `g_j = 0`; open, `p_j = 0`. With friction
+the trial force `v = lambda_t + c s_j / D_j` decides: the node sticks where
+`|v| <= mu max(p_j - c g_j / D_j, 0)`, its slip over the step then zero, and
+slips otherwise with `lambda_t = mu p_j v / |v|`, linearised consistently.
+The master DOFs take the condensed contact forces of their slave nodes. An
+iteration has converged when every node's status is that of the previous
+iteration and the condensed residual - equilibrium, the gaps of the nodes in
+contact, the slip conditions - is below `residual_tolerance` times the scale
+of the forces (the loads, the reactions and the contact forces) or at its
+round-off floor (section 7c); a step that does not settle within
+`max_iterations` is halved. For linear elasticity without friction the
+active set is exact after finitely many iterations and the solution then
+exact to round-off. A frictionless node in contact is reported as slipping,
+which it is free to do.
+
+**The Newton step.** While no node slips under friction, the step is that of
+a symmetric problem. With the dual basis each slave node's constraints - its
+gap, and when it sticks its slip - involve only its own and its master nodes'
+displacements, so they fix some of its own free increments (the normal one,
+or all of them when it sticks) in terms of the others:
+`du_f = T w + c` over the independent increments `w`, and the step solves
+
+```
+  T^T K_ff T w = -T^T (R_f + K_ff c) ,
+```
+
+symmetric positive definite for a restrained model, by the deck's
+`solver.linear` choice as a static solve would be: `auto` factorises by
+LDL^T up to its size limits and uses multigrid CG above them. Where
+multigrid CG does not converge on it - strongly stretched elements, or slave
+nodes tying their normal increments to many master nodes, can defeat the
+aggregation - that step and every later one of the analysis are factorised
+by LDL^T, which the log and the result's `linear_solver` say. A slipping
+node's friction law makes the step non-symmetric: the condensed system is
+then solved by sparse LU. The two give the same step (a test compares them
+to round-off). The inertia of the tangent is not reported with contact: with
+a body held by its contact the stiffness alone says nothing of the
+stability.
+
+**A body held by its contact.** In the first iteration of an analysis a node
+that touches its counterpart - its gap within 1e-9 of its face size of zero -
+and is not pulled away from it starts in contact (with friction it starts
+sticking unless its tangential force already exceeds the Coulomb bound), so a
+body that only its contact holds, such as a block resting on a support under
+a load, is held from the start. It must
+touch its support: across a gap its stiffness is singular until the gap
+closes, and a static analysis cannot close a gap under a load nothing else
+resists. Such a run stops with that reason; a gap is closed by prescribed
+displacements - a punch, or a moving obstacle.
+
+**Reactions and the balance.** The reactions are what the supports exert: at
+a prescribed component of a node in contact the residual holds the contact
+force there as well as the support's reaction, and the contact force (the
+formulas above) is subtracted from it. A rigid obstacle is a support too:
+the force and moment balance counts its contact forces as reactions. A
+master surface's are internal, and `sum_l M_jl = D_j` makes them sum to
+zero. With small strain the moments are taken about the reference positions,
+where the equilibrium is written (about the deformed ones they would miss by
+order `u / L`). A mortar pair whose surfaces start a gap apart keeps a
+couple: each slave node's friction force and its reaction on the master
+nodes act the gap apart. Measured on a punch dragging one block along
+another 20 um below it, the moment residual is 4.4e-6 of the moment scale and
+equals that couple - the gap times the resultant tangential force - to 1e-11.
+
+**The other analyses.** Only the non-linear static analysis models contact.
+The linear static, modal, buckling, transient and frequency-response results
+of a run with contact are those of the model without it, which the log and
+the summary say; where the model without contact is not restrained (a body
+held only by its contact), `sparlab_solve` warns and skips those analyses
+instead of failing.
+
 ## 8. Topology optimisation
 
 See `docs/topology_optimization.md` for the SIMP interpolation, the filters, the
@@ -1269,3 +1431,29 @@ expanded plane elements are not used in dynamics: their step response
 contradicts CalculiX's own `*FREQUENCY` result for the same mesh (measured).
 A harmonic response is compared with a direct complex solve in scikit-fem;
 CalculiX's `*STEADY STATE DYNAMICS` is a modal superposition.
+
+A run with contact is compared through its non-linear analysis. scikit-fem
+solves the same discrete contact problem again (`python/scripts/contact_xval.py`):
+its own stiffness (with SparLab's quadrature - its default rules differ on
+distorted cells), the weights, dual bases, mortar integrals and gaps computed
+from the pairs' faces (which `mesh.json` exports), SparLab's search and
+exclusion rules, and a different algorithm - a semismooth Newton method on
+the uncondensed Alart-Curnier complementarity functions, the pressures and
+friction forces explicit unknowns - through SparLab's load factors; the
+displacements, pressures, tractions and every node's status are compared.
+CalculiX solves the exported `calculix_<lc>_small_strain.inp` with its linear
+dual mortar contact (`*CONTACT PAIR, TYPE=LINMORTAR`, `*FRICTION`), a flat
+rigid obstacle as one C3D8 element that moves with it, in one increment.
+Its contact differs from SparLab's in ways that were measured: it reduces
+`HARD` contact to a linear penalty (its default slope left 2.6e-2 between the
+two answers, the difference falling as 1/K; the export writes `1e7 E / h`);
+it takes the contact geometry at the start of every increment (two increments
+moved the answer 2.3e-4 off the small-sliding problem); a mortar pair
+presses along the slave's normal but a rigid obstacle along its own (a plane
+tilted by 0.002 rad left 3.2e-3); its mortar contact refuses expanded plane
+elements (their nodes are tied by the expansion's equations), and it has no
+analytical rigid surfaces, so the plane and curved-obstacle decks are
+scikit-fem's alone; and on a rigid plane with friction its answer departed
+from SparLab's by 1.7e-5 (1.5e-4 with 22 nodes sticking) where scikit-fem
+agreed with SparLab's to 5e-13, so that deck is frictionless, and friction
+is judged against CalculiX on the mortar pair.

@@ -212,7 +212,8 @@ struct NonlinearResult {
   std::vector<std::string> monitor_units;  ///< "m" or "N"
   std::vector<NonlinearStep> steps;
   Vector displacement;        ///< final, full length [m]
-  Vector reactions;           ///< f_int - f_ext at the prescribed DOFs [N]
+  /// f_int - f_ext at the prescribed DOFs, less any contact force there [N]
+  Vector reactions;
   Scalar load_factor = 0.0;   ///< final lambda
   bool completed = false;     ///< reached the target load factor
   std::string termination;    ///< why the run stopped
@@ -250,7 +251,11 @@ struct NonlinearResult {
   int total_points = 0;
   /// Conditions the run met that bear on its validity (also logged).
   std::vector<std::string> warnings;
-  EquilibriumCheck equilibrium;  ///< final force balance, deformed loads
+  /// Final force and moment balance: the applied loads (deformed, with
+  /// finite kinematics) against the reactions, moments about the deformed
+  /// positions with finite kinematics and the reference ones with small
+  /// strain, where each is in equilibrium.
+  EquilibriumCheck equilibrium;
   /// The final tangent was symmetric and factorised by LDL^T (which reports
   /// its inertia); false when a follower pressure left it non-symmetric and
   /// LU factorised it.
@@ -264,8 +269,11 @@ struct NonlinearResult {
   Vector element_von_mises;
   Vector element_cauchy_zz;
   /// Contact at the final state: every slave node that takes part, and the
-  /// pair totals; empty without contact. The contact forces of rigid
-  /// obstacles count as reactions in `equilibrium`.
+  /// pair totals; empty without contact. `reactions` are the supports'
+  /// alone - the contact force at a prescribed component of a node in
+  /// contact is not part of them - and `equilibrium` counts the forces of
+  /// rigid obstacles, which are supports too, as reactions; a master
+  /// surface's contact forces are internal.
   std::vector<ContactNodeResult> contact_nodes;
   std::vector<ContactPairResult> contact_pairs;
 };

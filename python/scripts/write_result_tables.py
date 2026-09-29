@@ -1335,6 +1335,136 @@ def dynamic_decks_table(results_dir: str) -> Optional[str]:
                             "largest displacement", "energy balance"], rows)
 
 
+#: Rows of docs/results/contact.csv, collected by the contact tables.
+_CONTACT_FRAMES: List[Dict] = []
+
+#: The contact decks (configs/verification/contact_*.json).
+CONTACT_CASES = ["contact_blocks_hex_nonlinear", "contact_blocks_friction_hex_nonlinear",
+                 "contact_plane_tet4_nonlinear", "contact_cylinder_friction_q4_nonlinear",
+                 "contact_sphere_hex_nonlinear", "contact_cap_q4_nonlinear"]
+
+
+def contact_patch_table(results_dir: str) -> Optional[str]:
+    """The contact patch tests: exact homogeneous states on distorted meshes."""
+    table = _verification_csv(results_dir, "contact_patch.csv")
+    if table is None:
+        return None
+    rows = []
+    for _, r in table.iterrows():
+        element = ELEMENT_LABELS.get(r["element"], r["element"])
+        slip = "slip" in str(r["case"])
+        plane = element in ("Q4", "Tri3")
+        record = {"study": "contact-patch", "element": element, "case": r["case"],
+                  "nodes_in_contact": int(r["nodes_in_contact"]),
+                  "largest_gap[m]": r["max_gap[m]"]}
+        if slip:
+            # The study's columns hold, for full slip, the error of |t| against
+            # mu p and (in 2-D) of the tangential force against mu N.
+            record["traction_error[-]"] = r["pressure_error[-]"]
+            record["tangential_over_normal[-]"] = r["tangential_over_normal[-]"]
+            if plane:
+                record["force_ratio_error[-]"] = r["displacement_error[-]"]
+        else:
+            record["pressure_error[-]"] = r["pressure_error[-]"]
+            record["displacement_error[-]"] = r["displacement_error[-]"]
+        _CONTACT_FRAMES.append(record)
+        rows.append([element, str(r["case"]), str(record["nodes_in_contact"]),
+                     "-" if slip else _fmt(r["pressure_error[-]"], 2),
+                     "-" if slip else _fmt(r["displacement_error[-]"], 2),
+                     _fmt(r["max_gap[m]"], 2),
+                     _fmt(r["pressure_error[-]"], 2) if slip else "-",
+                     (_fmt(r["tangential_over_normal[-]"], 6)
+                      + (f" (error {_fmt(r['displacement_error[-]'], 2)})" if plane else ""))
+                     if slip else "-"])
+    return _markdown_table(["element", "case", "nodes in contact", "pressure error",
+                            "displacement error", "largest gap [m]", "slip traction error",
+                            "F_t / F_n"], rows)
+
+
+def hertz_table(results_dir: str) -> Optional[str]:
+    """Every run of the Hertz line and point contact studies."""
+    rows = []
+    for contact, name in (("line", "hertz_line.csv"), ("point", "hertz_point.csv")):
+        table = _verification_csv(results_dir, name)
+        if table is None:
+            continue
+        for _, r in table.iterrows():
+            load = r["load[N/m]"] if "load[N/m]" in r else r["load[N]"]
+            _CONTACT_FRAMES.append({
+                "study": f"hertz-{contact}", "case": r["case"], "series": r["series"],
+                "R_over_a_target": r["R_over_a_target[-]"],
+                "L_over_a_target": r["L_over_a_target[-]"], "h[m]": r["h[m]"],
+                "a_over_h": r["a_over_h[-]"], "load": load, "a[m]": r["a[m]"],
+                "p0[Pa]": r["p0[Pa]"], "nodes_in_contact": int(r["nodes_in_contact"]),
+                "edge_within_an_element": r["edge_within_an_element"],
+                "centre_error[-]": r["centre_error[-]"],
+                "interior_error[-]": r["interior_error[-]"], "rms_error[-]": r["rms_error[-]"],
+                "newton_iterations": int(r["newton_iterations"])})
+            rows.append([contact, str(r["case"]), str(r["series"]),
+                         _fmt(r["R_over_a_target[-]"], 3), _fmt(r["L_over_a_target[-]"], 3),
+                         _fmt(r["a_over_h[-]"], 3), str(int(r["nodes_in_contact"])),
+                         str(r["edge_within_an_element"]), _fmt(r["centre_error[-]"], 2),
+                         _fmt(r["interior_error[-]"], 2), _fmt(r["rms_error[-]"], 2),
+                         str(int(r["newton_iterations"]))])
+    if not rows:
+        return None
+    return _markdown_table(["contact", "case", "series", "R / a", "L / a", "a / h",
+                            "nodes in contact", "edge within an element", "centre error",
+                            "interior error", "RMS error", "Newton iterations"], rows)
+
+
+def contact_decks_table(results_dir: str) -> Optional[str]:
+    """The contact decks solved by sparlab_solve."""
+    rows = []
+    for case in CONTACT_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        block = doc.get("nonlinear") or {}
+        specs = {p["name"]: p for p in (block.get("contact") or {}).get("pairs", [])}
+        element = ELEMENT_LABELS.get(doc.get("mesh", {}).get("element_type", ""), "")
+        for lc in block.get("load_cases", []):
+            balance = lc["equilibrium"]
+            for pair in lc.get("contact", []):
+                spec = specs.get(pair["name"], {})
+                obstacle = (spec.get("obstacle") or {}).get("type")
+                kind = f"rigid {obstacle}" if obstacle else "mortar"
+                friction = float(spec.get("friction", 0.0))
+                states = (f" ({pair.get('sticking', 0)} stick, {pair.get('slipping', 0)} slip)"
+                          if friction > 0.0 else "")
+                force = pair["force_on_slave_N"]
+                _CONTACT_FRAMES.append({
+                    "study": "deck", "element": element, "case": f"{case}/{lc['load_case']}",
+                    "pair": pair["name"], "kind": kind, "friction": friction,
+                    "steps": lc["steps"], "iterations": lc["iterations"], "cuts": lc["cuts"],
+                    "slave_nodes": pair["slave_nodes"],
+                    "excluded_nodes": pair["excluded_nodes"],
+                    "nodes_in_contact": pair["nodes_in_contact"],
+                    "sticking": pair.get("sticking"), "slipping": pair.get("slipping"),
+                    "contact_area": pair["contact_area"],
+                    "force_on_slave_N": " ".join(f"{f:.9g}" for f in force),
+                    "max_pressure_Pa": pair["max_pressure_Pa"],
+                    "min_gap_m": pair["min_gap_m"], "max_slip_m": pair["max_slip_m"],
+                    "relative_force_error": balance["relative_force_error"],
+                    "relative_moment_error": balance["relative_moment_error"],
+                    "linear_solver": lc.get("linear_solver")})
+                rows.append([case, element, f"{pair['name']} ({kind}, mu = {friction:g})",
+                             f"{lc['steps']} / {lc['iterations']} / {lc['cuts']}",
+                             f"{pair['nodes_in_contact']} of {pair['slave_nodes']}{states}",
+                             _fmt(pair["max_pressure_Pa"], 4),
+                             ", ".join(_fmt(f, 4) for f in force),
+                             _fmt(pair["max_slip_m"], 3),
+                             f"{_fmt(balance['relative_force_error'], 2)} / "
+                             f"{_fmt(balance['relative_moment_error'], 2)}",
+                             str(lc.get("linear_solver", ""))])
+    if not rows:
+        return None
+    return _markdown_table(["deck", "element", "pair", "steps / iterations / cuts",
+                            "nodes in contact", "max pressure [Pa]", "force on slave [N]",
+                            "max slip [m]", "force / moment balance", "linear solver"], rows)
+
+
 _OUTPUT = "docs/results"
 
 
@@ -1494,6 +1624,44 @@ def main(argv=None) -> int:
          "relative |E_0 + W - T - U - D| over the run: round-off for the trapezoidal rule "
          "on a linear model, the numerical dissipation of alpha < 0, and with plasticity "
          "the plastic dissipation."),
+        ("Contact patch tests", contact_patch_table(args.results),
+         "From `results/verification/contact_patch.csv` (`sparlab_verify --study "
+         "contact-patch`): blocks 0.4 x 0.2 (x 0.3) m, E = 70 GPa, nu = 0.3, their interior "
+         "nodes distorted, the top pushed down by 1e-4 m. On a frictionless rigid plane, "
+         "touching it or 2.5e-5 m above it, and as the upper of two blocks with non-matching "
+         "meshes (the dual mortar patch test), every block is in uniaxial stress: the "
+         "pressure error is the largest nodal error over the exact pressure, the "
+         "displacement error the largest nodal error over the 1e-4 m of the push, and the "
+         "largest gap that of the nodes in contact. Full slip: the top also pushed sideways "
+         "by 5e-4 m with mu = 0.3; every node must slip with a traction of magnitude mu p - "
+         "the slip traction error is the largest nodal error of that magnitude over p - and "
+         "in 2-D the tangential force is then mu times the normal one (its relative error in "
+         "brackets; in 3-D the sideways expansion turns part of the traction into z, so "
+         "F_t / F_n falls just short of mu)."),
+        ("Hertz contact", hertz_table(args.results),
+         "From `results/verification/hertz_line.csv` and `hertz_point.csv` (`sparlab_verify "
+         "--study hertz-line` and `hertz-point`): steel (E = 200 GPa, nu = 0.3), a_target = "
+         "1 mm, R and the bodies' size L in units of it; plane-strain Q4 half models (line) "
+         "and Hex8 quarter models (point), graded outward from a uniform zone 1.5 a_target "
+         "wide, the approach chosen by one coarse solve so that a is near a_target. a and p0 "
+         "from the computed load. Errors against Hertz, over p0: at the centre node, the RMS "
+         "over the nodes within 0.8 a (interior) and over the surface, each node weighted by "
+         "its D_j; the edge is resolved when a lies within one element of the interval "
+         "between the last node in contact and the first open one. `mesh` rows refine the "
+         "mesh; `body size` and `curvature` rows (a / h = 42) grow the bodies and the "
+         "cylinder's radius and show the finite model's own difference to Hertz; `master "
+         "twice as coarse` rows mesh the curved master twice as coarse as its slave (the "
+         "`mesh` rows' master is meshed 4/3 as finely as its slave)."),
+        ("Contact decks", contact_decks_table(args.results),
+         "Each `configs/verification/contact_*.json` deck solved by `sparlab_solve` "
+         "(`results/<deck>/summary.json`, block `nonlinear`). `force on slave` is the "
+         "resultant contact force on the slave body, `max slip` the largest accumulated slip "
+         "of a slave node, `force / moment balance` the relative residual of the applied "
+         "loads against the reactions (a rigid obstacle counting as a support). A mortar "
+         "pair's contact forces are internal and cancel; with a gap between its surfaces, "
+         "each slave node's friction force and its reaction on the master nodes act the gap "
+         "apart, and their couple - the gap times the tangential force - remains in the "
+         "moment balance (contact_blocks_friction_hex_nonlinear: 20 um, 4.4e-6)."),
         ("Cross-validation against independent codes", cross_validation_table(args.results),
          "Generated from `results/cross_validation/summary.json` by "
          "`python/scripts/cross_validate.py`: node-by-node comparison of the "
@@ -1533,7 +1701,16 @@ def main(argv=None) -> int:
          "stiffness), `calculix *PLASTIC` "
          "CalculiX's isotropic-hardening `*PLASTIC` with the same fixed increments "
          "and one step per leg (without NLGEOM; under NLGEOM its finite-strain "
-         "plasticity is a different model, INFO)."),
+         "plasticity is a different model, INFO). The contact decks compare their final "
+         "states: `scikit-fem contact` solves the same discrete contact problem "
+         "independently (scikit-fem's stiffness with SparLab's quadrature, the dual-mortar "
+         "weights, integrals and gaps computed from the pairs' faces, a semismooth Newton "
+         "method on the uncondensed Alart-Curnier functions) and is judged on the "
+         "displacements, the pressures and the tangential tractions (their differences over "
+         "the largest pressure are `pressure_max_rel_diff` and `traction_max_rel_diff` in "
+         "cross_validation.csv) and on every node's status; `calculix contact` is CalculiX's "
+         "linear dual mortar contact (LINMORTAR) on the solid decks with a mortar pair or a "
+         "flat rigid obstacle."),
         ("Benchmark results", benchmark_table(args.results),
          "Generated from each `results/<case>/summary.json`. `stiffness gain` is "
          "the compliance of an equal-mass uniform plate divided by the optimised "
@@ -1627,6 +1804,9 @@ def main(argv=None) -> int:
                                              index=False)
     if _DYNAMIC_FRAMES:
         pd.DataFrame(_DYNAMIC_FRAMES).to_csv(os.path.join(args.output, "dynamics.csv"),
+                                             index=False)
+    if _CONTACT_FRAMES:
+        pd.DataFrame(_CONTACT_FRAMES).to_csv(os.path.join(args.output, "contact.csv"),
                                              index=False)
 
     lines = [

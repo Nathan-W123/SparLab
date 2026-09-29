@@ -26,6 +26,7 @@ reports its line and column.
 | `modal` | object | `{}` | free-vibration analysis |
 | `buckling` | object | `{}` | linear buckling check of the load cases |
 | `nonlinear` | object | `{}` | non-linear statics: large deflection, finite strain, plasticity |
+| `contact` | object | `{}` | unilateral contact in the non-linear statics, with Coulomb friction |
 | `transient` | object | `{}` | transient dynamics (HHT-alpha), linear or non-linear |
 | `frequency_response` | object | `{}` | steady harmonic response |
 | `topology` | object | `{}` | topology optimisation |
@@ -609,8 +610,9 @@ The `nonlinear` block of `summary.json` holds, per load case, whether it
 reached lambda = 1, the steps, iterations and halvings, the largest
 displacement beside the linear analysis's, the strain energy, the largest
 Green-Lagrange strain, the smallest volume ratio J, the largest von Mises
-stress, the final monitors, the force and moment balance of the deformed
-body, which factorisation the tangent took, and warnings - for a run that
+stress, the final monitors, the force and moment balance (of the deformed
+body with `finite` kinematics, of the reference one with `small_strain`),
+which factorisation the tangent took, and warnings - for a run that
 stopped, a final state that is not stable, a non-symmetric tangent whose
 stability is therefore not assessed, and a Saint Venant-Kirchhoff state
 whose strains exceed the law's range (Green strain above 0.05, or a volume
@@ -625,6 +627,107 @@ yielded, the largest accumulated plastic strain, the elements that yielded,
 whether mean dilatation was applied, and the step in which a point first
 yielded; the warnings add strains beyond 0.05 (the elastoplastic law assumes
 small strains) and elements that lock under isochoric plastic flow.
+
+## `contact`
+
+```json
+"contact": {
+  "enabled": true,
+  "pairs": [
+    { "name": "floor", "slave": { "group": "bottom" },
+      "obstacle": { "type": "plane", "point": [0, 0, 0], "normal": [0, 1, 0] } },
+    { "name": "punch", "slave": { "box": { "ymin": 0.02 } },
+      "obstacle": { "type": "cylinder", "point": [0.0, 0.52, 0], "radius": 0.5,
+                    "motion": [0, -1e-4, 0] },
+      "friction": 0.3 },
+    { "name": "interface", "slave": { "group": "upper_bottom" },
+      "master": { "group": "lower_top" }, "friction": 0.2 }
+  ]
+}
+```
+
+Unilateral contact, solved by the non-linear static analysis
+(`docs/formulation.md`, section 7f): a slave surface against a rigid obstacle
+given analytically, or against a master surface of the model, frictionless
+or with Coulomb friction. It needs the `nonlinear` block enabled with
+`kinematics: small_strain` - the contact geometry is that of the reference
+configuration, for small displacements and small sliding - and load control;
+the deck is refused otherwise. Elastic and J2-plastic materials both work.
+Linear elements only (Q4, Tri3, Hex8, Tet4).
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | model contact in the non-linear analysis |
+| `pairs` | array | required when enabled | the contact pairs (below) |
+| `complementarity` | number | `1` | scales `c = E / h`, the weight of gap against pressure in the active-set test (E the stiffest material next to a slave node, h its face size); it matters only while the contact status changes - the converged solution does not depend on it |
+| `search_factor` | number | `2` | a master face is paired with a slave face when their bounding boxes come within this many slave face sizes of each other; a larger initial gap needs a larger factor |
+
+Each pair:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | `pair<k>` | names the pair in the outputs; unique |
+| `slave` | region | required | the slave surface: every boundary face whose nodes all lie in the region, as a pressure selects its faces |
+| `obstacle` | object | - | a rigid obstacle (below); exactly one of `obstacle` and `master` |
+| `master` | region | - | the master surface, selected like the slave one: another body, or another part of the same body. A node cannot be slave and master, nor slave of two pairs |
+| `friction` | number | `0` | the Coulomb coefficient mu; 0 is frictionless |
+
+The obstacle:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `type` | string | required | `plane`, `cylinder` or `sphere` |
+| `point` | 3-vector | `[0, 0, 0]` | plane: a point of it; cylinder: a point of its axis (required) |
+| `normal` | 3-vector | required (plane) | the plane's normal, pointing out of the obstacle towards the body |
+| `axis` | 3-vector | `[0, 0, 1]` | cylinder: its axis. In 2-D the cylinder is a circle in the model plane |
+| `center` | 3-vector | required (sphere) | the sphere's centre |
+| `radius` | number | required (cylinder, sphere) | [m] |
+| `inside` | bool | `false` | the body lies inside the cylinder or sphere (a rigid cavity) rather than outside it |
+| `motion` | 3-vector | `[0, 0, 0]` | the obstacle's rigid translation at load factor 1 [m]; along the path it has moved by lambda times this |
+
+A slave node is left out of contact, with a warning in the log and the
+summary, when no master face lies opposite it within the search distance,
+when the master surface covers it only in part (at its edge) or overlaps
+itself over it, or when its displacement along the contact normal is
+prescribed. A body that only its contact holds - a block resting on a
+support under a load - must touch its support at the start: a static
+analysis cannot close a gap under a load nothing else resists, and such a
+run stops with that reason (close a gap by prescribed displacements, or by
+moving the obstacle). A body held only by frictionless contact can slide
+along it, and its run stops the same way.
+
+The Newton steps with no node slipping under friction are symmetric
+problems, solved by `solver.linear` as a static solve is (`auto`: LDL^T up
+to its size limits, multigrid CG above them; `--solver` sets it); where
+multigrid CG does not converge on them, LDL^T takes over for the rest of the
+analysis. Steps in which a node slips are solved by sparse LU. The result's
+`linear_solver` names what ran.
+
+Only the non-linear static analysis models contact: the linear static,
+modal, buckling, transient and frequency-response results of the run are
+those of the model without it (the log and the summary say so). When the
+model without contact leaves a body free to move - held by its contact
+alone - `sparlab_solve` warns and skips those analyses, and solves the
+non-linear one.
+
+The results, per load case, beside the non-linear analysis's own:
+
+| File | Content |
+|------|---------|
+| `nonlinear_<lc>.csv` | per pair, at every converged step, the slave nodes in contact (`<pair>_active`) and the resultant contact force on the slave body (`<pair>_fx`, `_fy`, `_fz`); `negative_pivots` is `-1` (no inertia is reported with contact) |
+| `contact_<lc>.csv` | one row per slave node taking part: node, pair, reference position, the direction of the pressure on the slave body `n`, its weight `D_j` (an area; in 2-D times the thickness), the gap, the pressure, the tangential traction on the slave body `t`, the accumulated slip of the slave relative to the master, and the status (`open`, `stick` or `slip`; a frictionless node in contact is `slip`) |
+| `nonlinear_<lc>.vtk` | adds the point fields `contact_pressure`, `contact_gap`, `contact_traction` and `contact_status` (-1 not a contact node, 0 open, 1 stick, 2 slip) |
+| `nonlinear_reactions_<lc>.csv` | the reactions of the supports alone: at a prescribed component of a node in contact the contact force there is not part of them |
+| `mesh.json` | `contact_surfaces`: each pair's slave and master faces (element and nodes), from which a cross-check computes the contact discretisation itself |
+
+The `nonlinear` block of `summary.json` gains a `contact` block - the
+formulation, the complementarity and search factors, and each pair's kind,
+obstacle and friction - and, per load case, per pair the slave nodes taking
+part and left out, the nodes in contact, sticking and slipping, the contact
+area, the resultant force on the slave body, the largest pressure, the
+smallest gap (negative: a penetration) and the largest slip. Its force and
+moment balance counts a rigid obstacle's contact forces as reactions (the
+obstacle is a support); a master surface's are internal.
 
 ## `transient`
 
@@ -1005,7 +1108,8 @@ duplicate a deck. Each corresponds to one deck field:
 --tag NAME               appended to the case name in summary.json
 ```
 
-`sparlab_solve` takes `--solver`, `--modes` and `--buckling` too, and
+`sparlab_solve` takes `--solver` (which also sets the solver of the
+transient analysis and of the contact steps), `--modes` and `--buckling` too, and
 `--nonlinear`, which enables the non-linear analysis with the deck's
 `nonlinear` settings or their defaults. With `--export-calculix` it
 additionally writes one CalculiX input deck per load case
@@ -1020,6 +1124,13 @@ a dead pressure as the nodal forces of the reference faces), increments of
 at most 1/50 of the load (CalculiX lags a centrifugal load at the deformed
 position within an increment) and convergence controls of 1e-6 on residual
 and correction. A neo-Hookean case is not exported: CalculiX's `NEO HOOKE` is
-a different strain energy.
+a different strain energy. A run with contact goes out as
+`calculix_<case>_small_strain.inp`: the contact pairs as `*CONTACT PAIR,
+TYPE=LINMORTAR` (CalculiX's linear dual mortar contact) with a `HARD`
+interaction whose penalty slope is `1e7 E / h` (CalculiX reduces `HARD` to a
+linear penalty) and `*FRICTION`, a flat rigid obstacle as one C3D8 element
+that moves with it; a plane model (CalculiX's mortar contact refuses its
+expanded plane elements) or a curved obstacle (CalculiX has no analytical
+rigid surfaces) is not exported, and the log says why.
 
 Run any app with `--help` for its full flag list.
