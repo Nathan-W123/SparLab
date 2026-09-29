@@ -76,6 +76,7 @@ figures:
 
 meshes:
 	$(PYTHON) python/scripts/make_meshes.py --output configs/meshes --tet10
+	$(PYTHON) python/scripts/make_contact_meshes.py --output configs/meshes
 
 results:
 	$(PYTHON) python/scripts/write_result_tables.py --results $(RESULTS_DIR) \

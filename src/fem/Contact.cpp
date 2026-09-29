@@ -655,6 +655,7 @@ ContactProblem::ContactProblem(const FemModel& model, const ContactOptions& opti
         if (len > 1.0e-10) c.tangents.push_back(t / len);
       }
       const Scalar h = dim == 2 ? d / thickness : std::sqrt(d);
+      c.size = h;
       c.complementarity = options.complementarity * modulus[node] / h;
       nodes_.push_back(std::move(c));
     }
@@ -741,7 +742,8 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
                                                         const SparseMatrix& tangent,
                                                         const Vector& u_start,
                                                         Scalar lambda_start,
-                                                        bool assemble_matrix) const {
+                                                        bool assemble_matrix,
+                                                        bool touching_start) const {
   const DofManager& dofs = model_.dofs();
   const int dim = model_.dim();
   const std::vector<Index>& free_dofs = dofs.free_dofs();
@@ -775,7 +777,10 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
     const Scalar g = weighted_gap(i, u, lambda);
     const Scalar c = n.complementarity;
     const Scalar trial = p - c * g / n.weight;
-    if (!(trial > 0.0)) continue;  // open: its rows stay the equilibrium p = 0
+    const bool touching =
+        touching_start && p >= 0.0 && std::abs(g / n.weight) <= kTouching * n.size;
+    // Open: its rows stay the equilibrium p = 0.
+    if (!(trial > 0.0) && !touching) continue;
     const Scalar d = n.weight;
     const std::size_t m = n.tangents.size();
     const Scalar nf2 = n.free_normal.squaredNorm();
@@ -789,8 +794,9 @@ ContactProblem::Linearization ContactProblem::linearize(const Vector& u, Scalar 
       slip = weighted_slip(n, u, lambda, u_start, lambda_start);
       v = lam_t + (c / d) * slip;
       // (Components beyond the node's m tangential directions are zero.)
-      const Scalar bound = n.friction * trial;
-      status = (m == 0 || v.norm() < bound) ? ContactStatus::Stick : ContactStatus::Slip;
+      // (A touching node's bound is zero: with no slip it sticks.)
+      const Scalar bound = n.friction * std::max(trial, 0.0);
+      status = (m == 0 || v.norm() <= bound) ? ContactStatus::Stick : ContactStatus::Slip;
     }
     out.status[i] = status;
 

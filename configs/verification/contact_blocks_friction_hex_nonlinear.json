@@ -1,0 +1,52 @@
+{
+  // ---------------------------------------------------------------------------
+  // Cross-validation of mortar contact with Coulomb friction on Hex8 (C3D8)
+  // elements: the blocks of contact_blocks_hex_nonlinear, the upper one
+  // 20 um above the lower one, the half of its top with x <= 0.2 m driven
+  // down by 0.1 mm and sideways by 10 um. Friction coefficient 0.3: part of
+  // the interface sticks, part slips. The lower block's bottom is held
+  // vertically, its plane x = 0 against sliding; the plane z = 0 of both is
+  // a symmetry plane. scikit-fem solves the same discrete problem (the slip
+  // measured from the start of the step); CalculiX with LINMORTAR and
+  // *FRICTION. One step, as CalculiX's mortar contact takes the contact
+  // geometry at the start of every increment (see
+  // contact_blocks_hex_nonlinear).
+  // ---------------------------------------------------------------------------
+  "name": "contact_blocks_friction_hex_nonlinear",
+  "description": "Punch driving a block down onto and along another, Coulomb friction, non-matching Hex8 meshes (cross-validation deck)",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "file", "path": "../meshes/contact_blocks_gap_hex.inp" },
+
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.3, "density": 2700.0 },
+
+  "model": { "stress_state": "three_dimensional" },
+
+  "boundary_conditions": [
+    { "name": "base", "fix": ["y"], "region": { "group": "lower_bottom" } },
+    { "name": "lower_x", "fix": ["x"], "region": { "group": "lower_sym_x" } },
+    { "name": "symmetry_z", "fix": ["z"], "region": { "group": "sym_z" } },
+    { "name": "punch", "fix": ["x", "y"], "value": [1.0e-5, -1.0e-4, 0.0], "region": { "group": "punch" } }
+  ],
+
+  "load_cases": [ { "name": "press_and_drag", "prescribed_displacement_only": true } ],
+
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+
+  "nonlinear": {
+    "enabled": true,
+    "kinematics": "small_strain",
+    "steps": 1,
+    "residual_tolerance": 1e-12,
+    "displacement_tolerance": 1e-12,
+    "max_iterations": 60
+  },
+
+  "contact": {
+    "enabled": true,
+    "pairs": [ { "name": "interface", "slave": { "group": "upper_bottom" }, "master": { "group": "lower_top" },
+                 "friction": 0.3 } ]
+  },
+
+  "output": { "csv": true, "vtk": true }
+}

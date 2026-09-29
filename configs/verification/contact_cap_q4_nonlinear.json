@@ -1,0 +1,49 @@
+{
+  // ---------------------------------------------------------------------------
+  // Cross-validation of mortar contact with a curved master surface, plane
+  // strain Q4: a half model (symmetry at x = 0) of a steel cylinder of
+  // radius 0.5 m - its cap 20 mm wide and high, 26 x 10 cells whose bottom
+  // row follows the circle - touching a steel block 20 x 20 mm (20 x 10
+  // cells) at x = 0 and pressed into it by 0.1 mm at its top in two steps.
+  // Frictionless dual mortar contact: the block's flat top the slave, the
+  // cylinder the master, meshed finer and not matching it. scikit-fem solves
+  // the same discrete problem with its own segment-by-segment mortar
+  // integrals. (No CalculiX deck: its mortar contact refuses the plane
+  // elements it expands through the thickness.)
+  // ---------------------------------------------------------------------------
+  "name": "contact_cap_q4_nonlinear",
+  "description": "Cylinder pressed onto a block, curved master surface, non-matching plane strain Q4 meshes (cross-validation deck)",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "file", "path": "../meshes/contact_cap_q4.inp" },
+
+  "material": { "name": "steel", "youngs_modulus": 200.0e9, "poisson_ratio": 0.3, "density": 7850.0 },
+
+  "model": { "stress_state": "plane_strain", "thickness": 1.0 },
+
+  "boundary_conditions": [
+    { "name": "base", "fix": ["y"], "region": { "group": "block_bottom" } },
+    { "name": "symmetry", "fix": ["x"], "region": { "group": "sym_x" } },
+    { "name": "press", "fix": ["y"], "value": [0.0, -1.0e-4], "region": { "group": "cap_top" } }
+  ],
+
+  "load_cases": [ { "name": "press", "prescribed_displacement_only": true } ],
+
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+
+  "nonlinear": {
+    "enabled": true,
+    "kinematics": "small_strain",
+    "steps": 2,
+    "residual_tolerance": 1e-12,
+    "displacement_tolerance": 1e-12,
+    "max_iterations": 60
+  },
+
+  "contact": {
+    "enabled": true,
+    "pairs": [ { "name": "interface", "slave": { "group": "block_top" }, "master": { "group": "cap_bottom" } } ]
+  },
+
+  "output": { "csv": true, "vtk": true }
+}

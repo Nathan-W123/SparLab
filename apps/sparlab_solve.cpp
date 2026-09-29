@@ -96,10 +96,20 @@ int main(int argc, char** argv) {
     }();
 
     const ModelDiagnostics diagnostics = diagnose_model(model);
-    if (!diagnostics.well_posed()) {
-      // Report every problem, then fail: an ill-posed static model cannot
-      // produce a meaningful answer.
-      require_well_posed(model);
+    // With contact a body may be held by its contact alone, which the model
+    // without contact leaves free: then only the non-linear analysis, which
+    // has the contact, can be solved. Otherwise report every problem and
+    // fail - an ill-posed static model cannot produce a meaningful answer.
+    const bool contact = config.nonlinear.enabled && config.nonlinear.options.contact.enabled;
+    const bool linear_posed = diagnostics.well_posed();
+    if (!linear_posed) {
+      if (!contact) require_well_posed(model);
+      for (const std::string& problem : diagnostics.problems) {
+        log::warn("without its contact: ", problem);
+      }
+      log::warn("the model without contact is not restrained, so only its contact can hold "
+                "it: the linear static, buckling, modal, transient and frequency-response "
+                "analyses are skipped and the non-linear analysis with contact is solved");
     }
 
     Assembler assembler(model);
@@ -108,15 +118,17 @@ int main(int argc, char** argv) {
                                               : "disabled (general mesh)"));
 
     std::vector<StaticSolution> solutions;
-    StaticAnalysis analysis(model, assembler, config.analysis);
-    {
+    StaticAnalysisOptions static_options = config.analysis;
+    static_options.check_model = static_options.check_model && linear_posed;  // not solved
+    StaticAnalysis analysis(model, assembler, static_options);
+    if (linear_posed) {
       ScopedTimer t(timings, "static_solve");
       solutions = analysis.solve_all();
     }
 
     // Buckling of each checked load case, with the static factorisation.
     std::vector<BucklingResult> buckling;
-    if (config.buckling.enabled) {
+    if (config.buckling.enabled && linear_posed) {
       ScopedTimer t(timings, "buckling_analysis");
       const DofManager& dofs = model.dofs();
       const FreeSolve solve = [&](const Vector& b) {
@@ -163,14 +175,14 @@ int main(int argc, char** argv) {
 
     // Transient integration and harmonic response of the selected load cases.
     std::vector<TransientResult> transient;
-    if (config.transient.enabled) {
+    if (config.transient.enabled && linear_posed) {
       ScopedTimer t(timings, "transient_analysis");
       for (std::size_t l : config.transient_load_cases()) {
         transient.push_back(solve_transient(model, assembler, l, config.transient.options));
       }
     }
     std::vector<FrequencyResponseResult> harmonic;
-    if (config.frequency_response.enabled) {
+    if (config.frequency_response.enabled && linear_posed) {
       ScopedTimer t(timings, "frequency_response");
       for (std::size_t l : config.frequency_response_load_cases()) {
         harmonic.push_back(
@@ -191,7 +203,7 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<ModalResult> modal;
-    if (config.modal.enabled) {
+    if (config.modal.enabled && linear_posed) {
       ScopedTimer t(timings, "modal_analysis");
       modal = std::make_unique<ModalResult>(
           solve_modal(model, assembler, config.modal.options));
@@ -236,9 +248,10 @@ int main(int argc, char** argv) {
           for (const IsotropicMaterial& m : model.materials()) {
             kinematic = kinematic || m.plasticity().kinematic_hardening_modulus > 0.0;
           }
-          if (o.contact.enabled) {
-            log::warn("the non-linear cases are not exported to CalculiX: the export does not "
-                      "write contact, and without it the deck would be a different problem");
+          const std::string contact_obstacle =
+              o.contact.enabled ? calculix_contact_obstacle(model, o.contact) : std::string();
+          if (!contact_obstacle.empty()) {
+            log::warn("the non-linear cases are not exported to CalculiX: ", contact_obstacle);
           } else if (o.kinematics == Kinematics::Finite &&
                      o.law != HyperelasticModel::SaintVenantKirchhoff) {
             log::warn("the non-linear cases are not exported to CalculiX: its NEO HOOKE is a "
@@ -253,6 +266,7 @@ int main(int argc, char** argv) {
             nlgeom.follower_pressure = o.follower_pressure;
             nlgeom.nlgeom = o.kinematics == Kinematics::Finite;
             nlgeom.load_path = o.load_path;
+            if (o.contact.enabled) nlgeom.contact = &o.contact;
             nonlinear_export = &nlgeom;
           }
         }
@@ -260,7 +274,7 @@ int main(int argc, char** argv) {
         // integrate as the same problem.
         CalculixTransientExport dynamic;
         const CalculixTransientExport* transient_export = nullptr;
-        if (config.transient.enabled) {
+        if (config.transient.enabled && linear_posed) {
           dynamic.options = config.transient.options;
           for (std::size_t l : config.transient_load_cases()) {
             const std::string obstacle =

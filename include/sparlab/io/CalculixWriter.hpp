@@ -56,6 +56,26 @@
 /// `NEO HOOKE` splits the energy into an isochoric part and (J - 1)^2), so
 /// such a run is not exported.
 ///
+/// With contact (a small-strain case in 3-D) the small-strain deck carries
+/// it: each pair's slave faces as an element-face `*SURFACE`, a
+/// `*CONTACT PAIR, TYPE=LINMORTAR` - CalculiX's linear dual mortar method,
+/// the method SparLab uses - with `*SURFACE BEHAVIOR,
+/// PRESSURE-OVERCLOSURE=HARD`, and with friction `*FRICTION`. CalculiX 2.21
+/// reduces HARD to a linear penalty (its default slope, 3.5e12 Pa/m, left the
+/// two-block cross-validation deck 2.6 % of the displacement away from the
+/// hard contact, the difference falling as 1/K - measured), so the slope and
+/// the stick slope are written as 1e7 E / h, E the stiffest material and h the
+/// smallest slave face: then the difference is at CalculiX's output rounding.
+/// A master surface of the model goes out as its faces; a flat rigid
+/// obstacle as one C3D8 element whose face lies on the plane and whose nodes
+/// all move with the obstacle - against a flat master the dual mortar
+/// constraint is the rigid obstacle's exactly. A curved rigid obstacle has
+/// no CalculiX counterpart (it has no analytical surfaces, and facets would
+/// be a different problem), and CalculiX's mortar contact refuses the plane
+/// elements it expands through the thickness (their nodes are tied by the
+/// expansion's equations): such a run gets no non-linear deck
+/// (`calculix_contact_obstacle` says why).
+///
 /// A transient run of a case also gets `<stem>_<case>_dynamic.inp`: the model
 /// with `*DENSITY` and, for Rayleigh damping, `*DAMPING, ALPHA=a, BETA=b` in
 /// every material (CalculiX's C = a M + b K of a direct integration), the
@@ -81,6 +101,7 @@
 #pragma once
 
 #include "sparlab/core/Types.hpp"
+#include "sparlab/fem/Contact.hpp"
 #include "sparlab/fem/Dynamics.hpp"
 #include "sparlab/fem/FemModel.hpp"
 
@@ -101,7 +122,14 @@ struct CalculixNonlinearExport {
   /// The load factors of the path's turning points, one `*STEP` each; empty
   /// for a single step from 0 to 1.
   std::vector<Scalar> load_path;
+  /// The contact of the run (small strain), or none; see
+  /// calculix_contact_obstacle.
+  const ContactOptions* contact = nullptr;
 };
+
+/// Why the contact of a run cannot go out to CalculiX (a plane model, a
+/// curved rigid obstacle), or an empty string when it can.
+std::string calculix_contact_obstacle(const FemModel& model, const ContactOptions& contact);
 
 /// The transient decks to write beside the linear ones (`*DYNAMIC, DIRECT`).
 struct CalculixTransientExport {

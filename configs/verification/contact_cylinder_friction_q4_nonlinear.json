@@ -1,0 +1,47 @@
+{
+  // ---------------------------------------------------------------------------
+  // Cross-validation of contact against a curved rigid obstacle with Coulomb
+  // friction, plane strain Q4: a steel block 0.12 x 0.04 m (48 x 16 cells)
+  // held at its bottom, a rigid cylinder of radius 1 m touching the middle
+  // of its top, driven down by 0.3 mm and sideways by 0.1 mm in four steps.
+  // Friction coefficient 0.3: the middle of the contact sticks, its edges
+  // slip. scikit-fem solves the same discrete problem step by step. (No
+  // CalculiX deck: it has no analytical rigid surfaces, and its mortar
+  // contact refuses expanded plane elements.)
+  // ---------------------------------------------------------------------------
+  "name": "contact_cylinder_friction_q4_nonlinear",
+  "description": "Rigid cylinder pressed and dragged on a block, Coulomb friction, plane strain Q4 (cross-validation deck)",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "structured_quad", "nx": 48, "ny": 16, "lx": 0.12, "ly": 0.04 },
+
+  "material": { "name": "steel", "youngs_modulus": 200.0e9, "poisson_ratio": 0.3, "density": 7850.0 },
+
+  "model": { "stress_state": "plane_strain", "thickness": 0.01 },
+
+  "boundary_conditions": [
+    { "name": "base", "fix": ["x", "y"], "region": { "box": { "ymax": 0.0 } } }
+  ],
+
+  "load_cases": [ { "name": "press_and_drag", "prescribed_displacement_only": true } ],
+
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+
+  "nonlinear": {
+    "enabled": true,
+    "kinematics": "small_strain",
+    "steps": 4,
+    "residual_tolerance": 1e-12,
+    "displacement_tolerance": 1e-12,
+    "max_iterations": 60
+  },
+
+  "contact": {
+    "enabled": true,
+    "pairs": [ { "name": "cylinder", "slave": { "box": { "ymin": 0.04 } }, "friction": 0.3,
+                 "obstacle": { "type": "cylinder", "point": [0.06, 1.04], "radius": 1.0,
+                               "motion": [1.0e-4, -3.0e-4] } } ]
+  },
+
+  "output": { "csv": true, "vtk": true }
+}

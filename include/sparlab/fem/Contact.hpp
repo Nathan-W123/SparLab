@@ -47,7 +47,12 @@
 /// its weighted slip increment over the step \f$\tilde u_\tau\f$ is then zero
 /// - and slips otherwise, with \f$\lambda_\tau = \mu p_j\f$ along
 /// \f$\lambda_\tau + c\,\tilde u_\tau / D_j\f$. The master equations take the
-/// condensed contact forces of their slave nodes.
+/// condensed contact forces of their slave nodes. In the first iteration of
+/// an analysis a node that touches its counterpart (its gap zero to
+/// round-off) and is not pulled away starts in contact, so a body that its
+/// contact alone holds - a block resting on a support under a load - is held
+/// from the start. Such a body must touch its support: a static analysis
+/// cannot close a gap under a load that nothing else resists.
 ///
 /// **The Newton step.** While no node slips under friction, the step is that
 /// of a symmetric problem: with the dual basis each slave node's constraints
@@ -199,9 +204,15 @@ class ContactProblem {
     Vector3 free_normal = Vector3::Zero();
     std::vector<Vector3> tangents;
     Scalar complementarity = 0.0;   ///< c [Pa/m]
+    Scalar size = 0.0;              ///< h, the size of the node's slave faces [m]
     Scalar friction = 0.0;          ///< mu
     Vector3 motion = Vector3::Zero();  ///< obstacle motion at lambda = 1 (rigid pair)
   };
+
+  /// A slave node touches its counterpart when its gap is within this
+  /// multiple of its face size of zero - no more than the round-off of
+  /// surfaces built at the same coordinates.
+  static constexpr Scalar kTouching = 1.0e-9;
 
   const std::vector<Node>& nodes() const { return nodes_; }
   const ContactOptions& options() const { return options_; }
@@ -229,10 +240,14 @@ class ContactProblem {
   /// the full tangent; `u_start` and `lambda_start` are the last converged
   /// state, from which the slip of the step is measured. Without
   /// `assemble_matrix` only the status, the right-hand side and the scale
-  /// are formed.
+  /// are formed. With `touching_start` - the first iteration of an analysis
+  /// - a node that touches its counterpart (`kTouching`) and is not pulled
+  /// away from it starts in contact: a body that its contact alone holds
+  /// is then held from the first iteration, as touching surfaces are.
   Linearization linearize(const Vector& u, Scalar lambda, const Vector& residual,
                           const SparseMatrix& tangent, const Vector& u_start,
-                          Scalar lambda_start, bool assemble_matrix = true) const;
+                          Scalar lambda_start, bool assemble_matrix = true,
+                          bool touching_start = false) const;
 
   /// For a status with no node slipping under friction, the Newton step of
   /// the constrained problem as a symmetric one: every node in contact has

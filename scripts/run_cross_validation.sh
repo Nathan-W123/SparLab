@@ -24,7 +24,13 @@
 # damping, on Tet10 under a harmonic force and on a plane-strain Q4 strip
 # shaken at its root with lumped mass; harmonic responses of a Q4 plate and of
 # a Hex8 block on a shaken base; an elastoplastic and a large-deflection
-# transient on Hex8) - with sparlab_solve (exporting CalculiX decks), then
+# transient on Hex8) - and the contact decks (a block held by its contact
+# alone on another with non-matching Hex8 meshes, a punch pressing and
+# dragging a block along another with friction, a rising rigid plane under
+# a Tet4 block, a rigid cylinder pressed and dragged along a plane-strain Q4
+# block with friction, a rigid sphere indenting a Hex8 block with friction,
+# a cylinder cap on a Q4 block) - with sparlab_solve (exporting CalculiX
+# decks), then
 # compares the nodal displacements node by node, the conducted
 # temperatures, the buckling load factors mode by mode, the final non-linear
 # states and the transient histories and harmonic responses, with CalculiX
@@ -32,7 +38,9 @@
 # *DYNAMIC, each load in CalculiX's own form) and scikit-fem (with SparLab's
 # load vector, with the loads integrated by scikit-fem, an independent total
 # Lagrangian solve, an independent J2 solve, small strain or finite, an
-# independent HHT-alpha integration and a direct complex harmonic solve).
+# independent HHT-alpha integration, a direct complex harmonic solve and an
+# independent contact solve), and for the solid contact decks CalculiX's
+# linear dual mortar contact (LINMORTAR).
 # Exits non-zero if any comparison exceeds its documented tolerance.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -56,13 +64,17 @@ plastic_clamped_strip_q4_nlgeom plastic_clamped_strip_q4_plane_stress_nlgeom"
 DYNAMIC_CASES="transient_cantilever_hex transient_column_tet10 transient_strip_q4_base \
 frequency_response_plate_q4 frequency_response_block_hex transient_plastic_beam_hex \
 transient_beam_hex_nlgeom"
+# The contact decks.
+CONTACT_CASES="contact_blocks_hex_nonlinear contact_blocks_friction_hex_nonlinear \
+contact_plane_tet4_nonlinear contact_cylinder_friction_q4_nonlinear contact_sphere_hex_nonlinear \
+contact_cap_q4_nonlinear"
 
 banner "cross-validation: solving the reference decks"
 for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
             block_tet_analysis lug_bracket_nu0_analysis engine_mount_tet10_analysis \
             column_hex_buckling_analysis column_tet4_buckling_analysis \
             column_tet10_buckling_analysis $LOAD_CASES $NONLINEAR_CASES $PLASTIC_CASES \
-            $DYNAMIC_CASES; do
+            $DYNAMIC_CASES $CONTACT_CASES; do
   "$BIN_DIR/sparlab_solve" --config "$SPARLAB_ROOT/configs/verification/$case.json" \
                            --output "$RESULTS/$case" --export-calculix
 done
@@ -80,7 +92,7 @@ for case in cantilever_analysis block_3d_analysis cantilever_tri_analysis \
             engine_mount_3d_analysis engine_mount_tet10_analysis \
             column_hex_buckling_analysis column_tet4_buckling_analysis \
             column_tet10_buckling_analysis $LOAD_CASES $NONLINEAR_CASES $PLASTIC_CASES \
-            $DYNAMIC_CASES; do
+            $DYNAMIC_CASES $CONTACT_CASES; do
   CASES+=(--case "$RESULTS/$case")
 done
 "$PYTHON" python/scripts/cross_validate.py "${CASES[@]}" --output "$RESULTS/cross_validation"

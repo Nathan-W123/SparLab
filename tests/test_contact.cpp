@@ -784,3 +784,148 @@ TEST_CASE("the symmetric step of the constrained problem equals the condensed LU
     }
   }
 }
+
+TEST_CASE("a body held by its contact alone: a block resting on a plane, stacked blocks",
+          "[contact]") {
+  // No prescribed displacement holds either block vertically: a pressure P on
+  // the top presses the block onto a rigid plane - or the upper of two
+  // stacked blocks onto the lower one, whose bottom is held - and only the
+  // contact carries it. Touching at the start, each block is held from the
+  // first iteration. Frictionless and free to expand sideways (held only
+  // against sliding and turning), each block is in uniaxial stress -P, so
+  // the contact pressure is P at every node and the displacement the exact
+  // linear field; with friction on the stacked blocks, nothing slides and
+  // every node sticks.
+  const IsotropicMaterial m = default_material();
+  const Scalar e = m.youngs_modulus();
+  const Scalar nu = m.poisson_ratio();
+  const Scalar lx = 0.4;
+  const Scalar lz = 0.3;
+  const Scalar h1 = 0.2;
+  const Scalar h2 = 0.15;
+  const Scalar pressure = 5.0e7;
+  for (const ElementType type :
+       {ElementType::Quad4, ElementType::Tri3, ElementType::Hex8, ElementType::Tet4}) {
+    for (const std::string& kind : {std::string("plane"), std::string("stacked"),
+                                    std::string("stacked, friction")}) {
+      INFO(to_string(type) << ", " << kind);
+      const bool stacked = kind != "plane";
+      const Mesh lower = block(type, 4, 3, 3, lx, h1, lz, 0.0, 11u);
+      Mesh mesh = stacked ? merge(lower, block(type, 5, 2, 4, lx, h2, lz, h1, 17u))
+                          : block(type, 4, 3, 3, lx, h1, lz, 0.0, 11u);
+      const int dim = mesh.dim();
+      const Scalar thickness = dim == 2 ? 0.01 : 1.0;
+      FemModel model(std::move(mesh), m, thickness, state_of(lower), IntegrationOptions());
+      const Scalar top = stacked ? h1 + h2 : h1;
+      // Sliding and turning held at the corners of each block's bottom.
+      std::vector<Scalar> bottoms{0.0};
+      if (stacked) bottoms.push_back(h1);
+      for (const Scalar y : bottoms) {
+        const bool upper = y > 0.0;
+        // (The upper block's corner nodes coincide with the lower block's:
+        // each is picked by its own id range.)
+        const auto corner = [&](Scalar x, Scalar z) {
+          SelectorGroup g;
+          Selector s;
+          s.kind = SelectorKind::NodeIds;
+          for (Index n = upper ? lower.num_nodes() : 0;
+               n < (upper ? model.mesh().num_nodes() : lower.num_nodes()); ++n) {
+            const Vector3 p = model.mesh().node(n);
+            if (std::abs(p.x() - x) < 1e-12 && std::abs(p.y() - y) < 1e-12 &&
+                (dim == 2 || std::abs(p.z() - z) < 1e-12)) {
+              s.ids.push_back(n);
+            }
+          }
+          g.members.push_back(s);
+          return g;
+        };
+        model.constraints().push_back(fix(corner(0.0, 0.0), 0));
+        if (dim == 3) {
+          model.constraints().push_back(fix(corner(0.0, 0.0), 2));
+          model.constraints().push_back(fix(corner(lx, 0.0), 2));
+        }
+      }
+      if (stacked) model.constraints().push_back(fix(box(-kInf, kInf, -kInf, 0.0), 1));
+      LoadCaseSpec lc;
+      lc.name = "press";
+      PressureLoadSpec p;
+      p.region = box(-kInf, kInf, top, kInf);
+      p.pressure = pressure;
+      lc.pressures.push_back(p);
+      model.load_case_specs().push_back(lc);
+      model.finalize();
+      Assembler assembler(model);
+      ContactPairSpec pair;
+      pair.name = "support";
+      if (stacked) {
+        // Each surface through its own block's nodes on the interface.
+        pair.rigid = false;
+        pair.friction = kind == "stacked, friction" ? 0.3 : 0.0;
+        Selector up;
+        up.kind = SelectorKind::NodeIds;
+        Selector low;
+        low.kind = SelectorKind::NodeIds;
+        for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+          if (std::abs(model.mesh().node(n).y() - h1) > 1e-12) continue;
+          (n >= lower.num_nodes() ? up : low).ids.push_back(n);
+        }
+        pair.slave.members.push_back(up);
+        pair.master.members.push_back(low);
+      } else {
+        pair.slave = box(-kInf, kInf, -kInf, 0.0);
+        pair.obstacle.direction = Vector3::UnitY();
+      }
+      NonlinearStaticAnalysis analysis(model, assembler, contact_options(pair));
+      const NonlinearResult r = analysis.solve(0);
+      REQUIRE(r.completed);
+      REQUIRE(!r.contact_nodes.empty());
+      for (const ContactNodeResult& c : r.contact_nodes) {
+        REQUIRE(c.status == (kind == "stacked, friction" ? ContactStatus::Stick
+                                                         : ContactStatus::Slip));
+        REQUIRE(c.pressure == Approx(pressure).epsilon(1.0e-9));
+      }
+      // Uniaxial stress -P in every block: from the plane (or the held
+      // bottom) up, with the free lateral expansion.
+      const Scalar strain = pressure / e;
+      Scalar worst = 0.0;
+      for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+        const Vector3 x = model.mesh().node(n);
+        Vector3 exact(nu * strain * x.x(), -strain * x.y(), nu * strain * x.z());
+        for (int k = 0; k < dim; ++k) {
+          worst = std::max(worst, std::abs(r.displacement(n * dim + k) - exact(k)));
+        }
+      }
+      REQUIRE(worst <= 1.0e-10 * strain * top);
+      REQUIRE(r.equilibrium.relative_force_error <= 1.0e-10);
+    }
+  }
+}
+
+TEST_CASE("a body its contact alone would hold must touch its support at the start",
+          "[contact]") {
+  // The block of the test above, a gap below it: under a load, nothing holds
+  // it until the gap closes, and a static analysis cannot close it. The run
+  // stops and says what to do.
+  const IsotropicMaterial m = default_material();
+  Mesh mesh = block(ElementType::Quad4, 4, 3, 1, 0.4, 0.2, 0.3);
+  FemModel model(std::move(mesh), m, 0.01, StressState::PlaneStress, IntegrationOptions());
+  model.constraints().push_back(fix(box(-kInf, 0.0, -kInf, 0.0), 0));
+  LoadCaseSpec lc;
+  lc.name = "press";
+  PressureLoadSpec p;
+  p.region = box(-kInf, kInf, 0.2, kInf);
+  p.pressure = 5.0e7;
+  lc.pressures.push_back(p);
+  model.load_case_specs().push_back(lc);
+  model.finalize();
+  Assembler assembler(model);
+  ContactPairSpec pair;
+  pair.name = "support";
+  pair.slave = box(-kInf, kInf, -kInf, 0.0);
+  pair.obstacle.point = Vector3(0.0, -1.0e-5, 0.0);
+  pair.obstacle.direction = Vector3::UnitY();
+  NonlinearStaticAnalysis analysis(model, assembler, contact_options(pair));
+  const NonlinearResult r = analysis.solve(0);
+  REQUIRE_FALSE(r.completed);
+  REQUIRE(r.termination.find("must touch its support at the start") != std::string::npos);
+}

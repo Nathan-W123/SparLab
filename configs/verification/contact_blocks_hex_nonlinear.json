@@ -1,0 +1,56 @@
+{
+  // ---------------------------------------------------------------------------
+  // Cross-validation of mortar contact on Hex8 (C3D8) elements: an aluminium
+  // block 0.4 x 0.15 x 0.3 m resting on another 0.4 x 0.2 x 0.3 m block, the
+  // two meshes not matching at the interface (10 x 5 against 8 x 6 faces).
+  // A pressure of 20 MPa on half of the upper block's top presses it onto
+  // the lower one, whose bottom is held: no support holds the upper block
+  // vertically, only its contact (symmetry planes x = 0 and z = 0 hold it
+  // against sliding and turning). Frictionless dual mortar contact, the
+  // upper block's bottom the slave surface. scikit-fem solves the same
+  // discrete problem with its own mortar integrals and an independent
+  // semismooth Newton method; CalculiX with its linear dual mortar contact
+  // (LINMORTAR), from the exported deck. One step: CalculiX's mortar
+  // contact takes the contact geometry at the start of every increment, and
+  // a second increment moves it off the small-sliding problem by the order
+  // of the displacement over the body (measured: 2.3e-4 of the displacement
+  // in two increments, 3.9e-6 - its output rounding - in one).
+  // ---------------------------------------------------------------------------
+  "name": "contact_blocks_hex_nonlinear",
+  "description": "Block held by its contact alone on another, non-matching Hex8 meshes, frictionless (cross-validation deck)",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "file", "path": "../meshes/contact_blocks_hex.inp" },
+
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.3, "density": 2700.0 },
+
+  "model": { "stress_state": "three_dimensional" },
+
+  "boundary_conditions": [
+    { "name": "base", "fix": ["y"], "region": { "group": "lower_bottom" } },
+    { "name": "symmetry_x", "fix": ["x"], "region": { "group": "sym_x" } },
+    { "name": "symmetry_z", "fix": ["z"], "region": { "group": "sym_z" } }
+  ],
+
+  "load_cases": [
+    { "name": "press", "pressures": [ { "name": "half_top", "pressure": 2.0e7, "region": { "group": "load" } } ] }
+  ],
+
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+
+  "nonlinear": {
+    "enabled": true,
+    "kinematics": "small_strain",
+    "steps": 1,
+    "residual_tolerance": 1e-12,
+    "displacement_tolerance": 1e-12,
+    "max_iterations": 60
+  },
+
+  "contact": {
+    "enabled": true,
+    "pairs": [ { "name": "interface", "slave": { "group": "upper_bottom" }, "master": { "group": "lower_top" } } ]
+  },
+
+  "output": { "csv": true, "vtk": true }
+}

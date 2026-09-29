@@ -79,6 +79,18 @@ A run with a `transient` or `frequency_response` block is also integrated
 again in time, or solved at every frequency, by scikit-fem and (transients on
 solid elements) by CalculiX's *DYNAMIC: see dynamics_xval.py.
 
+A run with contact is compared through its non-linear analysis (its linear
+static one is of the model without contact, and absent where only the
+contact holds a body): scikit-fem solves the same discrete contact problem
+with its own mortar integrals and an uncondensed semismooth Newton method
+(contact_xval.py), and, for a solid model whose contact CalculiX can
+represent - mortar pairs and flat rigid obstacles - CalculiX's linear dual
+mortar contact (LINMORTAR) solves the exported deck. CalculiX takes the
+contact geometry at the start of every increment, so the decks it checks
+run in one (a second moves its answer off the small-sliding problem by the
+order of the displacement over the body size: 2.3e-4 of the displacement,
+measured).
+
 Nothing here recomputes SparLab's numbers: they are read from the run.
 """
 
@@ -100,6 +112,7 @@ import _bootstrap  # noqa: F401
 
 import numpy as np
 
+import contact_xval
 import dynamics_xval
 
 from sparlab_viz.loaders import Mesh, ResultError, load_case
@@ -109,7 +122,9 @@ from sparlab_viz.loaders import Mesh, ResultError, load_case
 # CalculiX
 # ---------------------------------------------------------------------------
 def parse_frd_displacements(path: str, num_nodes: int) -> np.ndarray:
-    """Nodal displacements (num_nodes, 3) from a CalculiX .frd file (last step)."""
+    """Nodal displacements (num_nodes, 3) from a CalculiX .frd file (last step).
+    Nodes beyond the model's - those of a rigid obstacle's stand-in in a
+    contact deck - are skipped."""
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         lines = handle.readlines()
     blocks: List[np.ndarray] = []
@@ -126,7 +141,8 @@ def parse_frd_displacements(path: str, num_nodes: int) -> np.ndarray:
                 row = lines[i]
                 node = int(row[3:13])
                 comps = [float(row[13 + 12 * k: 25 + 12 * k]) for k in range(3)]
-                values[node - 1] = comps
+                if node <= num_nodes:
+                    values[node - 1] = comps
                 i += 1
             blocks.append(values)
             continue
@@ -1289,7 +1305,18 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
     frequency_cases = {entry["load_case"]: entry
                        for entry in (summary.get("frequency_response") or {}).get("load_cases",
                                                                                  [])}
+    contact_run = bool((summary.get("nonlinear") or {}).get("contact"))
     for name in mesh.load_case_names:
+        if contact_run:
+            # A contact deck is compared through its non-linear analysis; the
+            # linear static one is of the model without contact (and absent
+            # where only the contact holds a body).
+            nl_case = nonlinear_cases.get(name)
+            if nl_case is not None:
+                report["load_cases"].append(contact_case_report(
+                    case, summary, name, nl_case, material, thickness, stress_state,
+                    element_type, ccx_type, tolerances, skip_calculix))
+            continue
         ours = sparlab_displacement(case, name)
         entry = {"load_case": name, "codes": {}}
 
@@ -1566,6 +1593,72 @@ def cross_validate_case(case_dir: str, tolerances: Dict[str, float],
     return report
 
 
+def contact_case_report(case, summary: Dict, name: str, nl_case: Dict, material: Dict,
+                        thickness: float, stress_state: str, element_type: str, ccx_type: str,
+                        tolerances: Dict[str, float], skip_calculix: bool) -> Dict:
+    """The comparisons of a run with contact (contact_xval.py): scikit-fem
+    solving the same discrete contact problem, and CalculiX's linear dual
+    mortar contact on the exported small-strain deck where there is one."""
+    mesh = case.mesh
+    if not nl_case.get("completed"):
+        raise ResultError(f"SparLab's contact run of load case '{name}' did not reach "
+                          f"lambda = 1 ({nl_case.get('termination', '')})")
+    entry: Dict = {"load_case": name, "codes": {}}
+    materials = summary.get("materials")
+    if materials:
+        youngs = [float(m["youngs_modulus_Pa"]) for m in materials]
+        poisson = [float(m["poisson_ratio"]) for m in materials]
+    else:
+        youngs = float(material["youngs_modulus_Pa"])
+        poisson = float(material["poisson_ratio"])
+    problem = SkfemProblem(mesh, youngs, poisson, thickness, stress_state,
+                           mesh.nodal_forces(name), mesh.prescribed)
+    factors = case.table(f"nonlinear_{_safe(name)}.csv")["load_factor[-]"].to_numpy().tolist()
+    ours = case_nonlinear_displacement(case, name)
+    skfem_element = {"Quad4": "ElementQuad1", "Hex8": "ElementHex1", "Tri3": "ElementTriP1",
+                     "Tet4": "ElementTetP1", "Tet10": "ElementTetP2"}[element_type]
+    out = contact_xval.contact_comparisons(case, summary, name, nl_case, problem,
+                                           tolerances["skfem_contact"], factors, ours)
+    for stats in out["codes"].values():
+        stats["element"] = skfem_element
+    entry["codes"].update(out["codes"])
+    if out["notes"]:
+        entry["contact_notes"] = out["notes"]
+
+    deck = case.path(f"calculix_{_safe(name)}_small_strain.inp")
+    if skip_calculix:
+        return entry
+    if not os.path.isfile(deck):
+        pairs = summary["nonlinear"]["contact"]["pairs"]
+        curved = [p["name"] for p in pairs
+                  if p["kind"] == "rigid obstacle" and p["obstacle"]["type"] != "plane"]
+        entry["skipped_calculix"] = (
+            "CalculiX's mortar contact refuses the plane elements it expands through the "
+            "thickness (their nodes are tied by the expansion's equations)" if mesh.dim == 2
+            else f"CalculiX has no analytical rigid surfaces for the curved obstacle of "
+                 f"pair(s) {', '.join(curved)}" if curved
+            else f"{deck} is missing; rerun sparlab_solve with --export-calculix")
+        if mesh.dim == 3 and not curved:
+            raise ResultError(entry["skipped_calculix"])
+        return entry
+    with tempfile.TemporaryDirectory(prefix="sparlab_ccx_contact_") as work:
+        frd = run_calculix_steps(deck, work, 1)
+        ref = parse_frd_displacements(frd, mesh.num_nodes)[:, : mesh.dim]
+    if np.isnan(ref).any():
+        raise ResultError(f"CalculiX returned no displacement for some nodes of {name} (contact)")
+    stats = compare(ref, ours)
+    stats["tolerance"] = tolerances["calculix_contact"]
+    stats["passed"] = stats["max_rel_diff"] <= tolerances["calculix_contact"]
+    stats["element"] = f"{ccx_type} LINMORTAR"
+    stats["comparison"] = (
+        "CalculiX's linear dual mortar contact (*CONTACT PAIR, TYPE=LINMORTAR, its HARD "
+        "contact a linear penalty of slope 1e7 E / h) on the exported deck, in one increment: "
+        "a flat rigid obstacle as one element moving with it")
+    stats["frd_rounding_floor_rel"] = 5.0e-6
+    entry["codes"]["calculix contact"] = stats
+    return entry
+
+
 def plastic_comparisons(case, summary: Dict, name: str, nl_case: Dict, problem: "SkfemProblem",
                         loads: Optional["DeckLoads"], ccx_type: str, skfem_element: str,
                         tolerances: Dict[str, float], skip_calculix: bool) -> Dict:
@@ -1746,6 +1839,12 @@ def main(argv=None) -> int:
     parser.add_argument("--tol-calculix-transient", type=float, default=1e-5,
                         help="CalculiX *DYNAMIC vs SparLab's transient (the .frd rounding "
                              "is 5e-6)")
+    parser.add_argument("--tol-skfem-contact", type=float, default=1e-9,
+                        help="scikit-fem's contact solve vs SparLab's: displacement, pressure "
+                             "and traction differences (measured: below 1e-12)")
+    parser.add_argument("--tol-calculix-contact", type=float, default=1e-5,
+                        help="CalculiX LINMORTAR vs SparLab's contact solution (the .frd "
+                             "rounding is 5e-6)")
     parser.add_argument("--skfem-buckling-max-dofs", type=int, default=6000,
                         help="largest free-DOF count for the dense buckling eigensolve")
     args = parser.parse_args(argv)
@@ -1768,6 +1867,8 @@ def main(argv=None) -> int:
                   "skfem_transient": args.tol_skfem_transient,
                   "skfem_harmonic": args.tol_skfem_harmonic,
                   "calculix_transient": args.tol_calculix_transient,
+                  "skfem_contact": args.tol_skfem_contact,
+                  "calculix_contact": args.tol_calculix_contact,
                   "skfem_buckling_max_dofs": args.skfem_buckling_max_dofs}
     import skfem
     summary = {

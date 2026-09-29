@@ -516,15 +516,20 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
     }
     const std::string singular =
         "the contact system is singular: a body is not restrained against a rigid-body "
-        "motion that the contact leaves free (a body held only by frictionless contact "
-        "can slide along it) - restrain it with supports or prescribed displacements";
+        "motion that the contact leaves free - a body held only by frictionless contact "
+        "can slide along it, and one that its contact alone holds must touch its support "
+        "at the start (a gap closes only under prescribed displacements) - restrain it "
+        "with supports or prescribed displacements";
     std::vector<ContactStatus> previous;
     for (int it = 1; it <= options_.max_iterations; ++it) {
       Evaluation ev = system.evaluate(trial, lambda_new, true);
       // The status and the condensed residual; the matrix only when the step
-      // needs it (below).
-      ContactProblem::Linearization lin = contact->linearize(
-          trial, lambda_new, ev.residual, ev.tangent, state, lambda, /*assemble_matrix=*/false);
+      // needs it (below). Touching nodes start in contact in the first
+      // iteration of the analysis.
+      const bool touching_start = it == 1 && result.steps.empty();
+      ContactProblem::Linearization lin =
+          contact->linearize(trial, lambda_new, ev.residual, ev.tangent, state, lambda,
+                             /*assemble_matrix=*/false, touching_start);
       const Scalar scale = std::max(residual_scale(ev), lin.force_scale);
       const Scalar norm = lin.rhs.norm();
       if (!std::isfinite(norm)) return false;
@@ -603,7 +608,11 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
           }
           du = ns.map * w + ns.offset;
         } catch (const SolverError& e) {
-          contact_failure = singular + " (" + e.what() + ")";
+          // The solver's own diagnosis up to its generic hints.
+          std::string what = e.what();
+          const std::size_t hint = what.find(" the reduced stiffness matrix is singular");
+          if (hint != std::string::npos) what.erase(hint);
+          contact_failure = singular + " (" + what + ")";
           return false;
         }
         contact_symmetric_steps = true;
@@ -611,7 +620,8 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
         du = ns.offset;  // every free increment fixed by the constraints
         contact_symmetric_steps = true;
       } else {
-        lin = contact->linearize(trial, lambda_new, ev.residual, ev.tangent, state, lambda);
+        lin = contact->linearize(trial, lambda_new, ev.residual, ev.tangent, state, lambda,
+                                 /*assemble_matrix=*/true, touching_start);
         Eigen::SparseLU<SparseMatrix> lu;
         lu.analyzePattern(lin.matrix);
         lu.factorize(lin.matrix);
@@ -741,12 +751,16 @@ NonlinearResult NonlinearStaticAnalysis::solve(std::size_t load_case) {
             os << "a load step from lambda = " << lambda << " failed to converge after "
                << options_.max_cuts << " halvings (step " << step << ")";
           }
-          os << ". The load may exceed a limit point - try the arc-length method";
-          if (system.plastic()) {
-            os << " - or a plastic collapse load, beyond which a material without hardening "
-                  "has no equilibrium";
+          if (contact && !contact_failure.empty()) {
+            // The contact says why (arc length is not available with it).
+            os << ": " << contact_failure;
+          } else {
+            os << ". The load may exceed a limit point - try the arc-length method";
+            if (system.plastic()) {
+              os << " - or a plastic collapse load, beyond which a material without "
+                    "hardening has no equilibrium";
+            }
           }
-          if (contact && !contact_failure.empty()) os << ". With contact: " << contact_failure;
           result.termination = os.str();
           break;
         }

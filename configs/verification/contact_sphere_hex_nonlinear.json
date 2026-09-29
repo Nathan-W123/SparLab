@@ -1,0 +1,50 @@
+{
+  // ---------------------------------------------------------------------------
+  // Cross-validation of contact with Coulomb friction against a rigid sphere
+  // on Hex8 elements: a quarter model (symmetry planes x = 0 and z = 0) of
+  // an aluminium block 0.06 x 0.03 x 0.06 m (16 x 8 x 16 cells) held at its
+  // bottom, a rigid sphere of radius 0.5 m touching its top at the corner
+  // of the symmetry planes and driven down by 0.2 mm in two steps. Friction
+  // coefficient 0.2: the widening surface sticks under the middle of the
+  // contact and slips towards its edge. scikit-fem solves the same discrete
+  // problem step by step. (No CalculiX deck: it has no analytical rigid
+  // surfaces.)
+  // ---------------------------------------------------------------------------
+  "name": "contact_sphere_hex_nonlinear",
+  "description": "Rigid sphere pressed into a block, Coulomb friction, quarter model, Hex8 (cross-validation deck)",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "structured_hex", "nx": 16, "ny": 8, "nz": 16, "lx": 0.06, "ly": 0.03, "lz": 0.06 },
+
+  "material": { "name": "aluminium", "youngs_modulus": 70.0e9, "poisson_ratio": 0.3, "density": 2700.0 },
+
+  "model": { "stress_state": "three_dimensional" },
+
+  "boundary_conditions": [
+    { "name": "base", "fix": ["y"], "region": { "box": { "ymax": 0.0 } } },
+    { "name": "symmetry_x", "fix": ["x"], "region": { "box": { "xmax": 0.0 } } },
+    { "name": "symmetry_z", "fix": ["z"], "region": { "box": { "zmax": 0.0 } } }
+  ],
+
+  "load_cases": [ { "name": "indent", "prescribed_displacement_only": true } ],
+
+  "solver": { "linear": { "type": "simplicial_ldlt" } },
+
+  "nonlinear": {
+    "enabled": true,
+    "kinematics": "small_strain",
+    "steps": 2,
+    "residual_tolerance": 1e-12,
+    "displacement_tolerance": 1e-12,
+    "max_iterations": 60
+  },
+
+  "contact": {
+    "enabled": true,
+    "pairs": [ { "name": "sphere", "slave": { "box": { "ymin": 0.03 } }, "friction": 0.2,
+                 "obstacle": { "type": "sphere", "center": [0.0, 0.53, 0.0], "radius": 0.5,
+                               "motion": [0.0, -2.0e-4, 0.0] } } ]
+  },
+
+  "output": { "csv": true, "vtk": true }
+}

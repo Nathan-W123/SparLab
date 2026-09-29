@@ -2,7 +2,10 @@
 
 #include "sparlab/core/Exceptions.hpp"
 
+#include <Eigen/Geometry>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -142,6 +145,123 @@ std::vector<std::pair<Index, int>> calculix_faces_of(const Mesh& mesh,
   return out;
 }
 
+/// A flat rigid obstacle's stand-in: one C3D8 element whose face S1 lies on
+/// the plane, its outward normal the obstacle's, and whose nodes all move
+/// with the obstacle.
+struct RigidSlab {
+  Index first_node = 0;  ///< 0-based index of its first node, after the model's
+  std::array<Vector3, 8> nodes{};
+  Vector3 motion = Vector3::Zero();  ///< the obstacle's motion at load factor 1
+};
+
+/// The contact pairs as CalculiX definitions - the slave faces, the master
+/// faces or the slab of a flat rigid obstacle (appended after the model's
+/// nodes and elements), the interaction and the pair - returning the slabs,
+/// whose nodes each step moves. The penalty slopes are 1e7 E / h (see
+/// CalculixWriter.hpp).
+std::vector<RigidSlab> write_contact(std::ostream& out, const FemModel& model,
+                                     const ContactOptions& contact,
+                                     const std::vector<Mesh::BoundaryFace>& boundary) {
+  const Mesh& mesh = model.mesh();
+  const std::vector<std::vector<int>>& table = element_local_faces(mesh.element_type());
+  const std::size_t corners = mesh.element_type() == ElementType::Hex8 ? 4 : 3;
+  Scalar e_max = 0.0;
+  for (const IsotropicMaterial& m : model.materials()) e_max = std::max(e_max, m.youngs_modulus());
+  std::vector<RigidSlab> slabs;
+  for (std::size_t k = 0; k < contact.pairs.size(); ++k) {
+    const ContactPairSpec& pair = contact.pairs[k];
+    const std::string id = std::to_string(k + 1);
+    Scalar h_min = std::numeric_limits<Scalar>::infinity();
+    Scalar h_max = 0.0;
+    std::vector<Vector3> points;
+    out << "*SURFACE, NAME=CS" << id << ", TYPE=ELEMENT\n";
+    for (const Mesh::BoundaryFace& face : faces_in_region(mesh, boundary, pair.slave)) {
+      const Index* en = mesh.element_nodes(face.element);
+      const std::vector<int>& local = table[static_cast<std::size_t>(face.local_face)];
+      std::vector<Vector3> x;
+      for (std::size_t a = 0; a < corners; ++a) {
+        x.push_back(mesh.node(en[local[a]]));
+        points.push_back(x.back());
+      }
+      const Scalar area = corners == 4 ? 0.5 * (x[2] - x[0]).cross(x[3] - x[1]).norm()
+                                       : 0.5 * (x[1] - x[0]).cross(x[2] - x[0]).norm();
+      h_min = std::min(h_min, std::sqrt(area));
+      h_max = std::max(h_max, std::sqrt(area));
+      out << face.element + 1 << ", S"
+          << calculix_face_number(mesh.element_type(), face.local_face) << "\n";
+    }
+    if (points.empty()) {
+      throw IoError("contact pair '" + pair.name + "' selects no slave face to export");
+    }
+    if (pair.rigid) {
+      // The plane's frame: e1 x e2 = -n, so that the face 1-2-3-4 of the
+      // element with nodes 5-8 below the plane faces the body.
+      const Vector3 n = pair.obstacle.direction.normalized();
+      const Vector3& p = pair.obstacle.point;
+      int least = 0;
+      for (int c = 1; c < 3; ++c) {
+        if (std::abs(n(c)) < std::abs(n(least))) least = c;
+      }
+      Vector3 e1 = Vector3::Zero();
+      e1(least) = 1.0;
+      e1 = (e1 - e1.dot(n) * n).normalized();
+      const Vector3 e2 = e1.cross(n);
+      Scalar lo1 = std::numeric_limits<Scalar>::infinity();
+      Scalar lo2 = lo1;
+      Scalar hi1 = -lo1;
+      Scalar hi2 = -lo1;
+      for (const Vector3& x : points) {
+        lo1 = std::min(lo1, e1.dot(x - p));
+        hi1 = std::max(hi1, e1.dot(x - p));
+        lo2 = std::min(lo2, e2.dot(x - p));
+        hi2 = std::max(hi2, e2.dot(x - p));
+      }
+      // Beyond the slave faces by a quarter of their extent, two faces and
+      // the obstacle's travel, so that the surface covers them throughout.
+      const Scalar span = std::max(hi1 - lo1, hi2 - lo2);
+      const Scalar margin = 0.25 * span + 2.0 * h_max + pair.obstacle.motion.norm();
+      RigidSlab slab;
+      slab.first_node = mesh.num_nodes() + 8 * static_cast<Index>(slabs.size());
+      slab.motion = pair.obstacle.motion;
+      const Scalar a1[4] = {lo1 - margin, hi1 + margin, hi1 + margin, lo1 - margin};
+      const Scalar a2[4] = {lo2 - margin, lo2 - margin, hi2 + margin, hi2 + margin};
+      const Scalar depth = span + 2.0 * margin;
+      for (int a = 0; a < 4; ++a) {
+        slab.nodes[static_cast<std::size_t>(a)] = p + a1[a] * e1 + a2[a] * e2;
+        slab.nodes[static_cast<std::size_t>(a) + 4] = slab.nodes[static_cast<std::size_t>(a)] - depth * n;
+      }
+      const Index element = mesh.num_elements() + static_cast<Index>(slabs.size());
+      out << "*NODE\n";
+      for (std::size_t a = 0; a < 8; ++a) {
+        const Vector3& x = slab.nodes[a];
+        out << slab.first_node + static_cast<Index>(a) + 1 << ", " << field(x.x()) << ", "
+            << field(x.y()) << ", " << field(x.z()) << "\n";
+      }
+      out << "*ELEMENT, TYPE=C3D8, ELSET=RIGID" << id << "\n" << element + 1;
+      for (Index a = 0; a < 8; ++a) out << ", " << slab.first_node + a + 1;
+      out << "\n*MATERIAL, NAME=RIGID" << id << "\n*ELASTIC\n" << field(e_max) << ", 0.3\n"
+          << "*SOLID SECTION, ELSET=RIGID" << id << ", MATERIAL=RIGID" << id << "\n"
+          << "*SURFACE, NAME=CM" << id << ", TYPE=ELEMENT\n" << element + 1 << ", S1\n";
+      slabs.push_back(slab);
+    } else {
+      out << "*SURFACE, NAME=CM" << id << ", TYPE=ELEMENT\n";
+      for (const auto& face : calculix_faces_of(mesh, boundary, pair.master)) {
+        out << face.first + 1 << ", S" << face.second << "\n";
+      }
+    }
+    const Scalar penalty = 1.0e7 * e_max / h_min;
+    out << "*SURFACE INTERACTION, NAME=CI" << id << "\n"
+        << "*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=HARD\n"
+        << field(penalty) << ", 1.E6, 0.\n";
+    if (pair.friction > 0.0) {
+      out << "*FRICTION\n" << field(pair.friction) << ", " << field(penalty) << "\n";
+    }
+    out << "*CONTACT PAIR, INTERACTION=CI" << id << ", TYPE=LINMORTAR\nCS" << id << ", CM" << id
+        << "\n";
+  }
+  return slabs;
+}
+
 /// The one stress-free temperature of the model's materials: CalculiX measures
 /// thermal strain from the initial nodal temperature, which a node shared by
 /// materials of different reference temperatures cannot carry.
@@ -263,6 +383,10 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
     t_ref = common_reference_temperature(model);
     out << "*INITIAL CONDITIONS, TYPE=TEMPERATURE\nNALL, " << field(t_ref) << "\n";
   }
+  const std::vector<RigidSlab> slabs =
+      nonlinear != nullptr && nonlinear->contact != nullptr
+          ? write_contact(out, model, *nonlinear->contact, boundary)
+          : std::vector<RigidSlab>();
 
   // Point loads and tractions as the assembled nodal forces; every other load
   // in CalculiX's own form, so that CalculiX integrates it itself - except a
@@ -360,6 +484,16 @@ void write_static_deck(std::ostream& out, const FemModel& model, std::size_t l,
         const int component = static_cast<int>(d % ndpn) + 1;
         out << node + 1 << ", " << component << ", " << component << ", "
             << field(level * value) << "\n";
+      }
+    }
+    // The rigid obstacles' stand-ins move with them.
+    if (!slabs.empty()) out << "*BOUNDARY\n";
+    for (const RigidSlab& slab : slabs) {
+      for (Index a = 0; a < 8; ++a) {
+        for (int c = 0; c < 3; ++c) {
+          out << slab.first_node + a + 1 << ", " << c + 1 << ", " << c + 1 << ", "
+              << field(level * slab.motion(c)) << "\n";
+        }
       }
     }
     bool any = false;
@@ -545,16 +679,35 @@ std::string calculix_transient_obstacle(const FemModel& model, std::size_t l,
   return "";
 }
 
+std::string calculix_contact_obstacle(const FemModel& model, const ContactOptions& contact) {
+  if (model.dim() == 2) {
+    return "CalculiX's mortar contact refuses the plane elements it expands through the "
+           "thickness (the expansion ties their nodes by equations)";
+  }
+  for (const ContactPairSpec& pair : contact.pairs) {
+    if (pair.rigid && pair.obstacle.kind != RigidObstacle::Kind::Plane) {
+      return "the " + to_string(pair.obstacle.kind) + " of contact pair '" + pair.name +
+             "' has no CalculiX counterpart (CalculiX has no analytical rigid surfaces, and "
+             "a faceted one would be a different problem)";
+    }
+  }
+  return "";
+}
+
 std::vector<std::string> write_calculix_decks(const FemModel& model, const std::string& stem,
                                               const std::string& case_name,
                                               const CalculixNonlinearExport* nonlinear,
                                               const CalculixTransientExport* transient) {
   if (!model.finalized()) throw IoError("the model must be finalised before export");
   const std::vector<LoadCaseSpec>& specs = model.load_case_specs();
-  bool faces_needed = false;
+  bool faces_needed = nonlinear != nullptr && nonlinear->contact != nullptr;
   for (const LoadCaseSpec& spec : specs) {
     faces_needed = faces_needed || !spec.pressures.empty() ||
                    spec.temperature.source == TemperatureSpec::Source::Conduction;
+  }
+  if (nonlinear != nullptr && nonlinear->contact != nullptr) {
+    const std::string obstacle = calculix_contact_obstacle(model, *nonlinear->contact);
+    if (!obstacle.empty()) throw IoError("the contact cannot be exported to CalculiX: " + obstacle);
   }
   const std::vector<Mesh::BoundaryFace> boundary =
       faces_needed ? model.mesh().boundary_faces() : std::vector<Mesh::BoundaryFace>();

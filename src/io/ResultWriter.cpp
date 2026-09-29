@@ -3,6 +3,7 @@
 #include "sparlab/core/Exceptions.hpp"
 #include "sparlab/core/Logging.hpp"
 #include "sparlab/core/Version.hpp"
+#include "sparlab/fem/BoundaryConditions.hpp"
 #include "sparlab/io/CsvWriter.hpp"
 #include "sparlab/io/StlWriter.hpp"
 #include "sparlab/io/VtkWriter.hpp"
@@ -496,6 +497,40 @@ void ResultWriter::write_mesh(const FemModel& model) const {
     cases.push_back(entry);
   }
   doc.set("load_cases", cases);
+
+  // Contact: the boundary faces each pair's regions select (the input of
+  // the contact discretisation, which a cross-check computes itself from
+  // them), each as its element and its corner nodes in the element's face
+  // order.
+  const ContactOptions& contact = config_.nonlinear.options.contact;
+  if (config_.nonlinear.enabled && contact.enabled) {
+    const std::vector<Mesh::BoundaryFace> boundary = mesh.boundary_faces();
+    const std::vector<std::vector<int>>& table = element_local_faces(mesh.element_type());
+    const auto faces_json = [&](const SelectorGroup& region) {
+      json::Value faces = json::Value::make_array();
+      for (const Mesh::BoundaryFace& face : faces_in_region(mesh, boundary, region)) {
+        json::Value f = json::Value::make_object();
+        f.set("element", json::Value::make_number(face.element));
+        json::Value nodes_of_face = json::Value::make_array();
+        const Index* en = mesh.element_nodes(face.element);
+        for (int a : table[static_cast<std::size_t>(face.local_face)]) {
+          nodes_of_face.push_back(json::Value::make_number(en[a]));
+        }
+        f.set("nodes", nodes_of_face);
+        faces.push_back(f);
+      }
+      return faces;
+    };
+    json::Value pairs = json::Value::make_array();
+    for (const ContactPairSpec& pair : contact.pairs) {
+      json::Value q = json::Value::make_object();
+      q.set("name", json::Value::make_string(pair.name));
+      q.set("slave_faces", faces_json(pair.slave));
+      if (!pair.rigid) q.set("master_faces", faces_json(pair.master));
+      pairs.push_back(q);
+    }
+    doc.set("contact_surfaces", pairs);
+  }
 
   write_json("mesh.json", doc);
 }
