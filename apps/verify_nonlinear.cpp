@@ -585,6 +585,15 @@ Index unit_corner_node(const Mesh& unit, Scalar x, Scalar y) {
 
 }  // namespace
 
+ElasticaEnd euler_elastica(Scalar k, int steps) {
+  const ElasticaTip tip = elastica(k, steps);
+  ElasticaEnd end;
+  end.deflection = tip.deflection;
+  end.shortening = tip.shortening;
+  end.rotation = tip.rotation;
+  return end;
+}
+
 // ---------------------------------------------------------------------------
 // Euler's elastica
 // ---------------------------------------------------------------------------

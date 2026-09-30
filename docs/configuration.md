@@ -673,8 +673,16 @@ scales every load of the case together - forces, pressures, self-weight and
 body forces, the rotation, the temperature change and prescribed
 displacements - from 0 to 1, or along a `load_path` that may unload.
 `sparlab_solve` runs it after the linear analysis, which stays in the summary
-for comparison; `sparlab_topopt` refuses a deck with it enabled (the
-optimisation is linear).
+for comparison. `sparlab_topopt` keeps the optimisation linear and runs it
+afterwards as the **non-linear check of the exported part**
+(`docs/topology_optimization.md`, section 11): the thresholded structure at
+full material, analysed with these settings beside its linear analysis, with
+a verdict per load case - `carries`, `fails` or `undetermined` - in the
+`nonlinear_check` block of `summary.json` and the part's `nonlinear_*` files.
+A monitor whose region selects no node of the part is dropped and named
+there; a shell design takes no such check (the shell is formulated with small
+rotations), and neither does a run whose part could not be analysed, which
+the block records.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
@@ -787,7 +795,9 @@ small strains) and elements that lock under isochoric plastic flow.
 Unilateral contact, solved by the non-linear static analysis
 (`docs/formulation.md`, section 7f): a slave surface against a rigid obstacle
 given analytically, or against a master surface of the model, frictionless
-or with Coulomb friction. It needs the `nonlinear` block enabled with
+or with Coulomb friction. `sparlab_topopt` refuses it: the optimiser designs
+for linear statics with the deck's supports, which the non-linear check of
+the exported part keeps. It needs the `nonlinear` block enabled with
 `kinematics: small_strain` - the contact geometry is that of the reference
 configuration, for small displacements and small sliding - and load control;
 the deck is refused otherwise. Elastic and J2-plastic materials both work.
@@ -1301,6 +1311,7 @@ duplicate a deck. Each corresponds to one deck field:
 --robust / --no-robust   topology.projection.robust (--robust also enables the projection)
 --overhang DIR           topology.overhang.build_direction = DIR, filter = true
 --no-overhang-filter     topology.overhang.filter = false (the check stays)
+--nonlinear              nonlinear.enabled = true: the non-linear check of the exported part
 --tag NAME               appended to the case name in summary.json
 ```
 

@@ -846,6 +846,10 @@ The optimiser and its supporting pieces report, never hide:
 | density field with no element above the threshold | `MeshError` with the maximum density |
 | thresholded design in several disconnected groups | reported in the interpretation block, with the discarded island volume |
 | thresholded design not analysable (its largest group reaches no support, say) | warning, and `interpreted_solid_analysis.analysis_failed` with the reason. The optimisation result is still written: a design whose *interpretation* is invalid is a finding, not a reason to discard a completed run |
+| the exported part fails its non-linear check, or the check cannot decide | warning with the assessment; the case's `verdict`, `carries_design_load = false` and `nonlinear_check.all_carry_design_load = false` |
+| a ratio of the part's non-linear to its linear response deviates from 1 by more than 5 %, or points of the part yield | warning naming the ratio (or the yielded points and the largest plastic strain) |
+| the non-linear check cannot run (no part, the loads miss it, the solver refuses a case) | `nonlinear_check.skipped`, or the case's `failure`, with the reason, and a warning; a monitor off the part is dropped and named |
+| `contact` in a topology deck; `nonlinear` on a shell deck | `ConfigError` at deck load |
 
 ## 10. Measures reported
 
@@ -869,6 +873,7 @@ The optimiser and its supporting pieces report, never hide:
 | `manufacturing_checks.overhang` | solid elements off the plate with no solid support, for the build direction | whether the design is printable under the 45-degree rule |
 | `buckling` (MMA) | the SIMP model's lowest aggregated load factors, their KS value and each mode's energy share in solid | what the constraint holds |
 | `buckling_check` | lowest load factors of the full solid domain and of the exported part | whether the *part* meets the buckling requirement |
+| `nonlinear_check` | per load case of the exported part: the verdict, the stable load factor, the critical bracket, the non-linear over the linear displacement, end compliance and peak stress, the linear first-yield load factor | whether the part behaves at its design load as the linear analysis it was designed with predicts (section 11) |
 
 The grey level needs care. A density filter of radius `r_min` leaves a genuinely
 intermediate boundary layer roughly `r_min` wide, and on a coarse mesh that layer
@@ -891,3 +896,79 @@ around 14 % stiffer than the compliance the optimiser reported, for 0.4 % more
 mass - so the reported objective is *pessimistic* there rather than optimistic.
 Either way it is not the compliance of a part, which is why the interpreted
 value is computed and reported on every run instead of being inferred.
+
+## 11. Non-linear check of the exported part
+
+The optimiser designs for linear elasticity: small displacements, and a
+material that never yields. A `nonlinear` block in the deck (or
+`--nonlinear`) makes `sparlab_topopt` test that assumption on the part it
+exports - the thresholded structure at full material, the model of the
+interpreted re-solve and of the buckling check - with the non-linear static
+analysis of `docs/formulation.md` (sections 7c and 7d) under the block's
+settings: large displacement and rotation (total Lagrangian, the default
+`finite` kinematics), and J2 plasticity where the material has a
+`plasticity` block, which the optimisation itself ignores with a warning. The
+SIMP design is not analysed: its void cells, at a small fraction of the
+stiffness, distort without bound under large displacement - the known
+difficulty of geometrically non-linear topology optimisation - and it is not
+what would be built.
+
+Per load case (`topopt/NonlinearPartCheck.hpp`) the check reports:
+
+* a **verdict**. `carries`: the solver followed stable equilibrium states -
+  every converged state's tangent positive definite, by the inertia of its
+  `LDL^T` factor - from the unloaded part to `lambda >= 1`, the design load.
+  `fails`: the tangent turns indefinite, or load control meets a limit or
+  bifurcation point (for a yielding material also a plastic collapse, whose
+  tangent is singular), below the design load; `critical_load_factor_bracket`
+  holds the load factors of the two states it lies between. `undetermined`:
+  neither is shown - no step converged beyond a load factor (a limit load or
+  a failure of Newton's method, which the solver cannot tell apart; the
+  bracket is given), the load path ended below 1, a follower pressure's
+  non-symmetric tangent left stability unassessed, or the final state lies
+  outside the range of the law (below);
+* `stable_load_factor`, the largest load factor of the converged states
+  before the first unstable one;
+* at the final load factor `lambda`, the **ratios** of the non-linear to the
+  linear response (the linear one scaled by `lambda`): the largest nodal
+  displacement, the end compliance `f^T u` with `f` the case's load vector at
+  `lambda = 1` - the measure the optimiser minimised, thermal and body loads
+  included - and the largest element von Mises stress. Each tends to 1 as the
+  load tends to 0, and a deviation above 5 % is warned about. No ratio is
+  formed from a linear response that is round-off: the stresses of a freely
+  expanding part, the displacements of a fully held one;
+* for a material with a yield stress, `linear_first_yield_load_factor`, the
+  yield stress over the largest linear element von Mises stress, beside the
+  non-linear run's yielded points and largest equivalent plastic strain.
+
+**The law's range.** The Saint Venant-Kirchhoff form, which an elastoplastic
+material also takes with finite kinematics, is linear elasticity written in
+the Green strain: right for large rotation with small strain, wrong in strong
+compression, where its compressive force falls again below a stretch of
+`1/sqrt(3)`. A final state with an integration point compressed to
+`J < 1/sqrt(3)` - an inverted cell among them - withholds the verdict
+(`undetermined`, `within_law_range = false`): neither an equilibrium nor an
+instability found there is the material's. A concentrated load on a yielding
+material does this to the cells under it, and the assessment says so.
+Strains above 5 % - where the solver warns that the Saint Venant-Kirchhoff
+form, the elastoplastic law or small-strain kinematics leaves its range -
+qualify the verdict, which then holds only qualitatively where they occur.
+Small-strain kinematics models no geometric non-linearity: its verdict
+covers yielding and plastic collapse, not buckling.
+
+**What is verified** (`sparlab_verify --study part-check`,
+`docs/verification.md` section 31): the displacement and end-compliance
+ratios of a slender strip against Euler's elastica for `P L^2 / (E I)` from
+0.025 to 2, within 1.6e-4 once extrapolated from a mesh ladder; their
+second order in the small-load limit (observed 1.995 and 1.997); the collapse
+bracket of a uniform elastic-perfectly plastic bar, [0.666633, 0.666695]
+around the exact 2/3, with the linear first-yield estimate 2/3 to 1.5e-15;
+a column's bifurcation bracket within 2.8e-4 of the linear buckling factor
+of the same mesh, the size of its pre-buckling strain (3.9e-4); and free
+thermal expansion, which both analyses reproduce to 2.3e-14.
+
+The check does not feed back into the optimisation. A part that fails at its
+design load needs the constraint that addresses the cause - the buckling
+constraint (section 5d) for a bifurcation, the stress constraint (section 5c)
+for yielding - or a different load introduction where the cells under a
+concentrated load crush.

@@ -21,7 +21,9 @@
 ///   <out>/nonlinear_displacement_<lc>.csv  its final nodal displacements
 ///   <out>/nonlinear_stress_<lc>.csv its final Cauchy and 2nd Piola-Kirchhoff stresses
 ///   <out>/nonlinear_reactions_<lc>.csv     its final support reactions
-///   <out>/nonlinear_<lc>.vtk        its final fields
+///   <out>/nonlinear_<lc>.vtk        its final fields (in a topology run, of
+///                                   the exported part's non-linear check, on
+///                                   the structure_after mesh)
 ///   <out>/transient_<lc>.csv        time history of a transient: energies, monitors
 ///   <out>/transient_state_<lc>.csv  its final displacement, velocity, acceleration
 ///   <out>/transient_reactions_<lc>.csv     its final support reactions
@@ -53,6 +55,7 @@
 #include "sparlab/io/Json.hpp"
 #include "sparlab/mesh/SubMesh.hpp"
 #include "sparlab/topopt/LengthScale.hpp"
+#include "sparlab/topopt/NonlinearPartCheck.hpp"
 #include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
@@ -247,5 +250,13 @@ json::Value overhang_json(const OverhangReport& report, bool filtered);
 
 /// Summary block of the minimum length-scale scan of the final design.
 json::Value length_scale_json(const LengthScaleScan& scan);
+
+/// The `nonlinear_check` block of a topology run's summary.json: what was
+/// checked, per load case the verdict, the critical bracket, the ratios of the
+/// non-linear to the linear response and the yield estimate, and under
+/// `analysis` the non-linear runs as nonlinear_json reports them. `linear`
+/// holds the part's linear solutions of all its load cases.
+json::Value nonlinear_part_check_json(const NonlinearPartCheck& check, const FemModel& part,
+                                      const std::vector<StaticSolution>& linear);
 
 }  // namespace sparlab

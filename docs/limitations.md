@@ -447,6 +447,29 @@ strength criterion for a thermal load. The body-load interpolation and the
 gradients are verified (`docs/verification.md`, section 29); no optimised
 design under these loads is compared with another code or an experiment.
 
+**The design is linear; its exported part is checked, not designed, beyond
+that.** The optimiser minimises the compliance of linear elasticity: small
+displacements and a material that never yields (a `plasticity` block is
+ignored by the optimisation, with a warning). A `nonlinear` block checks the
+exported part afterwards - large displacement, and J2 plasticity where the
+material yields - and reports whether it carries its design load, where it
+stops if it does not, and how far its response departs from the linear one
+(`docs/topology_optimization.md`, section 11). Nothing of that feeds back
+into the design: a part that fails the check needs a buckling or stress
+constraint, or a different load. The check analyses the part, not the SIMP
+design, whose void cells would distort without bound; it takes no shell part
+(the shell has small rotations only) and no contact, and its verdict rests on
+the non-linear solver's own bracketing of critical points. Past a
+bifurcation it follows no post-buckling branch (there is no branch
+switching), and under a follower pressure its tangent reveals no inertia, so
+stability is left undetermined. A final state compressed beyond the
+Saint Venant-Kirchhoff form's range (`J < 1/sqrt(3)`) withholds the verdict:
+a concentrated load on a yielding material crushes the cells under it, which
+is a finding about the load introduction, not a failure criterion of the
+material, and neither this nor any other check models fracture or fatigue.
+It is verified on a strip against the elastica and on exact limits
+(`docs/verification.md`, section 31), not on an optimised part.
+
 **The optimum is local.** SIMP with `p > 1` is non-convex; a different starting
 design, penalty schedule or mesh can converge to a different local optimum. The
 design study shows exactly that: the mesh-refinement arm with the filter radius

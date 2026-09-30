@@ -14,7 +14,10 @@
 ///   7. when a buckling check is configured, compare the buckling load
 ///      factors of the full solid domain and the interpreted structure - the
 ///      part that would be exported;
-///   8. write every artefact plus a summary, including the "before" (design
+///   8. when the deck enables the non-linear analysis, check that part with
+///      large displacement and, for a material with a yield stress, J2
+///      plasticity against its linear analysis (NonlinearPartCheck.hpp);
+///   9. write every artefact plus a summary, including the "before" (design
 ///      domain) and "after" (thresholded structure) geometries as VTK + STL.
 ///
 /// Step 6 uses a property specific to the 2-D idealisation: uniformly scaling
@@ -39,10 +42,12 @@
 #include "sparlab/io/ResultWriter.hpp"
 #include "sparlab/mesh/SubMesh.hpp"
 #include "sparlab/topopt/LengthScale.hpp"
+#include "sparlab/topopt/NonlinearPartCheck.hpp"
 #include "sparlab/topopt/OverhangFilter.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <memory>
 
@@ -137,7 +142,7 @@ int main(int argc, char** argv) {
         "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
         "solver",        "projection",  "no-projection", "beta-max",   "buckling",
         "min-load-factor", "no-buckling-constraint", "robust", "no-robust",
-        "overhang",      "no-overhang-filter", "help"};
+        "overhang",      "no-overhang-filter", "nonlinear", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -163,6 +168,8 @@ int main(int argc, char** argv) {
            {"--min-load-factor <l>", "enable the buckling constraint lambda >= l "
                                      "(switches to MMA)"},
            {"--no-buckling-constraint", "disable the deck's buckling constraint"},
+           {"--nonlinear", "check the exported part with the non-linear analysis (the deck's "
+                           "'nonlinear' settings, or their defaults)"},
            {"--robust / --no-robust", "switch the robust (eroded/dilated) formulation on "
                                       "(with the projection) or off"},
            {"--overhang <dir>", "apply the overhang filter for build direction dir "
@@ -261,6 +268,10 @@ int main(int argc, char** argv) {
       config.topology.optimizer.buckling.validate();
     }
     if (cli.has("no-buckling-constraint")) config.topology.optimizer.buckling.enabled = false;
+    if (cli.has("nonlinear")) {
+      config.nonlinear.enabled = true;
+      (void)config.nonlinear_load_cases();  // validates the deck's names
+    }
     if (cli.has("solver")) {
       config.analysis.linear.type = parse_linear_solver_type(cli.value("solver"));
       config.topology.optimizer.analysis.linear.type = config.analysis.linear.type;
@@ -303,10 +314,20 @@ int main(int argc, char** argv) {
           "the deck has topology.enabled = false; sparlab_topopt needs a topology "
           "section. Use sparlab_solve for a plain analysis");
     }
-    if (config.nonlinear.enabled) {
+    // The optimiser designs for linear statics; a 'nonlinear' block checks the
+    // part it exports (step 8), which contact would not describe: the part is
+    // held by the supports it was designed for.
+    if (config.nonlinear.options.contact.enabled) {
       throw ConfigError(
-          "the deck enables the non-linear analysis, but the optimiser designs for linear "
-          "statics; run the non-linear analysis of a design with sparlab_solve");
+          "the deck enables contact, but the optimiser designs for linear statics with the "
+          "deck's supports, and the non-linear check of the exported part keeps them; remove "
+          "the 'contact' block");
+    }
+    if (config.nonlinear.enabled && config.is_shell()) {
+      throw ConfigError(
+          "the non-linear check of the exported part is formulated for plane and solid cells; "
+          "a shell is formulated with small rotations, so its part is checked by the linear "
+          "buckling analysis ('buckling') instead");
     }
     if (config.transient.enabled || config.frequency_response.enabled) {
       throw ConfigError(
@@ -322,7 +343,10 @@ int main(int argc, char** argv) {
       if (plastic) {
         log::warn("the deck's material has a yield stress, but the optimiser designs for "
                   "linear elasticity: the plasticity is ignored (a stress constraint can "
-                  "keep the design below yield)");
+                  "keep the design below yield)",
+                  config.nonlinear.enabled
+                      ? "; the non-linear check of the exported part applies it"
+                      : "; the 'nonlinear' block would check the exported part with it");
       }
     }
 
@@ -450,6 +474,7 @@ int main(int argc, char** argv) {
     // recorded in the summary and warned about rather than made fatal.
     std::unique_ptr<SubModelBuild> sub_build;
     std::unique_ptr<Assembler> sub_assembler;
+    std::vector<StaticSolution> sub_solutions;  // with the loads applied
     json::Value interpreted = json::Value::make_object();
     if (!interpretation) {
       interpreted.set("analysis_failed", json::Value::make_bool(true));
@@ -479,7 +504,8 @@ int main(int argc, char** argv) {
         if (sub.loads_applied) {
           StaticAnalysisOptions opts = config.analysis;
           StaticAnalysis sub_analysis(*sub.model, *sub_assembler, opts);
-          const std::vector<StaticSolution> sols = sub_analysis.solve_all();
+          sub_solutions = sub_analysis.solve_all();
+          const std::vector<StaticSolution>& sols = sub_solutions;
           const Scalar c = StaticAnalysis::weighted_compliance(
               sols, sub.model->normalised_weights());
           interpreted.set("weighted_compliance_J", json::Value::make_number(c));
@@ -524,6 +550,7 @@ int main(int argc, char** argv) {
       } catch (const std::exception& error) {
         sub_build.reset();
         sub_assembler.reset();
+        sub_solutions.clear();
         interpreted.set("analysis_failed", json::Value::make_bool(true));
         interpreted.set("reason", json::Value::make_string(error.what()));
         log::warn("the density field thresholded at ",
@@ -639,6 +666,50 @@ int main(int argc, char** argv) {
       }
     }
 
+    // ---- non-linear check of the exported part --------------------------------
+    // The part - full material, the design's void removed - analysed again with
+    // large displacement and, for a material with a yield stress, J2
+    // plasticity, beside its linear analysis. Like the part's other analyses it
+    // can fail for reasons of the design; that is recorded, not fatal.
+    std::unique_ptr<NonlinearPartCheck> part_check;
+    json::Value nonlinear_check = json::Value::make_object();
+    if (config.nonlinear.enabled) {
+      ScopedTimer t(timings, "nonlinear_check");
+      if (sub_build != nullptr && sub_build->loads_applied) {
+        try {
+          part_check = std::make_unique<NonlinearPartCheck>(check_part_nonlinear(
+              *sub_build->model, *sub_assembler, config.nonlinear.options,
+              config.nonlinear_load_cases(), sub_solutions));
+          nonlinear_check =
+              nonlinear_part_check_json(*part_check, *sub_build->model, sub_solutions);
+          for (const std::string& name : part_check->dropped_monitors) {
+            log::warn("the non-linear check of the exported part drops monitor '", name,
+                      "': its region selects no node of the part");
+          }
+          for (const NonlinearPartCase& c : part_check->cases) {
+            for (const std::string& w : c.warnings) {
+              log::warn("non-linear check of the exported part, load case '", c.load_case,
+                        "': ", w);
+            }
+          }
+        } catch (const std::exception& error) {
+          part_check.reset();
+          nonlinear_check = json::Value::make_object();
+          nonlinear_check.set("skipped", json::Value::make_string(error.what()));
+          log::warn("the non-linear check of the exported part could not be run: ",
+                    error.what());
+        }
+      } else {
+        const std::string reason =
+            sub_build == nullptr
+                ? "the interpreted structure could not be analysed (see "
+                  "interpreted_solid_analysis)"
+                : "the load cases could not be applied to the interpreted structure";
+        nonlinear_check.set("skipped", json::Value::make_string(reason));
+        log::warn("skipping the non-linear check of the exported part: ", reason);
+      }
+    }
+
     // ---- output ------------------------------------------------------------
     ResultWriter writer(out_dir, config);
     {
@@ -680,6 +751,12 @@ int main(int argc, char** argv) {
       if (!buckling_solid.empty()) writer.write_buckling(model.mesh(), buckling_solid, "solid");
       if (!buckling_topology.empty()) {
         writer.write_buckling(interpretation->sub.mesh, buckling_topology, "topology");
+      }
+      // On the part's mesh: its node and element numbers are structure_after's.
+      if (part_check) {
+        for (const NonlinearPartCase& c : part_check->cases) {
+          if (c.failure.empty()) writer.write_nonlinear(*sub_build->model, c.nonlinear);
+        }
       }
     }
 
@@ -809,6 +886,7 @@ int main(int argc, char** argv) {
     }
     summary.set("geometry_export", geometry);
     if (!buckling_check.members().empty()) summary.set("buckling_check", buckling_check);
+    if (!nonlinear_check.members().empty()) summary.set("nonlinear_check", nonlinear_check);
     if (!manufacturing.members().empty()) summary.set("manufacturing_checks", manufacturing);
     writer.write_json("summary.json", summary);
 
@@ -934,11 +1012,37 @@ int main(int argc, char** argv) {
       }
       std::cout << "\n";
     }
-    std::cout << "  geometry:    structure_before.{vtk,stl} and structure_after.{vtk,stl} ("
-              << geometry.find("after")->find("num_triangles")->number_value()
-              << " triangles, "
-              << app::format(geometry.find("after")->find("enclosed_volume_m3")->number_value())
-              << " m^3 enclosed)\n";
+    if (part_check) {
+      for (const NonlinearPartCase& c : part_check->cases) {
+        std::cout << "  non-linear '" << c.load_case << "': " << c.verdict;
+        if (c.failure.empty()) {
+          std::cout << " (stable to lambda " << app::format(c.stable_load_factor);
+          if (!std::isnan(c.displacement_ratio)) {
+            std::cout << "; at lambda " << app::format(c.nonlinear.load_factor)
+                      << " max |u| x" << app::format(c.displacement_ratio, 4)
+                      << ", f.u x" << app::format(c.compliance_ratio, 4) << ", von Mises x"
+                      << app::format(c.von_mises_ratio, 4) << " of linear";
+          }
+          if (c.nonlinear.plastic) {
+            std::cout << "; " << c.nonlinear.plastic_points << " of "
+                      << c.nonlinear.total_points << " points yielded";
+          }
+          std::cout << ")";
+        }
+        std::cout << "\n";
+      }
+    } else if (config.nonlinear.enabled) {
+      std::cout << "  non-linear:  skipped (see nonlinear_check in summary.json)\n";
+    }
+    if (const json::Value* after = geometry.find("after")) {
+      std::cout << "  geometry:    structure_before.{vtk,stl} and structure_after.{vtk,stl} ("
+                << after->find("num_triangles")->number_value() << " triangles, "
+                << app::format(after->find("enclosed_volume_m3")->number_value())
+                << " m^3 enclosed)\n";
+    } else {
+      std::cout << "  geometry:    structure_before.{vtk,stl}; no structure_after (no "
+                   "interpreted structure)\n";
+    }
     std::cout << "  runtime:     " << app::format(timings.get("total")) << " s\n";
     std::cout << "  results:     " << out_dir << "\n";
     for (const std::string& w : result.warnings) {

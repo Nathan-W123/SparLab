@@ -94,6 +94,7 @@ add_library(sparlab STATIC
   src/topopt/BucklingConstraint.cpp
   src/topopt/OverhangFilter.cpp
   src/topopt/LengthScale.cpp
+  src/topopt/NonlinearPartCheck.cpp
   src/topopt/TopologyOptimizer.cpp
   src/io/Json.cpp
   src/io/Config.cpp

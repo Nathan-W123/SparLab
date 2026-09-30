@@ -22,6 +22,15 @@
 /// load factor and its KS aggregate on a compressed plate, against central
 /// differences; a buckling-constrained run on that plate; and the solid an
 /// exported shell part is thickened into.
+///
+/// Study `part-check`: the non-linear check of an exported part - its ratios
+/// of the non-linear to the linear response against Euler's elastica for a
+/// slender strip (with the tip section's rigid rotation for the largest
+/// displacement) over a mesh ladder, and their order in the small-load limit;
+/// the linear first-yield estimate and the collapse bracket of a uniform bar
+/// against the exact collapse load; the bifurcation bracket of a column
+/// against the linear buckling factor of the same mesh; and free thermal
+/// expansion, which both analyses reproduce exactly.
 #include "VerifySupport.hpp"
 
 #include "AppSupport.hpp"
@@ -35,6 +44,7 @@
 #include "sparlab/topopt/DensityFilter.hpp"
 #include "sparlab/topopt/DesignDomain.hpp"
 #include "sparlab/topopt/DesignLoads.hpp"
+#include "sparlab/topopt/NonlinearPartCheck.hpp"
 #include "sparlab/topopt/Sensitivity.hpp"
 #include "sparlab/topopt/StressConstraint.hpp"
 #include "sparlab/topopt/TopologyOptimizer.hpp"
@@ -305,6 +315,57 @@ Vector shell_design(const FemModel& model, const DesignDomain& domain) {
   }
   domain.clamp(x);
   return x;
+}
+
+/// A plane-stress strip `length` x `height` (nx x ny Q4 cells) of a material
+/// with nu = 0, clamped at x = 0, with a dead shear traction on its free end
+/// of resultant -force along y: the continuum counterpart of Euler's elastica.
+FemModel elastica_strip(Index nx, Index ny, Scalar length, Scalar height, Scalar thickness,
+                        Scalar youngs, Scalar force) {
+  FemModel model(make_structured_quad_mesh(box_spec(nx, ny, 1, length, height, 1.0)),
+                 IsotropicMaterial(youngs, 0.0, 7850.0, "strip"), thickness,
+                 StressState::PlaneStress, IntegrationOptions());
+  DisplacementConstraint root;
+  root.region.name = "root";
+  root.region.members.push_back(x_range(-1.0, 0.0));
+  root.fix_x = root.fix_y = true;
+  model.constraints().push_back(root);
+  LoadCaseSpec tip;
+  tip.name = "tip";
+  TractionLoadSpec shear;
+  shear.region.members.push_back(x_range(length, 2.0 * length));
+  shear.traction = Vector3(0.0, -force / (height * thickness), 0.0);
+  tip.tractions.push_back(shear);
+  model.load_case_specs().push_back(tip);
+  model.finalize();
+  return model;
+}
+
+/// A plane-stress bar 1 x 0.1 m (10 x 2 cells) held by rollers at x = 0 and
+/// a pinned corner, so that an end load along x or a uniform temperature
+/// leaves it in a uniform state.
+FemModel uniform_bar(const IsotropicMaterial& material, const LoadCaseSpec& load) {
+  FemModel model(make_structured_quad_mesh(box_spec(10, 2, 1, 1.0, 0.1, 1.0)), material, 0.01,
+                 StressState::PlaneStress, IntegrationOptions());
+  DisplacementConstraint rollers;
+  rollers.region.members.push_back(x_range(-1.0, 0.0));
+  rollers.fix_x = true;
+  model.constraints().push_back(rollers);
+  DisplacementConstraint pin;
+  pin.region.members.push_back(plane_box(-1.0, 0.0, -1.0, 0.0));
+  pin.fix_y = true;
+  model.constraints().push_back(pin);
+  model.load_case_specs().push_back(load);
+  model.finalize();
+  return model;
+}
+
+/// The part check of load case 0 of a finalised model.
+NonlinearPartCase check_case(const FemModel& model, const NonlinearOptions& options) {
+  Assembler assembler(model);
+  StaticAnalysis analysis(model, assembler, direct_solver());
+  const std::vector<StaticSolution> linear = analysis.solve_all();
+  return check_part_nonlinear(model, assembler, options, {0}, linear).cases.at(0);
 }
 
 }  // namespace
@@ -766,6 +827,270 @@ StudyOutcome study_shell_topology(const std::string& out_dir, json::Value& summa
   outcome.value = worst_gradient;
   outcome.tolerance = kTolerance;
   outcome.passed = passed && worst_gradient <= kTolerance;
+  return outcome;
+}
+
+StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary) {
+  // The continuum strip and the elastica differ by its shear and the second
+  // order of its bending strain: (h/L)^2 + (k h / 2L)^2 <= 8e-4 here.
+  constexpr Scalar kTolerance = 1.0e-3;
+  bool passed = true;
+
+  // --- the ratios against Euler's elastica ------------------------------------
+  // A strip 1 m long and 20 mm deep: its shear and the difference between the
+  // continuum and the beam are of order (h/L)^2 = 4e-4, and the largest
+  // bending strain, k h / (2 L), stays below 2 %, where the Saint Venant-
+  // Kirchhoff moment differs from E I kappa at second order in it. The
+  // fully integrated Q4 cells lock in bending, so the ratios converge to the
+  // elastica with the cell size: the three finest meshes give the observed
+  // order and the Richardson extrapolation that is compared.
+  const Scalar length = 1.0;
+  const Scalar height = 0.02;
+  const Scalar thickness = 0.01;
+  const Scalar youngs = 100.0e9;
+  const Scalar inertia = thickness * height * height * height / 12.0;
+  const std::vector<std::pair<Index, Index>> ladder = {{50, 2}, {100, 4}, {200, 8}, {400, 16}};
+  const std::vector<Scalar> ks = {0.025, 0.05, 0.1, 0.5, 1.0, 2.0};
+  const int rk_steps = 20000;
+  CsvWriter csv(path_join(out_dir, "part_check_elastica.csv"),
+                {"k[-]", "mesh", "compliance_ratio[-]", "compliance_ratio_elastica[-]",
+                 "compliance_ratio_error[-]", "displacement_ratio[-]",
+                 "displacement_ratio_elastica[-]", "displacement_ratio_error[-]",
+                 "stable_load_factor[-]", "verdict"});
+  json::Value records = json::Value::make_array();
+  json::Value extrapolated = json::Value::make_array();
+  Scalar worst = 0.0;        // the extrapolated ratios
+  Scalar worst_finest = 0.0; // the finest mesh's
+  Scalar lowest_order = std::numeric_limits<Scalar>::infinity();
+  Scalar reference_error = 0.0;
+  std::vector<Scalar> small_load_deviation;  // finest mesh, k = 0.025, 0.05, 0.1
+  for (const Scalar k : ks) {
+    const ElasticaEnd end = euler_elastica(k, rk_steps);
+    const ElasticaEnd check = euler_elastica(k, 2 * rk_steps);
+    reference_error = std::max({reference_error, std::abs(check.deflection - end.deflection),
+                                std::abs(check.shortening - end.shortening)});
+    // The end compliance P v: the elastica's deflection over the linear
+    // k L / 3. The largest displacement is a corner's of the end section,
+    // which turns rigidly by theta about the centre line.
+    const Scalar compliance_reference = end.deflection / (k / 3.0);
+    const Scalar a = 0.5 * height / length;
+    const Scalar top = std::hypot(end.shortening - a * std::sin(end.rotation),
+                                  end.deflection + a * (1.0 - std::cos(end.rotation)));
+    const Scalar bottom = std::hypot(end.shortening + a * std::sin(end.rotation),
+                                     end.deflection - a * (1.0 - std::cos(end.rotation)));
+    const Scalar displacement_reference =
+        std::max(top, bottom) / std::hypot(k / 3.0, a * k / 2.0);
+    std::vector<Scalar> compliance_ratios;
+    std::vector<Scalar> displacement_ratios;
+    for (std::size_t m = 0; m < ladder.size(); ++m) {
+      const auto [nx, ny] = ladder[m];
+      const FemModel model = elastica_strip(nx, ny, length, height, thickness, youngs,
+                                            k * youngs * inertia / (length * length));
+      const NonlinearPartCase c = check_case(model, NonlinearOptions());
+      const Scalar ec = c.compliance_ratio - compliance_reference;
+      const Scalar ed = c.displacement_ratio - displacement_reference;
+      const std::string mesh = std::to_string(nx) + " x " + std::to_string(ny);
+      csv.raw_row({fmt(k, 6), mesh, fmt(c.compliance_ratio, 10), fmt(compliance_reference, 10),
+                   fmt(ec, 4), fmt(c.displacement_ratio, 10), fmt(displacement_reference, 10),
+                   fmt(ed, 4), fmt(c.stable_load_factor, 6), c.verdict});
+      json::Value rec = json::Value::make_object();
+      rec.set("k", json::Value::make_number(k));
+      rec.set("mesh", json::Value::make_string(mesh));
+      rec.set("compliance_ratio", json::Value::make_number(c.compliance_ratio));
+      rec.set("compliance_ratio_elastica", json::Value::make_number(compliance_reference));
+      rec.set("displacement_ratio", json::Value::make_number(c.displacement_ratio));
+      rec.set("displacement_ratio_elastica", json::Value::make_number(displacement_reference));
+      rec.set("verdict", json::Value::make_string(c.verdict));
+      records.push_back(rec);
+      passed = passed && c.verdict == "carries";
+      compliance_ratios.push_back(c.compliance_ratio);
+      displacement_ratios.push_back(c.displacement_ratio);
+      if (m + 1 == ladder.size()) {
+        worst_finest = std::max({worst_finest, std::abs(ec), std::abs(ed)});
+        if (k <= 0.1) small_load_deviation.push_back(std::abs(c.compliance_ratio - 1.0));
+      }
+    }
+    // The observed order of the three finest meshes and the Richardson
+    // extrapolation with it (second order is the Q4 displacement's; on these
+    // meshes it is still approached from below). Where the load is large
+    // enough for the mesh error to dominate, it must fall on every
+    // refinement.
+    const std::size_t n = ladder.size();
+    json::Value x = json::Value::make_object();
+    x.set("k", json::Value::make_number(k));
+    for (const bool compliance : {true, false}) {
+      const std::vector<Scalar>& r = compliance ? compliance_ratios : displacement_ratios;
+      const Scalar reference = compliance ? compliance_reference : displacement_reference;
+      const Scalar coarse_change = std::abs(r[n - 2] - r[n - 3]);
+      const Scalar fine_change = std::abs(r[n - 1] - r[n - 2]);
+      const Scalar order =
+          fine_change > 0.0 && coarse_change > 0.0 ? std::log2(coarse_change / fine_change) : 0.0;
+      const bool consistent = order >= 1.5 && order <= 2.5;
+      const Scalar limit =
+          r[n - 1] + (r[n - 1] - r[n - 2]) / (std::pow(2.0, consistent ? order : 2.0) - 1.0);
+      worst = std::max(worst, std::abs(limit - reference));
+      const std::string name = compliance ? "compliance" : "displacement";
+      x.set(name + "_ratio_extrapolated", json::Value::make_number(limit));
+      x.set(name + "_ratio_extrapolated_error", json::Value::make_number(limit - reference));
+      x.set(name + "_ratio_observed_order", json::Value::make_number(order));
+      if (k >= 0.5) {
+        lowest_order = std::min(lowest_order, order);
+        passed = passed && consistent;
+        for (std::size_t m = 0; m + 1 < n; ++m) {
+          passed = passed && std::abs(r[m + 1] - reference) < std::abs(r[m] - reference);
+        }
+      }
+    }
+    extrapolated.push_back(x);
+  }
+  csv.close();
+  // The small-load limit: the end compliance deviates from linear at second
+  // order in the load (reversing the load mirrors the deflection).
+  std::vector<Scalar> small_load_orders;
+  for (std::size_t i = 0; i + 1 < small_load_deviation.size(); ++i) {
+    const Scalar order = std::log2(small_load_deviation[i + 1] / small_load_deviation[i]);
+    small_load_orders.push_back(order);
+    passed = passed && std::abs(order - 2.0) <= 0.1;
+  }
+
+  // --- first yield and plastic collapse of a uniform bar ------------------------
+  const Scalar yield = 250.0e6;
+  IsotropicMaterial plastic(200.0e9, 0.3, 7850.0, "steel");
+  {
+    PlasticityParameters p;
+    p.yield_stress = yield;
+    plastic.set_plasticity(p);
+  }
+  LoadCaseSpec pull;
+  pull.name = "pull";
+  TractionLoadSpec end_traction;
+  end_traction.region.members.push_back(x_range(1.0, 2.0));
+  end_traction.traction = Vector3(1.5 * yield, 0.0, 0.0);
+  pull.tractions.push_back(end_traction);
+  NonlinearOptions small_strain;
+  small_strain.kinematics = Kinematics::SmallStrain;
+  const NonlinearPartCase bar = check_case(uniform_bar(plastic, pull), small_strain);
+  const Scalar collapse = 1.0 / 1.5;
+  const bool bar_ok = bar.verdict == "fails" && bar.critical_lower <= collapse &&
+                      bar.critical_upper > collapse &&
+                      bar.critical_upper - bar.critical_lower < 1.0e-3 &&
+                      std::abs(bar.linear_first_yield_load_factor - collapse) <= 1.0e-10;
+  passed = passed && bar_ok;
+
+  // --- the bifurcation of a column against its linear buckling factor -----------
+  // A cantilever column 1 m x 40 mm (40 x 2 cells) under an axial dead load
+  // of 80 kN, beyond its critical load. The bifurcation of the straight path
+  // differs from the linear buckling factor only by the pre-buckling
+  // deformation, of the order of the axial strain P / (E A).
+  Scalar lambda_linear = 0.0;
+  NonlinearPartCase column;
+  const Scalar column_force = 80.0e3;
+  const Scalar column_h = 0.04;
+  const Scalar column_t = 0.01;
+  {
+    FemModel model(make_structured_quad_mesh(box_spec(40, 2, 1, 1.0, column_h, 1.0)),
+                   IsotropicMaterial(200.0e9, 0.3, 7850.0, "steel"), column_t,
+                   StressState::PlaneStress, IntegrationOptions());
+    DisplacementConstraint root;
+    root.region.members.push_back(x_range(-1.0, 0.0));
+    root.fix_x = root.fix_y = true;
+    model.constraints().push_back(root);
+    LoadCaseSpec axial;
+    axial.name = "axial";
+    TractionLoadSpec top;
+    top.region.members.push_back(x_range(1.0, 2.0));
+    top.traction = Vector3(-column_force / (column_h * column_t), 0.0, 0.0);
+    axial.tractions.push_back(top);
+    model.load_case_specs().push_back(axial);
+    model.finalize();
+    Assembler assembler(model);
+    BucklingOptions options;
+    options.num_modes = 1;
+    options.tolerance = 1.0e-12;
+    options.linear.type = LinearSolverType::SimplicialLdlt;
+    lambda_linear = analyse_buckling(model, assembler, 0, options).load_factors(0);
+    column = check_case(model, NonlinearOptions());
+  }
+  const Scalar prebuckling_strain = lambda_linear * column_force / (200.0e9 * column_h * column_t);
+  const Scalar column_gap =
+      std::max(std::abs(column.critical_lower / lambda_linear - 1.0),
+               std::abs(column.critical_upper / lambda_linear - 1.0));
+  const bool column_ok = column.verdict == "fails" && column_gap <= 5.0 * prebuckling_strain;
+  passed = passed && column_ok;
+
+  // --- free thermal expansion -----------------------------------------------------
+  // The finite-strain law splits the free thermal stretch off
+  // multiplicatively, so both analyses give u = alpha dT x exactly.
+  LoadCaseSpec heat;
+  heat.name = "heat";
+  heat.temperature.source = TemperatureSpec::Source::Uniform;
+  heat.temperature.uniform = 120.0;
+  const NonlinearPartCase thermal = check_case(uniform_bar(steel(), heat), NonlinearOptions());
+  const Scalar thermal_error = std::max(std::abs(thermal.displacement_ratio - 1.0),
+                                        std::abs(thermal.compliance_ratio - 1.0));
+  const bool thermal_ok = thermal.verdict == "carries" && thermal_error <= 1.0e-8 &&
+                          std::isnan(thermal.von_mises_ratio);
+  passed = passed && thermal_ok;
+
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("elastica_records", records);
+  block.set("elastica_extrapolated", extrapolated);
+  block.set("elastica_reference_error", json::Value::make_number(reference_error));
+  block.set("finest_mesh_worst_ratio_error", json::Value::make_number(worst_finest));
+  block.set("extrapolated_worst_ratio_error", json::Value::make_number(worst));
+  block.set("lowest_observed_order_k_ge_0.5", json::Value::make_number(lowest_order));
+  block.set("small_load_compliance_deviation_orders", json::array_of(small_load_orders));
+  json::Value b = json::Value::make_object();
+  b.set("verdict", json::Value::make_string(bar.verdict));
+  b.set("exact_collapse_load_factor", json::Value::make_number(collapse));
+  b.set("critical_lower", json::Value::make_number(bar.critical_lower));
+  b.set("critical_upper", json::Value::make_number(bar.critical_upper));
+  b.set("linear_first_yield_load_factor", json::Value::make_number(bar.linear_first_yield_load_factor));
+  b.set("passed", json::Value::make_bool(bar_ok));
+  block.set("bar_collapse", b);
+  json::Value col = json::Value::make_object();
+  col.set("verdict", json::Value::make_string(column.verdict));
+  col.set("linear_buckling_load_factor", json::Value::make_number(lambda_linear));
+  col.set("critical_lower", json::Value::make_number(column.critical_lower));
+  col.set("critical_upper", json::Value::make_number(column.critical_upper));
+  col.set("relative_gap", json::Value::make_number(column_gap));
+  col.set("prebuckling_axial_strain", json::Value::make_number(prebuckling_strain));
+  col.set("passed", json::Value::make_bool(column_ok));
+  block.set("column_bifurcation", col);
+  json::Value th = json::Value::make_object();
+  th.set("verdict", json::Value::make_string(thermal.verdict));
+  th.set("ratio_error", json::Value::make_number(thermal_error));
+  th.set("stress_ratio_formed", json::Value::make_bool(!std::isnan(thermal.von_mises_ratio)));
+  th.set("passed", json::Value::make_bool(thermal_ok));
+  block.set("free_thermal_expansion", th);
+  block.set("note",
+            json::Value::make_string(
+                "The non-linear check of an exported part (topopt/NonlinearPartCheck.hpp): "
+                "its end-compliance and largest-displacement ratios of the non-linear to the "
+                "linear response for a strip 1 m x 20 mm (Q4, nu = 0) under a dead end "
+                "force, k = P L^2 / (E I) from 0.025 to 2, against Euler's elastica solved by "
+                "shooting (the largest displacement with the end section turning rigidly), "
+                "on four meshes; their second order in the small-load limit; the linear "
+                "first-yield estimate and the collapse bracket of a uniform "
+                "elastic-perfectly plastic bar at 1.5 times its yield load (small strain) "
+                "against 1/1.5; the bifurcation bracket of a cantilever column against the "
+                "linear buckling factor of the same mesh; and free thermal expansion, "
+                "exact in both analyses."));
+  summary.set("part_check", block);
+
+  StudyOutcome outcome;
+  outcome.name = "non-linear check of the exported part vs the elastica and exact limits";
+  outcome.kind = "verification";
+  outcome.metric =
+      "largest error of the compliance and displacement ratios, Richardson-extrapolated with "
+      "the observed order of the three finest meshes, against the elastica (for k >= 0.5 "
+      "that order within 1.5 ... 2.5 and the error falling on every refinement; the "
+      "small-load order, the bar's collapse bracket, the column's bifurcation and free "
+      "thermal expansion also required)";
+  outcome.value = worst;
+  outcome.tolerance = kTolerance;
+  outcome.passed = passed && worst <= kTolerance;
   return outcome;
 }
 

@@ -2448,6 +2448,86 @@ json::Value length_scale_json(const LengthScaleScan& scan) {
   return out;
 }
 
+json::Value nonlinear_part_check_json(const NonlinearPartCheck& check, const FemModel& part,
+                                      const std::vector<StaticSolution>& linear) {
+  json::Value out = json::Value::make_object();
+  out.set("what", json::Value::make_string(
+                      "the exported part (structure_after: the density field thresholded at "
+                      "solid_interpretation.threshold, its largest face-connected group, full "
+                      "material) analysed again with large displacement and, for a material "
+                      "with a yield stress, J2 plasticity, beside its linear analysis; the "
+                      "SIMP design itself is not analysed, its void elements distorting without "
+                      "bound under large displacement"));
+  out.set("verdicts",
+          json::Value::make_string(
+              "carries: stable equilibrium states (every tangent positive definite) from the "
+              "unloaded part to lambda >= 1, the design load; fails: the tangent turns "
+              "indefinite, or load control meets a limit or bifurcation point, below it; "
+              "undetermined: neither shown"));
+  out.set("ratios", json::Value::make_string(
+                        "non-linear over linear response at the final load factor lambda, the "
+                        "linear one scaled by lambda: largest nodal displacement, end "
+                        "compliance f^T u (f the load vector at lambda = 1), largest element von "
+                        "Mises stress; each tends to 1 as the load tends to 0"));
+  out.set("linear_deviation_warning_threshold", json::Value::make_number(kLinearDeviationWarning));
+  if (!check.dropped_monitors.empty()) {
+    out.set("dropped_monitors", json::array_of(check.dropped_monitors));
+  }
+  const auto optional = [](json::Value& v, const std::string& key, Scalar x) {
+    if (std::isfinite(x)) v.set(key, json::Value::make_number(x));
+  };
+  bool all = !check.cases.empty();
+  std::vector<NonlinearResult> runs;
+  json::Value cases = json::Value::make_array();
+  for (const NonlinearPartCase& c : check.cases) {
+    json::Value e = json::Value::make_object();
+    e.set("load_case", json::Value::make_string(c.load_case));
+    e.set("verdict", json::Value::make_string(c.verdict));
+    e.set("carries_design_load", json::Value::make_bool(c.carries_design_load));
+    e.set("assessment", json::Value::make_string(c.assessment));
+    all = all && c.carries_design_load;
+    json::Value lin = json::Value::make_object();
+    lin.set("compliance_J", json::Value::make_number(c.linear_compliance));
+    lin.set("max_displacement_m", json::Value::make_number(c.linear_max_displacement));
+    lin.set("max_von_mises_Pa", json::Value::make_number(c.linear_max_von_mises));
+    e.set("linear_at_design_load", lin);
+    optional(e, "yield_stress_Pa", c.yield_stress);
+    optional(e, "linear_first_yield_load_factor", c.linear_first_yield_load_factor);
+    if (!c.failure.empty()) {
+      e.set("failure", json::Value::make_string(c.failure));
+    } else {
+      e.set("final_load_factor", json::Value::make_number(c.nonlinear.load_factor));
+      e.set("completed", json::Value::make_bool(c.nonlinear.completed));
+      e.set("stability_assessed", json::Value::make_bool(c.stability_assessed));
+      e.set("stable_load_factor", json::Value::make_number(c.stable_load_factor));
+      if (std::isfinite(c.critical_lower)) {
+        json::Value bracket = json::Value::make_array();
+        bracket.push_back(json::Value::make_number(c.critical_lower));
+        bracket.push_back(json::Value::make_number(c.critical_upper));
+        e.set("critical_load_factor_bracket", bracket);
+      }
+      json::Value ratios = json::Value::make_object();
+      optional(ratios, "max_displacement", c.displacement_ratio);
+      optional(ratios, "end_compliance", c.compliance_ratio);
+      optional(ratios, "max_von_mises", c.von_mises_ratio);
+      e.set("nonlinear_to_linear", ratios);
+      if (c.nonlinear.plastic) {
+        e.set("yielded_points", json::Value::make_number(c.nonlinear.plastic_points));
+        e.set("elastoplastic_points", json::Value::make_number(c.nonlinear.total_points));
+        e.set("max_equivalent_plastic_strain",
+              json::Value::make_number(c.nonlinear.max_plastic_strain));
+      }
+      runs.push_back(c.nonlinear);
+    }
+    e.set("warnings", json::array_of(c.warnings));
+    cases.push_back(e);
+  }
+  out.set("all_carry_design_load", json::Value::make_bool(all));
+  out.set("load_cases", cases);
+  out.set("analysis", nonlinear_json(runs, check.options, part, linear));
+  return out;
+}
+
 json::Value make_topology_summary(const Configuration& config, const FemModel& model,
                                   const DesignDomain& domain,
                                   const DensityFilter& filter,

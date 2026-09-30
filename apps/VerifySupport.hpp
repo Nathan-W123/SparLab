@@ -107,7 +107,20 @@ StudyOutcome study_beam_curved(const std::string& out_dir, json::Value& summary)
 /// \{
 StudyOutcome study_design_loads(const std::string& out_dir, json::Value& summary);
 StudyOutcome study_shell_topology(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary);
 /// \}
+
+/// The free end of Euler's elastica: a cantilever under a dead force at its
+/// free end, perpendicular to the undeformed axis, with k = P L^2 / (E I),
+/// solved by shooting with `steps` Runge-Kutta steps (verify_nonlinear.cpp).
+/// In units of the length: the deflection along the force and the
+/// shortening; the rotation of the end section [rad].
+struct ElasticaEnd {
+  Scalar deflection = 0.0;
+  Scalar shortening = 0.0;
+  Scalar rotation = 0.0;
+};
+ElasticaEnd euler_elastica(Scalar k, int steps);
 
 /// Quarter sections of a cylinder (verify_loads.cpp).
 /// \{

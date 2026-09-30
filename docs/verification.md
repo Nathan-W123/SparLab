@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 322 cases, 21 600 assertions (GCC)
+make test              # the Catch2 suite: 328 cases, 21 705 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -81,6 +81,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Beam: a quarter-circle cantilever of straight elements vs Castigliano (bending, torsion, stretching, shear) | verification | largest tip-displacement error at 128 elements (order `>= 1.9` also required) | `6.69e-05` | `1e-4` | PASS |
 | Topology optimisation under loads that follow the design: self-weight, a rotation with a body force, uniform and regional temperatures; compliance, stress-aggregate and buckling gradients (Q4, Hex8) | verification | worst best-step max scaled gradient error (the load vectors to `1e-14`, near-void compliance within 2 % of the solid half and x10 without the threshold also required) | `1.88e-06` | `1e-5` | PASS |
 | Topology optimisation of MITC4 shells: compliance of a plate and a cylinder panel, out-of-plane buckling of a compressed plate | verification | worst best-step max scaled gradient error (a buckling-constrained run meeting its load factor within the volume, the lowest mode out of plane and the thickened part closed with the plate's volume also required) | `1.46e-06` | `1e-5` | PASS |
+| Non-linear check of the exported part: a strip vs Euler's elastica, a bar's plastic collapse, a column's bifurcation, free thermal expansion | verification | largest error of the end-compliance and displacement ratios vs the elastica, Richardson-extrapolated from the three finest meshes (their order within 1.5 ... 2.5 for `k >= 0.5`, the small-load order 2, the exact collapse bracketed, the bifurcation within 5 times the pre-buckling strain of the linear factor and the thermal ratios `1` to `1e-8` also required) | `1.56e-04` | `1e-3` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -108,6 +109,7 @@ Supporting measurements from the same runs:
 | Shell plate: the error's change over `t / a = 1e-2 ... 1e-4` at 16 x 16; the distorted clamped plate at `t / a = 1e-3` | a factor `1.002`; `0.150` of the deflection on 4 x 4 cells (locked), `0.971` on 8 x 8, `0.994` on 16 x 16 |
 | Shell plate: lumped-mass frequencies at 64 x 64 | mode (1, 1) `1.33e-04` from below; (1, 2) and (2, 1) `3.3e-05` (errors cancelling); largest `5.34e-04` |
 | Shell plate buckling at 64 x 64, in `pi^2 D / a^2` | `k = 3.9984` (uniaxial), `1.9992` (biaxial); the model's exact values `3.9971`, `1.9985` |
+| Part check vs the elastica: finest-mesh (400 x 16 Q4) ratio error; observed order; small-load order of the end compliance | `2.52e-03` at `k = 2`; `1.78 -> 1.87` from `k = 0.5` to 2; `1.995`, `1.997` |
 | MacNeal-Harder benchmarks on 4 ... 64 cells a side, over the reference | Scordelis-Lo `0.943 -> 0.997`; pinched cylinder `0.379 -> 1.006`; pinched hemisphere `1.025 -> 0.995` |
 | Box beam on 8 cells per wall; the drilling factor | bending `0.99729`, torsion `0.99940` of the theory; `<= 1.7e-4` change over `1e-6 ... 1e-2`, the twist `0.99776` at `1e-1` |
 | Beam frequencies at 128 elements; observed orders | first bending mode `1.01e-07`, third torsion mode `1.57e-04` (consistent above, lumped below); `2.00` to `2.01` (64 -> 128) |
@@ -2698,6 +2700,72 @@ volume fraction at `0.59995`. The solid an exported part is thickened into
 is closed on the plate and the panel, and holds `A t` to `6.7e-16` on the
 plate and `9.5e-4` on the panel, whose flat facets cut the arc.
 
+## 31. The non-linear check of the exported part
+
+The exported part of a topology run analysed again with large displacement
+and, where its material yields, J2 plasticity, beside its linear analysis
+(`docs/topology_optimization.md`, section 11): a verdict per load case, the
+critical bracket, and the ratios of the non-linear to the linear
+displacement, end compliance and peak stress.
+
+**Unit tests** (`tests/test_nonlinear_part_check.cpp`, 6 cases): the
+classification of a run's path - stable to the design load (also along a
+path that unloads), an arc-length path past a limit point, load control
+meeting an unstable tangent, a step no halving converges, a tangent without
+inertia, a path ending below the design load, a state compressed beyond the
+Saint Venant-Kirchhoff range (withheld; not for the neo-Hookean law), strains
+beyond the small-strain range and small-strain kinematics (qualified); a
+cantilever strip whose end compliance deviates from linear at second order in
+the load and whose peak stress at first; a uniform bar's first yield and
+collapse; a column's bifurcation against its linear buckling factor; free
+thermal expansion; the monitors that miss the part dropped, a refused run
+recorded, contact and missing linear solutions refused.
+
+**The study** (`sparlab_verify --study part-check`,
+`part_check_elastica.csv`). A strip 1 m long, 20 mm deep (plane stress,
+`nu = 0`, fully integrated Q4) is clamped at one end and loaded by a dead
+shear traction on the other, of resultant `P = k E I / L^2`. Its ratios are
+set against Euler's elastica, solved by shooting (the change when the
+Runge-Kutta steps double is `4.1e-15`): the end compliance `P v` against
+`d / (k/3)`, and the largest nodal displacement - a corner of the end
+section - against the elastica's end with that section turned rigidly by
+its rotation, over the linear corner displacement of Euler-Bernoulli theory.
+The continuum and the elastica differ by the strip's shear and the second
+order of its bending strain, `(h/L)^2 + (k h / 2L)^2 <= 8e-4`, which sets the
+tolerance `1e-3`. The Q4 cells lock in bending, so the ratios converge with
+the mesh: on the four meshes 50 x 2 to 400 x 16 the error at `k = 2` falls
+from `0.110` through `0.0356` and `0.00962` to `0.00252`, and at `k = 1`
+from `0.0484` to `0.00127`. The table gives the finest mesh, the observed
+order of the three finest and the Richardson extrapolation with it:
+
+| k = P L^2/(E I) | End compliance: elastica | 400 x 16 | Extrapolated error | Order | Largest displacement: elastica | 400 x 16 | Extrapolated error | Order |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.025 | 0.9999286 | 0.9999294 | `-7.09e-07` | 1.674 | 0.9999598 | 0.9999603 | `-6.73e-07` | 1.621 |
+| 0.05 | 0.9997144 | 0.9997187 | `-1.22e-06` | 1.740 | 0.9998019 | 0.9998051 | `-1.04e-06` | 1.726 |
+| 0.1 | 0.9988596 | 0.9988775 | `-3.28e-06` | 1.758 | 0.9991338 | 0.9991482 | `-2.58e-06` | 1.753 |
+| 0.5 | 0.9728615 | 0.9732750 | `-5.82e-05` | 1.777 | 0.9778954 | 0.9782409 | `-4.36e-05` | 1.775 |
+| 1 | 0.9051623 | 0.9064353 | `-1.44e-04` | 1.809 | 0.9214849 | 0.9225722 | `-1.08e-04` | 1.805 |
+| 2 | 0.7401862 | 0.7427026 | `-1.56e-04` | 1.871 | 0.7792858 | 0.7815458 | `-1.12e-04` | 1.864 |
+
+The worst extrapolated error, `1.56e-04`, is the study's value (tolerance
+`1e-3`); the finest mesh's own worst is `2.52e-03`. The observed orders,
+1.78 to 1.87 where the load is large enough for the mesh error to dominate
+(`k >= 0.5`), approach the Q4 displacement's second order from below; the
+study requires them within 1.5 to 2.5 and the error to fall on every
+refinement there - a gate set after these pre-asymptotic orders were seen,
+and stated as such. On the finest mesh the end compliance's deviation from
+linear falls at second order in the load, observed `1.995` and `1.997`
+between `k = 0.025, 0.05, 0.1`. Every run carries its design load.
+
+Three exact limits complete it:
+
+| Check | Exact | Measured |
+|-------|-------|----------|
+| Uniform bar (10 x 2 Q4, plane stress), elastic-perfectly plastic, `sigma_y = 250` MPa, end traction `1.5 sigma_y`, small strain: linear first-yield load factor | `2/3` | `0.6666666666666651` |
+| the same: collapse bracket (verdict `fails`, the tangent turning singular) | `2/3` | `[0.666633, 0.666695]` |
+| Cantilever column 1 m x 40 mm (40 x 2 Q4), 80 kN axial: bifurcation bracket against the linear buckling factor `0.386514` of the same mesh | the linear factor, to the order of the pre-buckling strain `3.87e-4` (the study allows 5 times it) | `[0.386438, 0.386623]`, relative gap `2.83e-4` |
+| Bar heated by 100 K, `alpha = 1.2e-5`, free to expand: displacement and compliance ratios | `1` (both analyses give `u = alpha dT x`) | `1` to `2.3e-14`; no stress ratio formed (round-off stresses) |
+
 ## What is not covered
 
 Stated plainly, since the absence matters as much as the presence:
@@ -2806,6 +2874,13 @@ Stated plainly, since the absence matters as much as the presence:
   as the end resultants and the extreme-fibre stress of the unit tests, and
   the cross-validation's independent code for beams is a frame written for
   it in NumPy, which verifies the implementation, not the formulation;
+* the non-linear check of the exported part is verified on a strip against
+  the elastica, on a uniform bar's collapse, a column's bifurcation and free
+  thermal expansion - not on an optimised part, whose non-linear response
+  has no reference; its verdict rests on the non-linear solver's own
+  bracketing of critical points, and the law-range test that withholds it
+  (`J < 1/sqrt(3)`) is the Saint Venant-Kirchhoff form's, not a failure
+  criterion of the material;
 * the overhang filter and check are verified for the 3- and 5-element
   stencils of structured square and cubic grids; the robust formulation for
   uniform erosion and dilation only. Neither is a process simulation;

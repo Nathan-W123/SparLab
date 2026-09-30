@@ -49,7 +49,10 @@
 ///                        bounded load of near-void material (verify_topopt.cpp);
 ///   * `shell-topology`   a density design on MITC4 shells: compliance and
 ///                        out-of-plane buckling gradients, a buckling-
-///                        constrained run, the thickened exported part.
+///                        constrained run, the thickened exported part;
+///   * `part-check`       the non-linear check of an exported part: its
+///                        ratios against Euler's elastica, a bar's collapse,
+///                        a column's bifurcation, free thermal expansion.
 ///
 /// Studies of the pressure, volume and thermal loads (verify_loads.cpp):
 ///   * `lame-cylinder`    thick cylinder under internal pressure vs Lame;
@@ -2562,7 +2565,8 @@ int main(int argc, char** argv) {
             "shell-plate-modes | shell-plate-harmonic | shell-plate-buckling | "
             "shell-cylinder-pressure | shell-scordelis-lo | shell-pinched-cylinder | "
             "shell-pinched-hemisphere | shell-box-beam | beam-exact | beam-modes | "
-            "beam-harmonic | beam-buckling | beam-curved | design-loads | shell-topology"},
+            "beam-harmonic | beam-buckling | beam-curved | design-loads | shell-topology | "
+            "part-check"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2751,6 +2755,9 @@ int main(int argc, char** argv) {
     }
     if (all || study == "shell-topology") {
       outcomes.push_back(verify::study_shell_topology(out_dir, summary));
+    }
+    if (all || study == "part-check") {
+      outcomes.push_back(verify::study_part_check(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +
