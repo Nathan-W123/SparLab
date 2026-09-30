@@ -59,7 +59,13 @@ catch_discover_tests(sparlab_tests
   PROPERTIES TIMEOUT 900
 )
 
-# A single target that runs the whole suite in one process, which is what the
-# `make test` convenience target and CI use.
-add_test(NAME sparlab.all COMMAND sparlab_tests)
-set_tests_properties(sparlab.all PROPERTIES TIMEOUT 1800)
+# The whole suite once more in a single process, which catches state one test
+# case leaves behind for the next; the cases above each run in their own.
+# Debug builds leave it out: they already run every case under Eigen's
+# assertions, and the suite in one process there outlasts its timeout (over
+# half an hour on a CI runner) for no coverage the Release run lacks.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" SPARLAB_TEST_BUILD_TYPE)
+if(NOT SPARLAB_TEST_BUILD_TYPE STREQUAL "DEBUG")
+  add_test(NAME sparlab.all COMMAND sparlab_tests)
+  set_tests_properties(sparlab.all PROPERTIES TIMEOUT 1800)
+endif()

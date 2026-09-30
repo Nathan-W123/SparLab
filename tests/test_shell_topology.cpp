@@ -23,6 +23,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <vector>
 
 using namespace sparlab;
 using namespace sparlab::testing;
@@ -126,39 +127,66 @@ Vector graded_design(const FemModel& model, const DesignDomain& domain) {
 }
 
 /// Best (over second- and fourth-order central differences and five steps)
-/// max relative error of `analytical`, entries below 1e-3 of its scale judged
-/// against that scale. A thin shell's bending and membrane stiffness differ by
-/// orders of magnitude, so its solves carry more round-off than a continuum's
-/// and the best step is a larger one.
-Scalar best_gradient_error(const Vector& analytical, const Vector& x,
-                           const std::function<Scalar(const Vector&)>& value,
-                           Eigen::Index stride = 1) {
-  const Scalar floor = 1.0e-3 * analytical.cwiseAbs().maxCoeff();
-  Scalar best = std::numeric_limits<Scalar>::infinity();
+/// max relative error of each gradient in `analytical`, entries below 1e-3 of
+/// its scale judged against that scale; `values` returns the functionals at a
+/// design, one per gradient, so the checks share their evaluations. A thin
+/// shell's bending and membrane stiffness differ by orders of magnitude, so
+/// its solves carry more round-off than a continuum's and the best step is a
+/// larger one, and fourth order, largest step first, goes first. The sweep
+/// stops at the first order and step at which every error is at or below
+/// `good_enough`: one step showing the agreement settles a check against a
+/// tolerance above it.
+std::vector<Scalar> best_gradient_errors(const std::vector<Vector>& analytical, const Vector& x,
+                                         const std::function<Vector(const Vector&)>& values,
+                                         Eigen::Index stride = 1, Scalar good_enough = 0.0) {
+  const std::size_t count = analytical.size();
+  std::vector<Scalar> floor(count);
+  for (std::size_t k = 0; k < count; ++k) {
+    floor[k] = 1.0e-3 * analytical[k].cwiseAbs().maxCoeff();
+  }
+  std::vector<Scalar> best(count, std::numeric_limits<Scalar>::infinity());
   Vector xs = x;
   const auto at = [&](Eigen::Index e, Scalar offset) {
     xs(e) = x(e) + offset;
-    const Scalar v = value(xs);
+    const Vector v = values(xs);
     xs(e) = x(e);
     return v;
   };
-  for (const int order : {2, 4}) {
+  for (const int order : {4, 2}) {
     for (const Scalar step : {3.0e-3, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6}) {
       const Scalar reach = order == 4 ? 2.0 * step : step;
-      Scalar worst = 0.0;
+      std::vector<Scalar> worst(count, 0.0);
       for (Eigen::Index e = 0; e < x.size(); e += stride) {
         if (x(e) - reach < 0.0 || x(e) + reach > 1.0) continue;
-        const Scalar fd =
-            order == 4 ? (-at(e, 2.0 * step) + 8.0 * at(e, step) - 8.0 * at(e, -step) +
-                          at(e, -2.0 * step)) / (12.0 * step)
-                       : (at(e, step) - at(e, -step)) / (2.0 * step);
-        worst = std::max(worst, std::abs(fd - analytical(e)) /
-                                    std::max({std::abs(fd), std::abs(analytical(e)), floor}));
+        const Vector fd =
+            order == 4 ? Vector((-at(e, 2.0 * step) + 8.0 * at(e, step) - 8.0 * at(e, -step) +
+                                 at(e, -2.0 * step)) / (12.0 * step))
+                       : Vector((at(e, step) - at(e, -step)) / (2.0 * step));
+        for (std::size_t k = 0; k < count; ++k) {
+          const Eigen::Index i = static_cast<Eigen::Index>(k);
+          const Scalar a = analytical[k](e);
+          worst[k] = std::max(worst[k], std::abs(fd(i) - a) /
+                                            std::max({std::abs(fd(i)), std::abs(a), floor[k]}));
+        }
       }
-      best = std::min(best, worst);
+      bool settled = true;
+      for (std::size_t k = 0; k < count; ++k) {
+        best[k] = std::min(best[k], worst[k]);
+        settled = settled && best[k] <= good_enough;
+      }
+      if (settled) return best;
     }
   }
   return best;
+}
+
+/// One gradient's error, as above.
+Scalar best_gradient_error(const Vector& analytical, const Vector& x,
+                           const std::function<Scalar(const Vector&)>& value,
+                           Eigen::Index stride = 1, Scalar good_enough = 0.0) {
+  return best_gradient_errors(
+      {analytical}, x, [&](const Vector& xx) { return Vector::Constant(1, value(xx)); }, stride,
+      good_enough)[0];
 }
 
 /// A plate 0.6 x 0.3 m, 3 mm thick, simply supported (w held on its edges,
@@ -278,25 +306,20 @@ TEST_CASE("shell topology: the out-of-plane buckling load factor's gradient matc
     }
     REQUIRE(in_plane <= 1.0e-6 * out_of_plane);
   }
+  // lambda_1 and its KS aggregate from the same perturbed solves; the sweep
+  // stops once a step agrees within half the tolerance.
   const Vector dlambda = objective.chain_to_design(eval, be.dlambda_dphysical[0]);
-  const Scalar error = best_gradient_error(
-      dlambda, x,
+  const std::vector<Scalar> errors = best_gradient_errors(
+      {dlambda, be.dg_dx}, x,
       [&](const Vector& xx) {
         const ObjectiveEvaluation e = objective.evaluate(xx, false);
-        return buckling.evaluate(objective, e, 0, false).load_factors(0);
+        const BucklingEvaluation b = buckling.evaluate(objective, e, 0, false);
+        return Vector((Vector(2) << b.load_factors(0), b.constraint).finished());
       },
-      std::max<Eigen::Index>(1, x.size() / 24));
-  INFO("lambda_1 gradient error " << error);
-  REQUIRE(error < 1.0e-5);
-  const Scalar ks_error = best_gradient_error(
-      be.dg_dx, x,
-      [&](const Vector& xx) {
-        const ObjectiveEvaluation e = objective.evaluate(xx, false);
-        return buckling.evaluate(objective, e, 0, false).constraint;
-      },
-      std::max<Eigen::Index>(1, x.size() / 24));
-  INFO("KS gradient error " << ks_error);
-  REQUIRE(ks_error < 1.0e-5);
+      std::max<Eigen::Index>(1, x.size() / 24), 5.0e-6);
+  INFO("lambda_1 gradient error " << errors[0] << ", KS gradient error " << errors[1]);
+  REQUIRE(errors[0] < 1.0e-5);
+  REQUIRE(errors[1] < 1.0e-5);
 }
 
 TEST_CASE("a shell design's resultants, its exported part's normals and thickened surface",

@@ -173,10 +173,14 @@ Vector graded_design(const FemModel& model, const DesignDomain& domain) {
 /// - of second order, and of fourth, (-v(x+2h) + 8 v(x+h) - 8 v(x-h) +
 /// v(x-2h)) / 12h, whose larger steps an eigenvalue's round-off needs - at
 /// the best of four steps, over every `stride`-th variable, with entries
-/// below 1e-3 of the gradient's scale judged against that scale.
+/// below 1e-3 of the gradient's scale judged against that scale. Fourth order
+/// goes first, largest step first: an eigenvalue's round-off favours the
+/// larger reach. The sweep stops at the first order and step whose error is
+/// at or below `good_enough`: one step showing the agreement settles a check
+/// against a tolerance above it.
 Scalar best_gradient_error(const Vector& analytical, const Vector& x,
                            const std::function<Scalar(const Vector&)>& value,
-                           Eigen::Index stride = 1) {
+                           Eigen::Index stride = 1, Scalar good_enough = 0.0) {
   const Scalar floor = 1.0e-3 * analytical.cwiseAbs().maxCoeff();
   Scalar best = std::numeric_limits<Scalar>::infinity();
   Vector xs = x;
@@ -186,7 +190,7 @@ Scalar best_gradient_error(const Vector& analytical, const Vector& x,
     xs(e) = x(e);
     return v;
   };
-  for (const int order : {2, 4}) {
+  for (const int order : {4, 2}) {
     for (const Scalar step : {1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6}) {
       const Scalar reach = order == 4 ? 2.0 * step : step;
       Scalar worst = 0.0;
@@ -200,6 +204,7 @@ Scalar best_gradient_error(const Vector& analytical, const Vector& x,
                                     std::max({std::abs(fd), std::abs(analytical(e)), floor}));
       }
       best = std::min(best, worst);
+      if (best <= good_enough) return best;
     }
   }
   return best;
@@ -510,6 +515,8 @@ TEST_CASE("buckling-constraint gradients under self-weight and heating match cen
     REQUIRE(be.load_factors(0) > 0.0);
     REQUIRE(be.load_factors(1) > 1.01 * be.load_factors(0));
     INFO("lambda = " << be.load_factors.transpose());
+    // Every eigenvalue costs a solve; the sweep stops once a step agrees
+    // within half the tolerance.
     const Eigen::Index stride = std::max<Eigen::Index>(1, x.size() / 20);
     const Vector dlambda_dx = objective.chain_to_design(eval, be.dlambda_dphysical[0]);
     const Scalar error = best_gradient_error(
@@ -518,7 +525,7 @@ TEST_CASE("buckling-constraint gradients under self-weight and heating match cen
           const ObjectiveEvaluation e = objective.evaluate(xx, false);
           return buckling.evaluate(objective, e, 0, false).load_factors(0);
         },
-        stride);
+        stride, 5.0e-6);
     INFO("lambda_1 gradient error " << error);
     REQUIRE(error < 1.0e-5);
   }
