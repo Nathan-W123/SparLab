@@ -555,7 +555,7 @@ body force, rotation or temperature - is an error unless
 | `linear.residual_tolerance` | number | `1e-8` | scaled residual `||K u - f|| / ||f||` accepted after each solve, whatever the solver. A solve whose backward error `||K u - f|| / || |K| |u| + |f| ||` is at round-off (64 machine epsilon) is accepted too: its residual is the rounding of the sums that form `K u`, which in a slender structure can exceed `1e-8 ||f||` (`docs/formulation.md`, section 5) |
 | `linear.iterative_tolerance` | number | `1e-12` | relative residual the CG solvers iterate to |
 | `linear.max_iterations` | integer | `0` | CG iteration cap; `0` means `2n` for Jacobi CG and 1000 for multigrid CG |
-| `linear.pivot_tolerance` | number | `1e-14` | smallest accepted `min/max` LDL^T pivot ratio |
+| `linear.pivot_tolerance` | number | `1e-14` | smallest accepted LDL^T pivot relative to its own diagonal entry, `D_k / K_kk` (the Jacobi-scaled pivot, independent of units) |
 | `linear.warm_start` | bool | `true` | start each iterative solve from the previous solution of the same load case (or adjoint); an optimisation loop then needs a fraction of the iterations |
 | `linear.auto_direct_limit.plane` | integer | `50000` | `auto` factorises a plane system with at most this many free unknowns and uses multigrid CG above it |
 | `linear.auto_direct_limit.solid` | integer | `10000` | the same limit for a solid system, where the Cholesky fill grows much faster |
@@ -1037,6 +1037,13 @@ its nodes, the snapshot frequencies and warnings.
 | `mass_floor` | number | `1e-9` | mass floor for `penalty_matched` |
 | `mass_interpolation` | string | `penalty_matched` | or `linear` |
 | `body_load_threshold` | number | `0.1` | `rho_t` in `[0, 1)`: below it an element's self-weight, body force and centrifugal load fall like `rho^p` instead of `rho`, so near-void material carries a bounded load (`docs/topology_optimization.md`, section 2b); `0` keeps `rho` at every density |
+
+**Shell design domains.** A `structured_shell` mesh or a file of S4/S4R
+cells can be optimised: each cell's density scales its whole stiffness, and
+the buckling constraint constrains the sheet's out-of-plane buckling
+(`docs/topology_optimization.md`, section 2c). `topology.stress` and the
+overhang filter are refused for a shell with the reason; the overhang and
+length-scale checks are skipped with a warning.
 
 **Loads that follow the design.** A topology deck's load cases may carry
 `gravity`, `body_forces`, `centrifugal` and a `temperature` field (uniform or

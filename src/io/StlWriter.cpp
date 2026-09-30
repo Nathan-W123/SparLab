@@ -5,6 +5,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -73,6 +74,100 @@ std::vector<Triangle> TriangleSurface::triangles() const {
   out.reserve(faces.size());
   for (Index i = 0; i < num_triangles(); ++i) out.push_back(triangle(i));
   return out;
+}
+
+TriangleSurface shell_surface(const Mesh& mesh, const Vector& element_thickness) {
+  if (mesh.element_type() != ElementType::Shell4) {
+    throw IoError("shell_surface needs a mesh of four-node shell cells");
+  }
+  const Index nn = mesh.num_nodes();
+  const Index ne = mesh.num_elements();
+  if (element_thickness.size() != ne) {
+    std::ostringstream os;
+    os << "shell surface: " << element_thickness.size() << " thicknesses for " << ne
+       << " elements";
+    throw IoError(os.str());
+  }
+  // Each element's unit normal at its centre, from its diagonals.
+  std::vector<Vector3> element_normal(static_cast<std::size_t>(ne));
+  for (Index e = 0; e < ne; ++e) {
+    const Index* n = mesh.element_nodes(e);
+    const Vector3 d1 = mesh.node(n[2]) - mesh.node(n[0]);
+    const Vector3 d2 = mesh.node(n[3]) - mesh.node(n[1]);
+    const Vector3 normal = d1.cross(d2);
+    if (!(normal.norm() > 0.0)) {
+      std::ostringstream os;
+      os << "shell surface: element " << e << " has no normal (collapsed diagonals)";
+      throw IoError(os.str());
+    }
+    element_normal[static_cast<std::size_t>(e)] = normal.normalized();
+  }
+  // Nodal normals and half thicknesses.
+  Matrix normals = Matrix::Zero(3, nn);
+  Vector half = Vector::Zero(nn);
+  Vector count = Vector::Zero(nn);
+  for (Index e = 0; e < ne; ++e) {
+    const Index* n = mesh.element_nodes(e);
+    for (int a = 0; a < 4; ++a) {
+      Vector3 add = element_normal[static_cast<std::size_t>(e)];
+      if (count(n[a]) > 0.0 && add.dot(normals.col(n[a])) < 0.0) add = -add;
+      normals.col(n[a]) += add;
+      half(n[a]) += 0.5 * element_thickness(e);
+      count(n[a]) += 1.0;
+    }
+  }
+  if (mesh.has_node_normals()) normals = mesh.node_normals();
+  for (Index v = 0; v < nn; ++v) {
+    if (count(v) == 0.0) continue;
+    half(v) /= count(v);
+    const Scalar length = normals.col(v).norm();
+    if (!(length > 0.0)) {
+      std::ostringstream os;
+      os << "shell surface: the normals of the elements at node " << v << " cancel";
+      throw IoError(os.str());
+    }
+    normals.col(v) /= length;
+  }
+  // Points 0..nn-1 on the side the normals point to, nn..2nn-1 on the other.
+  TriangleSurface surface;
+  surface.points.reserve(static_cast<std::size_t>(2 * nn));
+  for (Index v = 0; v < nn; ++v) {
+    surface.points.push_back(mesh.node(v) + half(v) * Vector3(normals.col(v)));
+  }
+  for (Index v = 0; v < nn; ++v) {
+    surface.points.push_back(mesh.node(v) - half(v) * Vector3(normals.col(v)));
+  }
+  // Each element wound counter-clockwise seen from its nodes' normals: its
+  // outer face so, its inner face reversed, and its free edges closed.
+  std::map<std::pair<Index, Index>, int> uses;
+  std::vector<std::array<Index, 4>> wound(static_cast<std::size_t>(ne));
+  for (Index e = 0; e < ne; ++e) {
+    const Index* n = mesh.element_nodes(e);
+    Vector3 mean = Vector3::Zero();
+    for (int a = 0; a < 4; ++a) mean += Vector3(normals.col(n[a]));
+    std::array<Index, 4>& w = wound[static_cast<std::size_t>(e)];
+    if (element_normal[static_cast<std::size_t>(e)].dot(mean) >= 0.0) {
+      w = {n[0], n[1], n[2], n[3]};
+    } else {
+      w = {n[0], n[3], n[2], n[1]};
+    }
+    emit_quad(surface, w[0], w[1], w[2], w[3]);
+    emit_quad(surface, w[3] + nn, w[2] + nn, w[1] + nn, w[0] + nn);
+    for (int a = 0; a < 4; ++a) {
+      ++uses[std::minmax(w[a], w[(a + 1) % 4])];
+    }
+  }
+  for (Index e = 0; e < ne; ++e) {
+    const std::array<Index, 4>& w = wound[static_cast<std::size_t>(e)];
+    for (int a = 0; a < 4; ++a) {
+      const Index p = w[a];
+      const Index q = w[(a + 1) % 4];
+      if (uses[std::minmax(p, q)] != 1) continue;
+      // Outward for an edge p -> q of a face wound counter-clockwise.
+      emit_quad(surface, p + nn, q + nn, q, p);
+    }
+  }
+  return surface;
 }
 
 TriangleSurface boundary_surface(const Mesh& mesh, Scalar thickness) {

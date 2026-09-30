@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 318 cases, 21 393 assertions (GCC)
+make test              # the Catch2 suite: 322 cases, 21 600 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -80,6 +80,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Beam buckling: pinned and cantilever columns vs the exact loads of the model, and torsional buckling at `G J A / I_p` | verification | largest critical-load error at 32 elements (order `>= 1.9` and the torsional load `<= 1e-10` on every mesh also required) | `2.48e-04` | `3e-4` | PASS |
 | Beam: a quarter-circle cantilever of straight elements vs Castigliano (bending, torsion, stretching, shear) | verification | largest tip-displacement error at 128 elements (order `>= 1.9` also required) | `6.69e-05` | `1e-4` | PASS |
 | Topology optimisation under loads that follow the design: self-weight, a rotation with a body force, uniform and regional temperatures; compliance, stress-aggregate and buckling gradients (Q4, Hex8) | verification | worst best-step max scaled gradient error (the load vectors to `1e-14`, near-void compliance within 2 % of the solid half and x10 without the threshold also required) | `1.88e-06` | `1e-5` | PASS |
+| Topology optimisation of MITC4 shells: compliance of a plate and a cylinder panel, out-of-plane buckling of a compressed plate | verification | worst best-step max scaled gradient error (a buckling-constrained run meeting its load factor within the volume, the lowest mode out of plane and the thickened part closed with the plate's volume also required) | `1.46e-06` | `1e-5` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -2649,6 +2650,53 @@ With the threshold the near-void half adds at most 0.35 % at densities of
 adds 4.9 to 20.5 times the solid half's compliance and more the emptier it
 is. The study requires the first within 2 % and the second above 10 at
 `1e-3`.
+
+## 30. Shell design domains
+
+Topology optimisation of a surface of MITC4 shells (`docs/
+topology_optimization.md`, section 2c): each cell's density scales its whole
+stiffness, and the buckling constraint acts on the sheet's out-of-plane
+buckling.
+
+**Unit tests** (`tests/test_shell_topology.cpp`, 4 cases): the compliance
+gradient of a plate and a cylinder panel against central differences
+(`< 1e-5`); the gradients of the lowest out-of-plane buckling load factor
+and its KS aggregate on a compressed plate (`< 1e-5`), whose solid form
+buckles out of its plane (the mode all `w`) near the thin plate's `k = 4`
+load; the resultants of a density design equal to each element's scaled by
+its stiffness factor (`1e-12`); the exported part's nodal normals equal to
+the surface's; the thickened surface closed, `A t` exactly for a plate and
+to `1e-2` for a panel; a buckling-constrained MMA run meeting its load
+factor within the volume; the overhang filter and the stress constraint
+refused on a shell.
+
+**The study** (`sparlab_verify --study shell-topology`,
+`shell_topology.csv`). Gradients against central differences of second and
+fourth order at steps `3e-3` to `1e-6`, each entry judged against
+`max(|analytical|, |FD|, 1e-3 ||gradient||_inf)`. A thin shell's bending and
+membrane stiffness lie decades apart, so its solves carry more round-off
+than a continuum's and the best step is a larger one (`3e-3` in fourth
+order for the plate); the buckling load factors come from the dense
+eigensolve:
+
+| Gradient | Model | Load | Best max scaled error |
+|----------|-------|------|----------------------:|
+| Compliance | plate 0.6 x 0.3 m, 8 x 4 cells, 5 mm, clamped on an edge | a pressure, an in-plane edge load and its weight with a point force, weighted | `1.46e-06` |
+| Compliance | cylinder panel, radius 1 m, 40 degrees, 8 x 4 cells | the same, the edge load along the axis | `5.15e-07` |
+| Lowest buckling load factor | plate 0.6 x 0.3 m, 10 x 5 cells, 3 mm, simply supported, compressed along x | 1 MPa on the far edge | `6.61e-09` |
+| KS aggregate of the three lowest | the same | the same | `6.60e-09` |
+
+The worst, `1.46e-06`, is the study's value (tolerance `1e-5`). The solid
+plate buckles out of its plane - the lowest mode's `w` carries all but less
+than `1e-6` of its squared norm - at `1.057` times the thin plate's
+`k pi^2 D / (b^2 t)` with `k = 4` on this coarse mesh.
+
+A buckling-constrained run on the same plate (12 x 6 cells, MMA, 30
+iterations) asked for 1.3 times the load factor of the uniform design at the
+volume fraction 0.6 (`5.676`, so `7.379`): it ended at `9.802` with the
+volume fraction at `0.59995`. The solid an exported part is thickened into
+is closed on the plate and the panel, and holds `A t` to `6.7e-16` on the
+plate and `9.5e-4` on the panel, whose flat facets cut the arc.
 
 ## What is not covered
 

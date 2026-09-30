@@ -84,12 +84,24 @@ std::vector<BucklingResult> check_buckling(const FemModel& model, const Assemble
   return out;
 }
 
-SubModelBuild build_solid_submodel(const Configuration& config, Mesh sub_mesh,
-                                   bool with_loads) {
+SubModelBuild build_solid_submodel(const Configuration& config, const FemModel& parent,
+                                   const SubMeshResult& sub, bool with_loads) {
   SubModelBuild out;
-  auto model = std::make_unique<FemModel>(std::move(sub_mesh), config.material(),
-                                          config.thickness, config.stress_state,
-                                          config.integration);
+  // A shell part keeps the shell's options and each retained element its
+  // thickness; its directors follow from the normals the sub-mesh carries.
+  const auto make = [&]() {
+    auto m = std::make_unique<FemModel>(Mesh(sub.mesh), config.material(), config.thickness,
+                                        config.stress_state, config.integration);
+    if (m->is_shell()) {
+      m->set_shell_options(config.shell);
+      for (std::size_t k = 0; k < sub.element_map.size(); ++k) {
+        m->assign_thickness(parent.thickness_of(sub.element_map[k]),
+                            {static_cast<Index>(k)});
+      }
+    }
+    return m;
+  };
+  auto model = make();
   model->constraints() = config.constraints;
   if (with_loads) {
     model->load_case_specs() = config.load_cases;
@@ -102,9 +114,7 @@ SubModelBuild build_solid_submodel(const Configuration& config, Mesh sub_mesh,
       out.note = std::string("load cases could not be applied to the interpreted "
                              "solid structure: ") +
                  e.what();
-      model = std::make_unique<FemModel>(Mesh(model->mesh()), config.material(),
-                                         config.thickness, config.stress_state,
-                                         config.integration);
+      model = make();
       model->constraints() = config.constraints;
       model->finalize(/*require_load_cases=*/false);
     }
@@ -388,9 +398,16 @@ int main(int argc, char** argv) {
     // With a temperature field, the stress of the strain less the free thermal
     // strain.
     std::vector<StressField> stresses;
+    std::vector<ShellField> shell_stresses;
     {
       ScopedTimer t(timings, "stress_recovery");
       for (std::size_t l = 0; l < result.displacements.size(); ++l) {
+        if (model.is_shell()) {
+          // The SIMP design's resultants: each element's scaled by its stiffness.
+          shell_stresses.push_back(recover_shell_resultants(
+              model, assembler, result.displacements[l], &result.stiffness_factors));
+          continue;
+        }
         const Vector& temperature = model.load_case_data(l).temperature;
         stresses.push_back(recover_stresses(model, assembler, result.displacements[l],
                                             &result.stiffness_factors,
@@ -441,8 +458,8 @@ int main(int argc, char** argv) {
     } else {
       ScopedTimer t(timings, "interpreted_analysis");
       try {
-        sub_build = std::make_unique<SubModelBuild>(build_solid_submodel(
-            config, interpretation->sub.mesh, /*with_loads=*/true));
+        sub_build = std::make_unique<SubModelBuild>(
+            build_solid_submodel(config, model, interpretation->sub, /*with_loads=*/true));
         require_well_posed(*sub_build->model);
         sub_assembler = std::make_unique<Assembler>(*sub_build->model);
 
@@ -481,11 +498,16 @@ int main(int argc, char** argv) {
           for (std::size_t l = 0; l < sols.size(); ++l) {
             const StaticSolution& s = sols[l];
             const Vector& temperature = sub.model->load_case_data(l).temperature;
-            const StressField f =
-                recover_stresses(*sub.model, *sub_assembler, s.displacement, nullptr,
-                                 temperature.size() > 0 ? &temperature : nullptr);
-            max_vm = std::max(max_vm, f.element_von_mises.maxCoeff());
-            per_case.push_back(json::Value::make_number(f.element_von_mises.maxCoeff()));
+            // A shell's largest von Mises stress of its faces and mid-surface.
+            const Vector vm =
+                sub.model->is_shell()
+                    ? recover_shell_resultants(*sub.model, *sub_assembler, s.displacement)
+                          .element_von_mises
+                    : recover_stresses(*sub.model, *sub_assembler, s.displacement, nullptr,
+                                       temperature.size() > 0 ? &temperature : nullptr)
+                          .element_von_mises;
+            max_vm = std::max(max_vm, vm.maxCoeff());
+            per_case.push_back(json::Value::make_number(vm.maxCoeff()));
           }
           interpreted.set("max_von_mises_Pa", json::Value::make_number(max_vm));
           interpreted.set("max_von_mises_per_load_case_Pa", per_case);
@@ -554,7 +576,14 @@ int main(int argc, char** argv) {
     json::Value manufacturing = json::Value::make_object();
     std::unique_ptr<OverhangReport> overhang_report;
     std::unique_ptr<LengthScaleScan> length_report;
-    {
+    if (model.is_shell() &&
+        (config.topology.overhang_check || config.topology.length_scale_check)) {
+      log::warn("the overhang and length-scale checks work on plane and solid cells; they "
+                "are skipped for a shell design");
+      manufacturing.set("skipped", json::Value::make_string(
+                                       "the overhang and length-scale checks work on plane "
+                                       "and solid cells, not on a shell surface"));
+    } else {
       const Scalar threshold = config.topology.optimizer.interpretation_threshold;
       if (config.topology.overhang_check) {
         const OverhangFilter stencil(model.mesh(), config.topology.optimizer.overhang);
@@ -622,8 +651,11 @@ int main(int argc, char** argv) {
         for (std::size_t l = 0; l < result.displacements.size(); ++l) {
           const std::string& name = config.load_cases[l].name;
           writer.write_displacement(model.mesh(), name, result.displacements[l]);
-          writer.write_stress(model.mesh(), name, stresses[l],
-                              &result.physical_density);
+          if (model.is_shell()) {
+            writer.write_shell_resultants(model, name, shell_stresses[l]);
+          } else {
+            writer.write_stress(model.mesh(), name, stresses[l], &result.physical_density);
+          }
         }
       }
       if (config.output.write_density_history) {
@@ -631,10 +663,14 @@ int main(int argc, char** argv) {
       }
       if (config.output.write_vtk) {
         for (std::size_t l = 0; l < result.displacements.size(); ++l) {
-          writer.write_static_vtk(model.mesh(), config.load_cases[l].name,
-                                  result.displacements[l], stresses[l],
-                                  &result.physical_density,
-                                  &result.stiffness_factors);
+          if (model.is_shell()) {
+            writer.write_shell_vtk(model, config.load_cases[l].name, result.displacements[l],
+                                   shell_stresses[l], &result.physical_density);
+          } else {
+            writer.write_static_vtk(model.mesh(), config.load_cases[l].name,
+                                    result.displacements[l], stresses[l],
+                                    &result.physical_density, &result.stiffness_factors);
+          }
         }
       }
       if (modal_solid) writer.write_modal(model.mesh(), *modal_solid, "solid");
@@ -655,19 +691,28 @@ int main(int argc, char** argv) {
     json::Value geometry = json::Value::make_object();
     {
       ScopedTimer t(timings, "geometry_export");
+      Vector domain_thickness(model.mesh().num_elements());
+      for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+        domain_thickness(e) = model.thickness_of(e);
+      }
       geometry.set("before", writer.write_geometry(model.mesh(), domain.initial_design(),
                                                    model.thickness(), "structure_before",
-                                                   "design domain before optimisation"));
+                                                   "design domain before optimisation",
+                                                   &domain_thickness));
       if (interpretation) {
         Vector retained_density(interpretation->sub.mesh.num_elements());
+        Vector retained_thickness(interpretation->sub.mesh.num_elements());
         for (std::size_t i = 0; i < interpretation->sub.element_map.size(); ++i) {
           retained_density(static_cast<Eigen::Index>(i)) =
               result.physical_density(interpretation->sub.element_map[i]);
+          retained_thickness(static_cast<Eigen::Index>(i)) =
+              model.thickness_of(interpretation->sub.element_map[i]);
         }
         geometry.set("after",
                      writer.write_geometry(interpretation->sub.mesh, retained_density,
                                            model.thickness(), "structure_after",
-                                           "interpreted structure after optimisation"));
+                                           "interpreted structure after optimisation",
+                                           &retained_thickness));
       } else {
         geometry.set("after_skipped", json::Value::make_string(interpretation_failure));
       }
@@ -676,7 +721,10 @@ int main(int argc, char** argv) {
                                "solid_interpretation.threshold with only the largest "
                                "face-connected group kept, written as the cells' outer "
                                "surface" +
-                               std::string(model.dim() == 2
+                               std::string(model.is_shell()
+                                               ? " - for a shell its mid-surface thickened "
+                                                 "by half its thickness to either side; "
+                                           : model.dim() == 2
                                                ? " extruded by model.thickness; "
                                                : "; ") +
                                "it is an interpretation of a SIMP result, not a "

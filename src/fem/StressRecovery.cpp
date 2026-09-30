@@ -106,8 +106,14 @@ Vector element_stress_at(const FemModel& model, Index element, const NaturalPoin
 }
 
 ShellField recover_shell_resultants(const FemModel& model, const Assembler& assembler,
-                                    const Vector& displacement) {
+                                    const Vector& displacement, const Vector* stiffness_scale) {
   check_displacement(model, displacement);
+  if (stiffness_scale != nullptr && stiffness_scale->size() != model.mesh().num_elements()) {
+    std::ostringstream os;
+    os << "shell resultants: stiffness scale vector has length " << stiffness_scale->size()
+       << " but the mesh has " << model.mesh().num_elements() << " elements";
+    throw ModelError(os.str());
+  }
   const auto* shell = dynamic_cast<const Shell4Element*>(&model.element());
   if (shell == nullptr) {
     throw ModelError("recover_shell_resultants needs a shell model; a continuum model's "
@@ -125,13 +131,19 @@ ShellField recover_shell_resultants(const FemModel& model, const Assembler& asse
   Vector ue;
   for (Index e = 0; e < ne; ++e) {
     gather_element_displacement(model, e, displacement, ue);
-    const ShellResultants r = shell->resultants(model.element_geometry(e),
-                                                model.constitutive_of(e), ue,
-                                                model.thickness_of(e), 0.0, 0.0);
+    // Every resultant is linear in the material matrix, so a SIMP element's
+    // are those of its scaled material.
+    const Scalar s = stiffness_scale != nullptr ? (*stiffness_scale)(e) : 1.0;
+    const ShellResultants r =
+        stiffness_scale != nullptr
+            ? shell->resultants(model.element_geometry(e), s * model.constitutive_of(e), ue,
+                                model.thickness_of(e), 0.0, 0.0)
+            : shell->resultants(model.element_geometry(e), model.constitutive_of(e), ue,
+                                model.thickness_of(e), 0.0, 0.0);
     field.element[static_cast<std::size_t>(e)] = r;
     const Scalar vm = std::max({r.von_mises_top, r.von_mises_bottom, r.von_mises_mid});
     field.element_von_mises(e) = vm;
-    field.element_strain_energy(e) = 0.5 * ue.dot(assembler.element_stiffness(e) * ue);
+    field.element_strain_energy(e) = 0.5 * s * ue.dot(assembler.element_stiffness(e) * ue);
     const Scalar w = mesh.element_measure(e);
     const Index* nodes = mesh.element_nodes(e);
     for (int a = 0; a < mesh.nodes_per_elem(); ++a) {

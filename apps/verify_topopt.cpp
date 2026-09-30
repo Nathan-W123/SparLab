@@ -15,12 +15,21 @@
 ///   * the parasitic load of near-void material: a cantilever whose outer
 ///     half is near void, under its own weight, with the body-load threshold
 ///     and without it.
+///
+/// Study `shell-topology`: a density design on MITC4 shells - the compliance
+/// gradient of a plate and a cylinder panel under a pressure, an edge load
+/// and their weight, and the gradients of the lowest out-of-plane buckling
+/// load factor and its KS aggregate on a compressed plate, against central
+/// differences; a buckling-constrained run on that plate; and the solid an
+/// exported shell part is thickened into.
 #include "VerifySupport.hpp"
 
 #include "AppSupport.hpp"
 
 #include "sparlab/fem/Assembler.hpp"
+#include "sparlab/fem/Buckling.hpp"
 #include "sparlab/io/CsvWriter.hpp"
+#include "sparlab/io/StlWriter.hpp"
 #include "sparlab/mesh/StructuredMesh.hpp"
 #include "sparlab/topopt/BucklingConstraint.hpp"
 #include "sparlab/topopt/DensityFilter.hpp"
@@ -28,6 +37,7 @@
 #include "sparlab/topopt/DesignLoads.hpp"
 #include "sparlab/topopt/Sensitivity.hpp"
 #include "sparlab/topopt/StressConstraint.hpp"
+#include "sparlab/topopt/TopologyOptimizer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -179,6 +189,122 @@ Scalar scaled_error(const Vector& analytical, const Vector& x, Scalar step, int 
     ++tested;
   }
   return worst;
+}
+
+constexpr Scalar kPiTopo = 3.14159265358979323846;
+
+Selector plane_box(Scalar xmin, Scalar xmax, Scalar ymin, Scalar ymax) {
+  Selector s;
+  s.kind = SelectorKind::Box;
+  s.xmin = xmin;
+  s.xmax = xmax;
+  s.ymin = ymin;
+  s.ymax = ymax;
+  return s;
+}
+
+/// A plate 0.6 x 0.3 m (8 x 4 cells) or a cylinder panel of radius 1 m, 40
+/// degrees round and 0.3 m long, of 5 mm aluminium, clamped along its first
+/// straight edge, under a pressure of 2 kPa, an edge traction and its weight
+/// (at 100 g) with a point force.
+FemModel loaded_shell(bool curved) {
+  ShellMeshSpec spec;
+  spec.n1 = 8;
+  spec.n2 = 4;
+  if (curved) {
+    spec.shape = ShellShape::Cylinder;
+    spec.radius = 1.0;
+    spec.length = 0.3;
+    spec.axis = 1;
+    spec.angle_start = 0.0;
+    spec.angle_end = 40.0;
+  } else {
+    spec.lx = 0.6;
+    spec.ly = 0.3;
+  }
+  FemModel model(make_structured_shell_mesh(spec),
+                 IsotropicMaterial(70.0e9, 0.3, 2700.0, "aluminium"), 0.005,
+                 StressState::Shell, IntegrationOptions());
+  const Scalar angle = 40.0 * kPiTopo / 180.0;
+  DisplacementConstraint root;
+  root.region.name = "root";
+  root.region.members.push_back(plane_box(-1.0, curved ? 1.0e-9 : 0.0, -1.0, 1.0));
+  if (curved) root.region.members.back().zmin = 1.0 - 1.0e-9;
+  for (int k = 0; k < 6; ++k) root.set(k, true);
+  model.constraints().push_back(root);
+  const Scalar far_x = curved ? std::sin(angle) : 0.6;
+  LoadCaseSpec pressure;
+  pressure.name = "pressure";
+  PressureLoadSpec p;
+  p.region.members.push_back(Selector());
+  p.pressure = 2.0e3;
+  pressure.pressures.push_back(p);
+  LoadCaseSpec edge;
+  edge.name = "edge";
+  edge.weight = 0.5;
+  TractionLoadSpec t;
+  t.region.members.push_back(plane_box(far_x - 1.0e-6, 2.0, -1.0, 1.0));
+  if (curved) t.region.members.back().zmax = std::cos(angle) + 1.0e-6;
+  t.traction = curved ? Vector3(0.0, 2.0e5, 0.0) : Vector3(1.0e6, 2.0e5, 0.0);
+  edge.tractions.push_back(t);
+  LoadCaseSpec weight;
+  weight.name = "weight";
+  weight.gravity = Vector3(0.0, 0.0, -9.81e2);
+  PointLoadSpec point;
+  point.region.members.push_back(nearest(curved ? Vector3(far_x, 0.3, std::cos(angle))
+                                                : Vector3(0.6, 0.3, 0.0)));
+  point.force = Vector3(0.0, 0.0, -50.0);
+  weight.point_loads.push_back(point);
+  model.load_case_specs() = {pressure, edge, weight};
+  model.finalize();
+  return model;
+}
+
+/// A plate 0.6 x 0.3 m, 3 mm thick, simply supported and compressed along x
+/// by 1 MPa: it buckles out of its plane.
+FemModel compressed_plate(Index n1, Index n2) {
+  ShellMeshSpec spec;
+  spec.lx = 0.6;
+  spec.ly = 0.3;
+  spec.n1 = n1;
+  spec.n2 = n2;
+  FemModel model(make_structured_shell_mesh(spec),
+                 IsotropicMaterial(70.0e9, 0.3, 2700.0, "aluminium"), 0.003,
+                 StressState::Shell, IntegrationOptions());
+  DisplacementConstraint edges;
+  edges.region.members = {plane_box(-1.0, 0.0, -1.0, 1.0), plane_box(0.6, 1.0, -1.0, 1.0),
+                          plane_box(-1.0, 1.0, -1.0, 0.0), plane_box(-1.0, 1.0, 0.3, 1.0)};
+  edges.fix_z = true;
+  DisplacementConstraint held_x;
+  held_x.region.members = {plane_box(-1.0, 0.0, -1.0, 1.0)};
+  held_x.fix_x = true;
+  DisplacementConstraint held_y;
+  held_y.region.members = {plane_box(-1.0, 1.0, -1.0, 0.0)};
+  held_y.fix_y = true;
+  DisplacementConstraint drill;
+  drill.region.members = {nearest(Vector3::Zero())};
+  drill.fix_rz = true;
+  model.constraints() = {edges, held_x, held_y, drill};
+  LoadCaseSpec compression;
+  compression.name = "compression";
+  TractionLoadSpec t;
+  t.region.members.push_back(plane_box(0.6, 1.0, -1.0, 1.0));
+  t.traction = Vector3(-1.0e6, 0.0, 0.0);
+  compression.tractions.push_back(t);
+  model.load_case_specs() = {compression};
+  model.finalize();
+  return model;
+}
+
+/// A smooth design in [0.05, 0.95].
+Vector shell_design(const FemModel& model, const DesignDomain& domain) {
+  Vector x = domain.initial_design();
+  for (Index e = 0; e < domain.num_elements(); ++e) {
+    const Vector3 c = model.mesh().element_centroid(e);
+    x(e) = 0.5 + 0.45 * std::sin(9.0 * c.x() + 1.0) * std::cos(13.0 * c.y() + 3.0 * c.z());
+  }
+  domain.clamp(x);
+  return x;
 }
 
 }  // namespace
@@ -428,8 +554,8 @@ StudyOutcome study_design_loads(const std::string& out_dir, json::Value& summary
                 "it), the thermal loads with E(rho)/E0. The load vector of a design against "
                 "its definition; the compliance, stress-constraint and buckling-load-factor "
                 "gradients against central differences of second and fourth order (best of "
-                "the steps 1e-3 ... 1e-6; entries judged against max(|analytical|, |FD|, 1e-3 ||gradient||_inf)); and "
-                "a cantilever with a near-void outer half under its own weight, whose "
+                "the steps 1e-3 ... 1e-6; entries judged against max(|analytical|, |FD|, "
+                "1e-3 ||gradient||_inf)); and a cantilever with a near-void outer half under its own weight, whose "
                 "compliance with the threshold stays within 2 % of the solid half alone and "
                 "without it grows without bound as the half empties."));
   summary.set("design_loads", block);
@@ -441,6 +567,202 @@ StudyOutcome study_design_loads(const std::string& out_dir, json::Value& summary
       "worst case of the best-step max scaled gradient error (the load vectors to 1e-14, the "
       "near-void compliance within 2 % of the solid half and x10 without the threshold also "
       "required)";
+  outcome.value = worst_gradient;
+  outcome.tolerance = kTolerance;
+  outcome.passed = passed && worst_gradient <= kTolerance;
+  return outcome;
+}
+
+StudyOutcome study_shell_topology(const std::string& out_dir, json::Value& summary) {
+  constexpr Scalar kTolerance = 1.0e-5;
+  CsvWriter csv(path_join(out_dir, "shell_topology.csv"),
+                {"quantity", "model", "difference_order", "step[-]", "num_tested",
+                 "max_scaled_error[-]"});
+  json::Value records = json::Value::make_array();
+  Scalar worst_gradient = 0.0;
+  bool passed = true;
+  const auto record = [&](const std::string& quantity, const std::string& model_name,
+                          const Vector& analytical, const Vector& x,
+                          const std::function<Scalar(const Vector&)>& value,
+                          Eigen::Index stride) {
+    Scalar best = std::numeric_limits<Scalar>::infinity();
+    for (const int order : {2, 4}) {
+      for (const Scalar step : {3.0e-3, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6}) {
+        Index tested = 0;
+        const Scalar error = scaled_error(analytical, x, step, order, value, stride, tested);
+        csv.raw_row({quantity, model_name, std::to_string(order), fmt(step, 3),
+                     std::to_string(tested), fmt(error)});
+        best = std::min(best, error);
+      }
+    }
+    worst_gradient = std::max(worst_gradient, best);
+    json::Value rec = json::Value::make_object();
+    rec.set("quantity", json::Value::make_string(quantity));
+    rec.set("model", json::Value::make_string(model_name));
+    rec.set("best_max_scaled_error", json::Value::make_number(best));
+    records.push_back(rec);
+  };
+
+  // --- compliance gradients: a plate and a cylinder panel ---------------------
+  for (const bool curved : {false, true}) {
+    FemModel model = loaded_shell(curved);
+    Assembler assembler(model);
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.5, 0.5, {});
+    ComplianceObjective objective(model, assembler, filter, domain, SimpOptions(),
+                                  direct_solver());
+    const Vector x = shell_design(model, domain);
+    const ObjectiveEvaluation eval = objective.evaluate(x, true);
+    record("compliance (pressure, edge load, weight)",
+           curved ? "cylinder panel, 8 x 4 MITC4" : "plate, 8 x 4 MITC4", eval.dc_dx, x,
+           [&](const Vector& xx) { return objective.compliance_at(xx); }, 1);
+  }
+
+  // --- out-of-plane buckling of a compressed plate ----------------------------
+  Scalar solid_ratio = 0.0;
+  Scalar out_of_plane_share = 0.0;
+  {
+    FemModel model = compressed_plate(10, 5);
+    Assembler assembler(model);
+    BucklingOptions plain;
+    plain.num_modes = 2;
+    const BucklingResult solid = analyse_buckling(model, assembler, 0, plain);
+    const Scalar d = 70.0e9 * std::pow(0.003, 3) / (12.0 * (1.0 - 0.09));
+    solid_ratio = solid.load_factors(0) / (4.0 * kPiTopo * kPiTopo * d / (0.09 * 0.003) / 1.0e6);
+    Scalar in_plane = 0.0;
+    Scalar normal = 0.0;
+    for (Index n = 0; n < model.mesh().num_nodes(); ++n) {
+      in_plane += solid.mode_shapes.col(0).segment<2>(6 * n).squaredNorm();
+      normal += std::pow(solid.mode_shapes(6 * n + 2, 0), 2);
+    }
+    out_of_plane_share = normal / (normal + in_plane);
+    passed = passed && out_of_plane_share > 1.0 - 1.0e-6;
+
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.5, 0.5, {});
+    ComplianceObjective objective(model, assembler, filter, domain, SimpOptions(),
+                                  direct_solver());
+    BucklingConstraintOptions bo;
+    bo.enabled = true;
+    bo.min_load_factor = 1.0;
+    bo.num_modes = 3;
+    bo.ks_parameter = 20.0;
+    bo.eigen.tolerance = 1.0e-14;
+    bo.eigen.residual_tolerance = 1.0e-11;
+    bo.eigen.max_iterations = 2000;
+    BucklingConstraint buckling(model, assembler, bo);
+    const Vector x = shell_design(model, domain);
+    const ObjectiveEvaluation eval = objective.evaluate(x, true);
+    const BucklingEvaluation be = buckling.evaluate(objective, eval, 0, true);
+    const Vector dlambda = objective.chain_to_design(eval, be.dlambda_dphysical.front());
+    const Eigen::Index stride = std::max<Eigen::Index>(1, x.size() / 24);
+    record("lowest out-of-plane buckling load factor", "compressed plate, 10 x 5 MITC4", dlambda,
+           x,
+           [&](const Vector& xx) {
+             const ObjectiveEvaluation e = objective.evaluate(xx, false);
+             return buckling.evaluate(objective, e, 0, false).load_factors(0);
+           },
+           stride);
+    record("KS aggregate of the three lowest", "compressed plate, 10 x 5 MITC4", be.dg_dx, x,
+           [&](const Vector& xx) {
+             const ObjectiveEvaluation e = objective.evaluate(xx, false);
+             return buckling.evaluate(objective, e, 0, false).constraint;
+           },
+           stride);
+  }
+  csv.close();
+
+  // --- a buckling-constrained run -------------------------------------------------
+  Scalar lambda_start = 0.0;
+  Scalar lambda_required = 0.0;
+  Scalar lambda_final = 0.0;
+  Scalar volume_fraction = 0.0;
+  int iterations = 0;
+  {
+    FemModel model = compressed_plate(12, 6);
+    Assembler assembler(model);
+    const DensityFilter filter(model.mesh(), FilterType::Density,
+                               1.5 * model.mesh().mean_element_size());
+    DesignDomain domain(model, 0.6, 0.6, {});
+    TopologyOptimizerOptions options;
+    options.method = OptimizerMethod::MMA;
+    options.max_iterations = 30;
+    options.analysis = direct_solver();
+    options.history_stride = 0;
+    options.mma.move_limit = 0.1;
+    options.buckling.enabled = true;
+    options.buckling.num_modes = 4;
+    options.buckling.ks_parameter = 40.0;
+    ComplianceObjective probe(model, assembler, filter, domain, options.simp, direct_solver());
+    BucklingConstraintOptions bo = options.buckling;
+    bo.min_load_factor = 1.0;
+    BucklingConstraint probe_buckling(model, assembler, bo);
+    const ObjectiveEvaluation start = probe.evaluate(domain.initial_design(), false);
+    lambda_start = probe_buckling.evaluate(probe, start, 0, false).load_factors(0);
+    lambda_required = 1.3 * lambda_start;
+    options.buckling.min_load_factor = lambda_required;
+    TopologyOptimizer optimizer(model, assembler, filter, domain, options);
+    const TopologyOptimizationResult result = optimizer.run();
+    lambda_final = result.min_load_factor;
+    volume_fraction = result.volume_fraction;
+    iterations = result.iterations;
+    passed = passed && lambda_final >= 0.99 * lambda_required &&
+             volume_fraction <= 0.6 * (1.0 + options.constraint_tolerance) + 1.0e-9;
+  }
+
+  // --- the solid an exported shell part stands for ------------------------------
+  Scalar plate_volume_error = 0.0;
+  Scalar panel_volume_error = 0.0;
+  bool closed = true;
+  for (const bool curved : {false, true}) {
+    const FemModel model = loaded_shell(curved);
+    const Vector thickness = Vector::Constant(model.mesh().num_elements(), 0.005);
+    Scalar volume = 0.0;
+    for (Index e = 0; e < model.mesh().num_elements(); ++e) {
+      volume += model.mesh().element_measure(e) * thickness(e);
+    }
+    const SurfaceStats stats = surface_stats(shell_surface(model.mesh(), thickness));
+    closed = closed && stats.closed && stats.non_manifold_edges == 0;
+    (curved ? panel_volume_error : plate_volume_error) =
+        std::abs(stats.enclosed_volume / volume - 1.0);
+  }
+  passed = passed && closed && plate_volume_error <= 1.0e-12 && panel_volume_error <= 1.0e-2;
+
+  json::Value block = json::Value::make_object();
+  block.set("kind", json::Value::make_string("verification"));
+  block.set("records", records);
+  block.set("solid_plate_lambda_over_thin_plate_k4", json::Value::make_number(solid_ratio));
+  block.set("lowest_mode_out_of_plane_share", json::Value::make_number(out_of_plane_share));
+  block.set("constrained_run_lambda_start", json::Value::make_number(lambda_start));
+  block.set("constrained_run_lambda_required", json::Value::make_number(lambda_required));
+  block.set("constrained_run_lambda_final", json::Value::make_number(lambda_final));
+  block.set("constrained_run_volume_fraction", json::Value::make_number(volume_fraction));
+  block.set("constrained_run_iterations", json::Value::make_number(iterations));
+  block.set("thickened_plate_volume_relative_error", json::Value::make_number(plate_volume_error));
+  block.set("thickened_panel_volume_relative_error", json::Value::make_number(panel_volume_error));
+  block.set("thickened_surfaces_closed", json::Value::make_bool(closed));
+  block.set("note",
+            json::Value::make_string(
+                "Topology optimisation of MITC4 shells: each cell's density scales its "
+                "membrane, bending, shear and drilling stiffness. The compliance gradient "
+                "of a plate and a cylinder panel under a pressure, an edge load and their "
+                "weight, and the gradients of the lowest out-of-plane buckling load factor "
+                "and of the KS aggregate of the three lowest on a simply supported plate "
+                "compressed in its plane, against central differences of second and fourth "
+                "order (best of the steps 3e-3 ... 1e-6); a buckling-constrained MMA run "
+                "asked for 1.3 times the uniform design's load factor at 0.6 of the "
+                "volume; and the solid an exported part is thickened into, against A t."));
+  summary.set("shell_topology", block);
+
+  StudyOutcome outcome;
+  outcome.name = "shell topology: compliance and out-of-plane buckling gradients";
+  outcome.kind = "verification";
+  outcome.metric =
+      "worst case of the best-step max scaled gradient error (the constrained run meeting "
+      "its load factor within the volume, the lowest mode out of plane and the thickened "
+      "part closed with the plate's volume also required)";
   outcome.value = worst_gradient;
   outcome.tolerance = kTolerance;
   outcome.passed = passed && worst_gradient <= kTolerance;

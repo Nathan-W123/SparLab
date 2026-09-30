@@ -9,12 +9,14 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <Eigen/Dense>
 
 using namespace sparlab;
 using namespace sparlab::testing;
 using Catch::Approx;
+using Catch::Matchers::ContainsSubstring;
 
 TEST_CASE("global stiffness is symmetric and annihilates rigid-body modes",
           "[assembly][verification]") {
@@ -252,6 +254,25 @@ TEST_CASE("a singular system is reported, not silently solved",
   // Empty system.
   SparseMatrix empty(0, 0);
   REQUIRE_THROWS_AS(solver->factorize(empty), SolverError);
+
+  // Nearly dependent unknowns: a pivot of 1e-15 of its diagonal entry.
+  TripletList near = {Triplet(0, 0, 1.0), Triplet(1, 0, 1.0), Triplet(0, 1, 1.0),
+                      Triplet(1, 1, 1.0 + 1.0e-15)};
+  SparseMatrix nearly_singular(2, 2);
+  nearly_singular.setFromTriplets(near.begin(), near.end());
+  REQUIRE_THROWS_WITH(solver->factorize(nearly_singular),
+                      ContainsSubstring("relative to its diagonal entry"));
+
+  // Well posed but badly scaled - a translation stiffness in N/m beside a
+  // rotation stiffness in N m/rad 1e-18 of it - is not singular: each pivot
+  // is judged against its own diagonal entry, not against the largest.
+  TripletList scaled = {Triplet(0, 0, 1.0e10), Triplet(1, 1, 1.0e-8), Triplet(0, 1, 1.0e-2),
+                        Triplet(1, 0, 1.0e-2)};
+  SparseMatrix badly_scaled(2, 2);
+  badly_scaled.setFromTriplets(scaled.begin(), scaled.end());
+  REQUIRE_NOTHROW(solver->factorize(badly_scaled));
+  const Vector x = solver->solve(badly_scaled * Vector::Ones(2));
+  REQUIRE((x - Vector::Ones(2)).cwiseAbs().maxCoeff() < 1.0e-9);
 
   REQUIRE_THROWS_AS(parse_linear_solver_type("no_such_solver"), ConfigError);
 }

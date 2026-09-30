@@ -821,8 +821,11 @@ TEST_CASE("shell decks: a generated cylinder with sections, rotations and moment
   };
   REQUIRE_THAT(refused(R"("nonlinear": { "enabled": true })"),
                ContainsSubstring("small rotations"));
-  REQUIRE_THAT(refused(R"("topology": { "enabled": true })"),
-               ContainsSubstring("thickness"));
+  // Topology optimisation takes a shell, but not the stress constraint.
+  REQUIRE(refused(R"("topology": { "enabled": true })").empty());
+  REQUIRE_THAT(refused(R"("topology": { "enabled": true, "optimizer": { "method": "mma" },
+                                        "stress": { "enabled": true, "limit": 1.0e8 } })"),
+               ContainsSubstring("through its"));
   std::string with_temperature = deck;
   with_temperature.insert(with_temperature.find("\"point_loads\""),
                           R"("temperature": { "uniform": 20.0 }, )");

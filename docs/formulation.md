@@ -519,8 +519,15 @@ error leaves, `1e-6 f`, is tiny beside the sums `|K||u|`. The
 cross-validation therefore compares displacements, and its elastica deck
 runs at `L/h = 50` (`docs/verification.md`, section 14). The
 LDL^T path additionally inspects its pivots: a non-positive pivot, or a
-`min/max` pivot ratio below `pivot_tolerance`, is reported as a singular system
-together with the three modelling causes that usually produce it.
+pivot below `pivot_tolerance` times its own diagonal entry - `D_k / K_kk`, the
+pivot of the Jacobi-scaled matrix, in `(0, 1]` for a positive definite one and
+of the order of the rounding error where an unknown depends on the others - is
+reported as a singular system together with the three modelling causes that
+usually produce it. Judging each pivot against its own diagonal rather than
+the smallest against the largest keeps the check independent of units: a
+shell's rotations (N m/rad) and translations (N/m), and the stiffness floor of
+void material beside solid, spread the pivots over more than fourteen decades
+in a perfectly well-posed SIMP shell design.
 
 ### Why an iterative solver
 

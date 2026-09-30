@@ -106,6 +106,7 @@ StudyOutcome study_beam_curved(const std::string& out_dir, json::Value& summary)
 /// Studies of the topology optimiser's physics (verify_topopt.cpp).
 /// \{
 StudyOutcome study_design_loads(const std::string& out_dir, json::Value& summary);
+StudyOutcome study_shell_topology(const std::string& out_dir, json::Value& summary);
 /// \}
 
 /// Quarter sections of a cylinder (verify_loads.cpp).

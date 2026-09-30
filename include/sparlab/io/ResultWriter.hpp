@@ -106,7 +106,8 @@ class ResultWriter {
   /// the nodal von Mises stress on the nodes; thickness, resultants and von
   /// Mises stresses on the cells.
   void write_shell_vtk(const FemModel& model, const std::string& load_case,
-                       const Vector& full_displacement, const ShellField& field) const;
+                       const Vector& full_displacement, const ShellField& field,
+                       const Vector* density = nullptr) const;
 
   /// A beam model's end resultants per element (beam_<case>.csv): its nodes,
   /// length, section and local axes, the resultants N, Q_y, Q_z, T, M_y, M_z
@@ -169,13 +170,16 @@ class ResultWriter {
 
   /// One geometry as a solid: `<stem>.vtk` (the cells, with `density` as cell
   /// data) and `<stem>.stl` (the watertight boundary surface, extruded by
-  /// `thickness` for a 2-D mesh). Returns the surface statistics and the
-  /// mismatch between the enclosed and the cell volume, which the summary
-  /// records.
+  /// `thickness` for a 2-D mesh, and for a shell mesh its mid-surface
+  /// thickened by `element_thickness` to either side, `shell_surface`).
+  /// Returns the surface statistics and the mismatch between the enclosed and
+  /// the cell volume, which the summary records.
   /// \param density per-cell density written to the VTK file (length
   ///        num_elements of `mesh`).
+  /// \throws IoError for a shell mesh without its element thicknesses.
   json::Value write_geometry(const Mesh& mesh, const Vector& density, Scalar thickness,
-                             const std::string& stem, const std::string& what) const;
+                             const std::string& stem, const std::string& what,
+                             const Vector* element_thickness = nullptr) const;
 
   /// Write an arbitrary JSON document into the directory.
   void write_json(const std::string& file_name, const json::Value& value) const;

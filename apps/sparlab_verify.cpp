@@ -46,7 +46,10 @@
 ///   * `design-loads`     self-weight, body forces, rotation and temperature
 ///                        following the design: the load vectors, the
 ///                        compliance, stress and buckling gradients, and the
-///                        bounded load of near-void material (verify_topopt.cpp).
+///                        bounded load of near-void material (verify_topopt.cpp);
+///   * `shell-topology`   a density design on MITC4 shells: compliance and
+///                        out-of-plane buckling gradients, a buckling-
+///                        constrained run, the thickened exported part.
 ///
 /// Studies of the pressure, volume and thermal loads (verify_loads.cpp):
 ///   * `lame-cylinder`    thick cylinder under internal pressure vs Lame;
@@ -2559,7 +2562,7 @@ int main(int argc, char** argv) {
             "shell-plate-modes | shell-plate-harmonic | shell-plate-buckling | "
             "shell-cylinder-pressure | shell-scordelis-lo | shell-pinched-cylinder | "
             "shell-pinched-hemisphere | shell-box-beam | beam-exact | beam-modes | "
-            "beam-harmonic | beam-buckling | beam-curved | design-loads"},
+            "beam-harmonic | beam-buckling | beam-curved | design-loads | shell-topology"},
            {"--output <dir>", "output directory (default results/verification)"},
            {"--sensitivity-tolerance <t>",
             "pass threshold on the max relative gradient error (default 1e-5)"},
@@ -2745,6 +2748,9 @@ int main(int argc, char** argv) {
     }
     if (all || study == "design-loads") {
       outcomes.push_back(verify::study_design_loads(out_dir, summary));
+    }
+    if (all || study == "shell-topology") {
+      outcomes.push_back(verify::study_shell_topology(out_dir, summary));
     }
     if (outcomes.empty()) {
       throw ConfigError("unknown study '" + study +

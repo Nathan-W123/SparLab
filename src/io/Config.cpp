@@ -1756,10 +1756,17 @@ Configuration parse_configuration(const json::Value& document, const std::string
                             "material, so the mass matrix is singular and the initial "
                             "accelerations are not determined");
     }
-    if (config.topology.enabled) {
-      refuse("'topology'", "the densities, filters and sensitivities are those of "
-                           "continuum cells, and a shell's design variable would be its "
-                           "thickness");
+    // Topology optimisation works on a shell's cells like any other's (each
+    // cell's density scales its membrane, bending and shear stiffness), but
+    // two of its options are formulated for plane and solid cells.
+    if (config.topology.enabled && config.topology.optimizer.stress.enabled) {
+      refuse("'topology.stress'", "the aggregated stress constraint is formulated on "
+                                  "continuum cells, and a shell's stress varies through its "
+                                  "thickness");
+    }
+    if (config.topology.enabled && config.topology.optimizer.overhang.filter) {
+      refuse("the overhang filter", "it works on a structured grid of plane or solid cells, "
+                                    "and a shell surface has no layer-by-layer build");
     }
     for (const LoadCaseSpec& lc : config.load_cases) {
       if (lc.has_temperature()) {

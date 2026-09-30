@@ -132,6 +132,15 @@ SubMeshResult extract_element_subset(const Mesh& mesh,
   }
 
   out.mesh = Mesh(std::move(coords), std::move(connectivity), mesh.element_type());
+  // A shell's exact nodal normals are its directors; the extracted part keeps
+  // them rather than averaging its (fewer) elements' normals.
+  if (mesh.has_node_normals()) {
+    Matrix normals(3, static_cast<Eigen::Index>(out.node_map.size()));
+    for (std::size_t n = 0; n < out.node_map.size(); ++n) {
+      normals.col(static_cast<Eigen::Index>(n)) = mesh.node_normals().col(out.node_map[n]);
+    }
+    out.mesh.set_node_normals(std::move(normals));
+  }
   // Named sets follow the retained entities, so a deck region that names a
   // mesh-file group still selects the right nodes on the extracted structure.
   for (const auto& entry : mesh.node_sets()) {

@@ -100,9 +100,13 @@ struct ShellField {
 };
 
 /// Recover the resultants of a shell model's displacement field.
+/// \param stiffness_scale optional per-element SIMP factors \f$E(\rho)/E_0\f$:
+///        the resultants, stresses and energies of a density design, every one
+///        proportional to the element's stiffness.
 /// \throws ModelError when the model is not a shell or the field does not fit it.
 ShellField recover_shell_resultants(const FemModel& model, const Assembler& assembler,
-                                    const Vector& displacement);
+                                    const Vector& displacement,
+                                    const Vector* stiffness_scale = nullptr);
 
 /// The section resultants of a beam model (Beam2.hpp) at both ends of every
 /// element.

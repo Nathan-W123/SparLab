@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace sparlab {
@@ -81,15 +82,33 @@ class LdltSolver final : public LinearSolver {
          << "), so the matrix is not positive definite. " << kSingularHint;
       throw SolverError(os.str());
     }
-    const Scalar ratio = min_pivot / max_abs;
+    // Each pivot against its own diagonal entry, D_k / (P A P^T)_kk: the pivot
+    // of the Jacobi-scaled matrix, in (0, 1] for a positive definite one and of
+    // the order of the rounding error where an unknown depends on the others.
+    // Unlike the ratio of the smallest to the largest pivot it does not mix
+    // units - a shell's or a beam's rotations (N m/rad) against its
+    // translations (N/m) - nor the stiffness floor of void material with that
+    // of solid.
+    const Vector diagonal = solver_.permutationP() * Vector(a.diagonal());
+    Scalar ratio = std::numeric_limits<Scalar>::infinity();
+    Eigen::Index weakest = 0;
+    for (Eigen::Index k = 0; k < d.size(); ++k) {
+      const Scalar relative = diagonal(k) > 0.0 ? d(k) / diagonal(k) : 0.0;
+      if (relative < ratio) {
+        ratio = relative;
+        weakest = k;
+      }
+    }
     if (ratio < pivot_tol_) {
       std::ostringstream os;
-      os << name() << ": smallest/largest LDL^T pivot ratio is " << ratio
-         << ", below the tolerance " << pivot_tol_ << ". " << kSingularHint;
+      os << name() << ": the smallest LDL^T pivot relative to its diagonal entry is " << ratio
+         << " (unknown " << solver_.permutationPinv().indices()(weakest)
+         << " of the reduced system), below the tolerance " << pivot_tol_ << ". "
+         << kSingularHint;
       throw SolverError(os.str());
     }
     log::debug(name(), ": factorised ", a.rows(), " unknowns, ", a.nonZeros(),
-               " stored entries, pivot ratio ", ratio);
+               " stored entries, smallest relative pivot ", ratio);
   }
 
   Vector solve(const Vector& b) override {

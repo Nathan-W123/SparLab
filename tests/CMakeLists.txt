@@ -35,6 +35,7 @@ set(SPARLAB_TEST_SOURCES
   test_dofs.cpp
   test_loads_thermal.cpp
   test_design_loads.cpp
+  test_shell_topology.cpp
   test_nonlinear.cpp
   test_plasticity.cpp
   test_dynamics.cpp

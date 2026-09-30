@@ -368,7 +368,7 @@ Every tolerance is configurable and every run records the value it used in
 | Tolerance | Default | What it bounds |
 |-----------|---------|----------------|
 | `solver.linear.residual_tolerance` | `1e-8` | scaled residual `\|\|Ku-f\|\| / \|\|f\|\|` after each solve, whatever the solver; a solve whose backward error `\|\|Ku-f\|\| / \|\| \|K\|\|u\| + \|f\| \|\|` is at most `64 eps` is accepted too (its residual is round-off; `docs/formulation.md`, section 5) |
-| `solver.linear.pivot_tolerance` | `1e-14` | smallest / largest LDL^T pivot before the system is called singular |
+| `solver.linear.pivot_tolerance` | `1e-14` | smallest LDL^T pivot relative to its own diagonal entry before the system is called singular |
 | `solver.linear.iterative_tolerance` | `1e-12` | relative residual the CG solvers (Jacobi and multigrid) iterate to |
 | `solver.linear.amg.coarse_pivot_tolerance` | `1e-13` | smallest / largest pivot of the multigrid's coarsest factorisation before the model is called under-constrained |
 | `solver.equilibrium_tolerance` | `1e-6` | relative global force-balance error |

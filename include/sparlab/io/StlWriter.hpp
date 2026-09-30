@@ -82,6 +82,19 @@ struct SurfaceStats {
 /// mesh is two-dimensional (ignored for a solid mesh).
 TriangleSurface boundary_surface(const Mesh& mesh, Scalar thickness = 1.0);
 
+/// The solid a shell mesh stands for: its mid-surface offset by half the
+/// thickness to either side along each node's normal - the mesh's exact
+/// normals when it has them, otherwise the average of its elements' normals,
+/// each turned to agree with the first - with the free edges closed by side
+/// faces. A node's offset is half the mean thickness of its elements. Closed
+/// wherever every edge of the mesh borders one or two elements; an edge shared
+/// by more (a T-junction of walls) leaves the surface open there, which
+/// `surface_stats` reports.
+/// \param element_thickness one thickness per element [m].
+/// \throws IoError for a mesh of other than four-node shell cells or a
+///         thickness vector of the wrong length.
+TriangleSurface shell_surface(const Mesh& mesh, const Vector& element_thickness);
+
 /// Area, enclosed volume, bounds and the closure check.
 SurfaceStats surface_stats(const TriangleSurface& surface);
 

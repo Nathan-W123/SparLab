@@ -138,10 +138,9 @@ TopologyOptimizer::TopologyOptimizer(const FemModel& model, const Assembler& ass
       filter_(filter),
       domain_(domain),
       options_(options) {
-  if (model.is_shell()) {
-    throw ConfigError("topology optimisation of a shell model is not supported: the "
-                      "densities, filters and sensitivities are those of continuum cells, "
-                      "and a shell's design variable would be its thickness");
+  if (model.is_shell() && options_.overhang.filter) {
+    throw ConfigError("the overhang filter works on a structured grid of plane or solid "
+                      "cells; a shell surface has no layer-by-layer build to filter");
   }
   if (model.is_beam()) {
     throw ConfigError("topology optimisation of a beam model is not supported: the "

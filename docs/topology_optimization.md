@@ -4,7 +4,7 @@
 
 Minimum compliance under a volume constraint, with per-element density design
 variables, on a plane (Q4 or Tri3) or a solid (Hex8 or Tet4) mesh, structured
-or read from a mesh file:
+or read from a mesh file, or on a surface of MITC4 shells (section 2c):
 
 ```
   min over x      c(x) = sum_l  w_l  f_l^T u_l
@@ -58,8 +58,10 @@ bound `rho >= rho_min`:
   needed, and no design variable has to be held away from its true bound;
 * the derivative is well defined on the whole closed interval;
 * `E(0) = epsilon E_0` keeps the stiffness matrix invertible in void regions.
-  With `epsilon = 1e-9` the smallest LDL^T pivot ratio is about `1e-9`, far above
-  the `1e-14` singularity threshold, so a direct solver handles it comfortably.
+  With `epsilon = 1e-9` the smallest pivot of the LDL^T factor relative to its
+  diagonal entry stays many decades above the `1e-14` singularity threshold
+  (it is logged at debug verbosity), so a direct solver handles it
+  comfortably.
 
 `p = 1` makes the problem convex but leaves a grey design, because intermediate
 density is then as efficient as a mixture of solid and void. `p = 3` is the usual
@@ -172,6 +174,41 @@ failing the run.
 The objective needs homogeneous supports: with a non-zero prescribed
 displacement `f^T u` is not self-adjoint and none of the gradients above hold,
 so such a model is refused (for any load).
+
+## 2c. Shell design domains
+
+On a surface of MITC4 shells each cell's density scales the cell's whole
+stiffness - membrane, bending, transverse shear and the drilling penalty are
+all proportional to `E` - by the SIMP factor, and its self-weight by
+`gamma(rho)`: a density design of a shell is a perforated or graded sheet of
+fixed thickness, not a thickness distribution. The filter measures the
+distance between cell centroids in space, which on a curved shell is the
+chord rather than the distance along the surface, a difference of order
+`(r_min / R)^2` for a radius `r_min` small beside the radius of curvature `R`.
+Everything that acts on the stiffness matrix and the load vectors carries
+over unchanged; what needs a cell's own geometry uses its directors and
+thickness: the buckling constraint of section 5d assembles each cell's
+geometric stiffness from its membrane stresses, so it constrains the
+**out-of-plane buckling** of the sheet - the instability a plane model cannot
+represent - and its adjoint differentiates that stiffness through the
+displacement as for a solid.
+
+What a shell design does not take: the aggregated stress constraint (a
+shell's stress varies through its thickness, and the constraint is written
+for the stress at a continuum cell's centre), the overhang filter and the
+overhang and length-scale checks (they work on plane and solid cells), and
+temperatures (the shell has no thermal strain). The exported part keeps each
+retained cell's thickness and the surface's exact nodal normals as its
+directors, and its STL is the mid-surface thickened by half the thickness to
+either side along the nodal normals with the free edges closed: exactly
+`A t` for a flat sheet, and closed wherever every edge borders one or two
+cells (a T-junction of walls leaves it open, which the export reports).
+
+The singularity check of the direct solver judges each pivot against its own
+diagonal entry: a shell's rotations (N m/rad) beside its translations (N/m),
+times the stiffness floor of void cells, spread the pivots of a perfectly
+well-posed design over more than fourteen decades, which a smallest-over-
+largest ratio would call singular.
 
 ## 3. Filtering
 

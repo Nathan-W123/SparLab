@@ -44,7 +44,8 @@ struct LinearSolverOptions {
   /// Scaled-residual tolerance enforced after every solve. Exceeding it raises
   /// SolverError rather than returning a dubious displacement field.
   Scalar residual_tolerance = 1.0e-8;
-  /// Smallest acceptable |pivot| / max|pivot| ratio in the Cholesky factor.
+  /// Smallest acceptable LDL^T pivot relative to its own diagonal entry,
+  /// D_k / A_kk (the pivot of the Jacobi-scaled matrix, independent of units).
   /// Below this the system is reported as numerically singular.
   Scalar pivot_tolerance = 1.0e-14;
   /// Multigrid parameters (AmgCg, and Auto above its limit).

@@ -179,7 +179,12 @@ exact plate, shell and ring solutions and the MacNeal-Harder benchmarks
   transient analysis refuse a shell model, the last because the rotation
   about the director moves no mass - the mass matrix is singular - so the
   initial accelerations are not determined. Temperatures and the
-  centrifugal load are refused too, and so is topology optimisation;
+  centrifugal load are refused too. Topology optimisation takes a shell -
+  each cell's density scales its whole stiffness, a perforated sheet of fixed
+  thickness, not a thickness distribution - with the buckling constraint on
+  its out-of-plane buckling, but not the stress constraint (its stress varies
+  through the thickness), the overhang filter or the manufacturability
+  checks;
 * one element: the four-node quadrilateral. No triangles (S3), no quadratic
   shells (S8R, S9) - a mesh file with them is refused with the reason - so
   a curved surface is a mesh of flat-ish facets, and the geometry error of
@@ -626,9 +631,11 @@ four-thread numbers. Parallel element loops would need per-thread buffers
 or a colouring to keep the results deterministic.
 
 **The SIMP stiffness floor limits conditioning.** With `emin_ratio = 1e-9`
-the smallest LDL^T pivot ratio sits around `1e-9`, comfortably above the
-`1e-14` singularity threshold, but the condition number of `K_ff` is
-correspondingly large. The multigrid solver copes because void and solid do
+the smallest pivot relative to its diagonal entry stays many decades above
+the `1e-14` threshold (it is logged at debug verbosity) - the singularity
+check judges each pivot against its own diagonal, so neither the floor nor a
+shell's rotations beside its translations trip it - but the condition number
+of `K_ff` is correspondingly large. The multigrid solver copes because void and solid do
 not share aggregates. Jacobi-preconditioned CG is kept as a baseline and is
 measured on uniform material only; no benchmark uses it.
 

@@ -783,7 +783,8 @@ void ResultWriter::write_shell_resultants(const FemModel& model, const std::stri
 }
 
 void ResultWriter::write_shell_vtk(const FemModel& model, const std::string& load_case,
-                                   const Vector& full_displacement, const ShellField& field) const {
+                                   const Vector& full_displacement, const ShellField& field,
+                                   const Vector* density) const {
   const Mesh& mesh = model.mesh();
   const Vector displacement = translations(mesh, full_displacement);
   const Vector rotation = rotations(mesh, full_displacement);
@@ -817,6 +818,7 @@ void ResultWriter::write_shell_vtk(const FemModel& model, const std::string& loa
   writer.add_cell_scalars("von_mises_mid", cell([](const ShellResultants& r) { return r.von_mises_mid; }));
   writer.add_cell_scalars("von_mises", field.element_von_mises);
   writer.add_cell_scalars("strain_energy", field.element_strain_energy);
+  if (density != nullptr) writer.add_cell_scalars("density", *density);
   writer.write(file("fields_" + sanitise(load_case) + ".vtk"));
 }
 
@@ -1546,7 +1548,8 @@ void ResultWriter::write_density_history(const TopologyOptimizationResult& resul
 
 json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density,
                                         Scalar thickness, const std::string& stem,
-                                        const std::string& what) const {
+                                        const std::string& what,
+                                        const Vector* element_thickness) const {
   if (density.size() != mesh.num_elements()) {
     std::ostringstream os;
     os << "geometry export '" << stem << "': density has " << density.size()
@@ -1560,8 +1563,15 @@ json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density
   vtk.add_cell_scalars("density", density);
   vtk.write(file(vtk_name));
 
+  // A shell mesh stands for its mid-surface thickened to either side; a
+  // plane mesh is extruded by its thickness; a solid mesh is its own surface.
+  const bool shell = mesh.element_type() == ElementType::Shell4;
+  if (shell && (element_thickness == nullptr || element_thickness->size() != mesh.num_elements())) {
+    throw IoError("geometry export '" + stem + "': a shell mesh needs its element thicknesses");
+  }
   const Scalar extrusion = mesh.dim() == 2 ? thickness : 1.0;
-  const TriangleSurface surface = boundary_surface(mesh, extrusion);
+  const TriangleSurface surface =
+      shell ? shell_surface(mesh, *element_thickness) : boundary_surface(mesh, extrusion);
   write_stl(file(stl_name), surface, config_.name + " " + what);
   const SurfaceStats stats = surface_stats(surface);
 
@@ -1572,7 +1582,7 @@ json::Value ResultWriter::write_geometry(const Mesh& mesh, const Vector& density
   // exactness.
   Scalar cell_volume = 0.0;
   for (Index e = 0; e < mesh.num_elements(); ++e) {
-    cell_volume += mesh.element_measure(e) * extrusion;
+    cell_volume += mesh.element_measure(e) * (shell ? (*element_thickness)(e) : extrusion);
   }
   const Scalar mismatch =
       std::abs(stats.enclosed_volume - cell_volume) / std::max(cell_volume, 1.0e-300);
