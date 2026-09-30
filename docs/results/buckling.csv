@@ -1,4 +1,7 @@
-case,run,compliance_J,simp_lambda_1,simp_mode_1_solid_energy_fraction,part_lambda_1,full_solid_lambda_1,iterations,stop_reason,linear_solves,runtime_s
-column_buckling_unconstrained,compliance only,112.18216047988936,,,2.8624155971131477,149.65179966046796,55,design_change,58,1.562874638
-column_buckling_nonrobust,"lambda >= 6, plain projection",159.20882219508871,6.000455454899774,0.8011387291993153,3.6454633176843965,149.65179966046796,298,design_change,63407,107.87117364
-column_buckling,"lambda >= 6, robust projection",186.63606095938633,6.001960081422537,0.6612022550429651,5.814707777693533,149.65179966046796,375,objective_stall,90702,156.742109262
+case,run,compliance_J,simp_lambda_1,simp_mode_1_solid_energy_fraction,part_lambda_1,full_solid_lambda_1,iterations,stop_reason,linear_solves,runtime_s,nonlinear_verdict,nonlinear_critical_lower,nonlinear_critical_upper
+column_buckling_unconstrained,compliance only,112.18216047988936,,,2.8624155971131477,149.65179966046796,55,design_change,58,1.345804334,carries,2.858306884765625,2.859130859375
+column_buckling_nonrobust,"lambda >= 6, plain projection",159.25040480312097,6.000470066995826,0.810218819698133,3.6329619373843403,149.65179966046796,289,design_change,62140,92.46435503,carries,4.099677956938791,4.099679180400187
+column_buckling,"lambda >= 6, robust projection",186.55128250553543,6.003266516769037,0.6774542706460167,5.806172701846964,149.65179966046796,378,design_change,91507,138.13089694,carries,5.807586669921875,5.8076171875
+shell_panel_buckling_unconstrained,shell: compliance only,0.017399714517978785,,,1.1300814297876003,25.306084601298586,133,objective_stall,136,10.871608607,,,
+shell_panel_buckling_nonrobust,"shell: lambda >= 10, plain projection",0.017849154702056336,10.003404561532923,0.9612686412365995,5.57748773809074,25.306084601298586,139,design_change,17580,76.184088904,,,
+shell_panel_buckling,"shell: lambda >= 10, robust projection",0.017980759372965886,10.038186065281288,0.9999998535644453,10.520013812450594,25.306084601298586,112,design_change,16631,67.782888435,,,

@@ -140,6 +140,9 @@ def main(argv=None) -> int:
         ("Timoshenko beam",
          lambda: studies.plot_beam_verification(
              args.verification, figure("verify_beam.png"))),
+        ("non-linear check of a part against the elastica",
+         lambda: studies.plot_part_check(
+             args.verification, figure("verify_part_check.png"))),
     ]
 
     for label, task in tasks:

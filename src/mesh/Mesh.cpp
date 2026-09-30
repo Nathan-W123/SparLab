@@ -291,6 +291,53 @@ Scalar shell4_corner_quality(const Matrix& xe) {
   return value;
 }
 
+/// For each corner of a Hex8 in VTK order, the three corners it shares an
+/// edge with, ordered so that their edge vectors are right-handed in a
+/// positively oriented cell.
+constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
+                                       {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
+
+/// The smallest scaled Jacobian over the corners of a plane quadrilateral:
+/// the cross product of the two edges at a corner over their lengths. 1 for a
+/// rectangle, 0 for a corner of 180 degrees, negative for a re-entrant one.
+/// `worst`, when given, receives that corner's local index.
+Scalar quad4_corner_quality(const Matrix& xe, int* worst = nullptr) {
+  Scalar value = std::numeric_limits<Scalar>::max();
+  for (int a = 0; a < 4; ++a) {
+    const Vector2 p = xe.col(a);
+    const Vector2 e1 = Vector2(xe.col((a + 1) % 4)) - p;
+    const Vector2 e2 = Vector2(xe.col((a + 3) % 4)) - p;
+    const Scalar denom = e1.norm() * e2.norm();
+    const Scalar sj = denom > 0.0 ? (e1.x() * e2.y() - e1.y() * e2.x()) / denom : -1.0;
+    if (sj < value) {
+      value = sj;
+      if (worst != nullptr) *worst = a;
+    }
+  }
+  return value;
+}
+
+/// The smallest scaled Jacobian over the corners of a hexahedron: the triple
+/// product of the three edges at a corner over their lengths. 1 for a
+/// rectangular box, negative where the cell folds at a corner. `worst`, when
+/// given, receives that corner's local index.
+Scalar hex8_corner_quality(const Matrix& xe, int* worst = nullptr) {
+  Scalar value = std::numeric_limits<Scalar>::max();
+  for (int a = 0; a < 8; ++a) {
+    const Vector3 p = xe.col(a);
+    const Vector3 e1 = Vector3(xe.col(kHexCornerEdges[a][0])) - p;
+    const Vector3 e2 = Vector3(xe.col(kHexCornerEdges[a][1])) - p;
+    const Vector3 e3 = Vector3(xe.col(kHexCornerEdges[a][2])) - p;
+    const Scalar denom = e1.norm() * e2.norm() * e3.norm();
+    const Scalar sj = denom > 0.0 ? e1.dot(e2.cross(e3)) / denom : -1.0;
+    if (sj < value) {
+      value = sj;
+      if (worst != nullptr) *worst = a;
+    }
+  }
+  return value;
+}
+
 }  // namespace
 
 Mesh::Mesh(Matrix coords, std::vector<Index> connectivity, ElementType type)
@@ -380,8 +427,6 @@ MeshQuality Mesh::quality() const {
   MeshQuality q;
   const Index ne = num_elements();
   if (ne == 0) return q;
-  static const int hex_corner[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
-                                       {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
   switch (type_) {
     case ElementType::Quad4:
     case ElementType::Hex8: q.metric = "minimum scaled Jacobian at the corners"; break;
@@ -404,31 +449,13 @@ MeshQuality Mesh::quality() const {
     const Index* n = element_nodes(e);
     Scalar value = 0.0;
     if (type_ == ElementType::Quad4) {
-      value = std::numeric_limits<Scalar>::max();
-      for (int a = 0; a < 4; ++a) {
-        const Vector2 p = coords_.col(n[a]);
-        const Vector2 e1 = Vector2(coords_.col(n[(a + 1) % 4])) - p;
-        const Vector2 e2 = Vector2(coords_.col(n[(a + 3) % 4])) - p;
-        const Scalar denom = e1.norm() * e2.norm();
-        const Scalar sj =
-            denom > 0.0 ? (e1.x() * e2.y() - e1.y() * e2.x()) / denom : -1.0;
-        value = std::min(value, sj);
-      }
+      value = quad4_corner_quality(element_coordinates(e));
     } else if (type_ == ElementType::Shell4) {
       value = shell4_corner_quality(element_coordinates(e));
     } else if (type_ == ElementType::Beam2) {
       value = 1.0;
     } else if (type_ == ElementType::Hex8) {
-      value = std::numeric_limits<Scalar>::max();
-      for (int a = 0; a < 8; ++a) {
-        const Vector3 p = coords_.col(n[a]);
-        const Vector3 e1 = Vector3(coords_.col(n[hex_corner[a][0]])) - p;
-        const Vector3 e2 = Vector3(coords_.col(n[hex_corner[a][1]])) - p;
-        const Vector3 e3 = Vector3(coords_.col(n[hex_corner[a][2]])) - p;
-        const Scalar denom = e1.norm() * e2.norm() * e3.norm();
-        const Scalar sj = denom > 0.0 ? e1.dot(e2.cross(e3)) / denom : -1.0;
-        value = std::min(value, sj);
-      }
+      value = hex8_corner_quality(element_coordinates(e));
     } else if (type_ == ElementType::Tri3) {
       Scalar l2 = 0.0;
       for (int a = 0; a < 3; ++a) {
@@ -587,6 +614,23 @@ void Mesh::validate() const {
               "inverted or collapsed";
         throw MeshError(os.str());
       }
+      // A quadrilateral with a re-entrant corner still has a positive area,
+      // and its integration points may all see a positive Jacobian, but its
+      // bilinear map folds near that corner.
+      int corner = 0;
+      const Scalar quality =
+          type_ == ElementType::Quad4 ? quad4_corner_quality(element_coordinates(e), &corner)
+                                      : 1.0;
+      if (!(quality > 0.0)) {
+        std::ostringstream os;
+        os << "element " << e << " is not convex: its corner at node " << nodes[corner]
+           << " has a scaled Jacobian of " << quality
+           << " (an angle of 180 degrees or more, or an edge of zero length). The "
+              "bilinear map of a quadrilateral folds near such a corner, whether or not "
+              "its integration points see it; move that node back inside the cell or "
+              "split the cell into two triangles";
+        throw MeshError(os.str());
+      }
       min_measure = std::min(min_measure, area);
       max_measure = std::max(max_measure, area);
     } else if (type_ == ElementType::Tet4) {
@@ -632,8 +676,9 @@ void Mesh::validate() const {
       // A hexahedron can have positive volume and still be folded at a
       // corner, so the Jacobian is checked at every integration point rather
       // than only through the volume.
+      const Matrix xe = element_coordinates(e);
       Scalar min_det = 0.0;
-      const Scalar volume = hex8_volume(element_coordinates(e), &min_det);
+      const Scalar volume = hex8_volume(xe, &min_det);
       if (!(min_det > 0.0) || !(volume > 0.0)) {
         std::ostringstream os;
         os << "element " << e << " has volume " << volume
@@ -641,6 +686,18 @@ void Mesh::validate() const {
            << " m^3 over its 2 x 2 x 2 Gauss points; nodes must follow the VTK "
               "hexahedron ordering (bottom face counter-clockwise seen from +z, then "
               "the top face) and the element must not be inverted or folded";
+        throw MeshError(os.str());
+      }
+      // The Gauss points can all miss a fold at a corner.
+      int corner = 0;
+      const Scalar quality = hex8_corner_quality(xe, &corner);
+      if (!(quality > 0.0)) {
+        std::ostringstream os;
+        os << "element " << e << " is folded at its corner at node " << nodes[corner]
+           << ": the scaled Jacobian there is " << quality
+           << " (-1 for an edge of zero length) although its 2 x 2 x 2 Gauss points see "
+              "a positive one. The trilinear map turns inside out near that corner; move "
+              "the node back into the cell or re-mesh there";
         throw MeshError(os.str());
       }
       min_measure = std::min(min_measure, volume);

@@ -250,8 +250,8 @@ Mesh make_perturbed_quad_mesh(const StructuredMeshSpec& spec, Scalar perturbatio
                               unsigned int seed) {
   if (!(perturbation >= 0.0 && perturbation < 0.45)) {
     std::ostringstream os;
-    os << "mesh perturbation must lie in [0, 0.45) to keep elements convex (got "
-       << perturbation << ")";
+    os << "mesh perturbation must lie in [0, 0.45) (got " << perturbation
+       << "); below 0.25 every cell stays convex whatever the seed";
     throw ConfigError(os.str());
   }
   Mesh mesh = make_structured_quad_mesh(spec);
@@ -288,8 +288,8 @@ Mesh make_perturbed_hex_mesh(const StructuredMeshSpec& spec, Scalar perturbation
                              unsigned int seed) {
   if (!(perturbation >= 0.0 && perturbation < 0.35)) {
     std::ostringstream os;
-    os << "hex mesh perturbation must lie in [0, 0.35) to keep cells valid (got "
-       << perturbation << ")";
+    os << "hex mesh perturbation must lie in [0, 0.35) (got " << perturbation
+       << "); below 1/6 no cell folds whatever the seed";
     throw ConfigError(os.str());
   }
   Mesh mesh = make_structured_hex_mesh(spec);

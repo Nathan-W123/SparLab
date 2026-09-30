@@ -733,6 +733,7 @@ def part_check_verification_table(results_dir: str) -> Optional[str]:
          "order", "displacement ratio (extrapolated)", "error vs elastica", "order"], rows)
     bar = block.get("bar_collapse", {})
     column = block.get("column_bifurcation", {})
+    imperfect = block.get("imperfect_column", {})
     thermal = block.get("free_thermal_expansion", {})
     extra = _markdown_table(
         ["check", "exact", "measured"],
@@ -744,6 +745,11 @@ def part_check_verification_table(results_dir: str) -> Optional[str]:
           _fmt(column.get("linear_buckling_load_factor"), 6),
           f"[{_fmt(column.get('critical_lower'), 6)}, {_fmt(column.get('critical_upper'), 6)}]"
           f", gap {_fmt(column.get('relative_gap'), 3)}"],
+         ["imperfect column at 1.2 times its critical load: verdict; where the path's "
+          "stiffness halves",
+          f"carries; a little below {_fmt(imperfect.get('critical_load_factor'), 4)}",
+          f"{imperfect.get('verdict', 'n/a')}; [{_fmt(imperfect.get('softening_lower'), 6)}, "
+          f"{_fmt(imperfect.get('softening_upper'), 6)}]"],
          ["free thermal expansion: ratios", "1", f"error {_fmt(thermal.get('ratio_error'), 3)}"]])
     return table + "\n\n" + extra
 
@@ -1828,8 +1834,10 @@ def main(argv=None) -> int:
          "non-linear to the linear end compliance and largest displacement of a strip "
          "1 m x 20 mm under a dead end force, Richardson-extrapolated with the observed "
          "order of the 100 x 4, 200 x 8 and 400 x 16 Q4 meshes, against Euler's "
-         "elastica; then the exact limits: a uniform bar's collapse, a column's "
-         "bifurcation against its linear buckling factor, free thermal expansion."),
+         "elastica; then the exact and classical limits: a uniform bar's collapse, a "
+         "column's bifurcation against its linear buckling factor, the same column "
+         "with a small imperfection carried past it on its stable post-buckled branch, "
+         "and free thermal expansion."),
         ("Linear simplices: cantilever convergence", simplex_convergence_table(args.results),
          "From `results/verification/mesh_convergence_simplex.csv`. The Tri3 beam is "
          "the plane-stress cantilever of the Q4 study at nu = 0.3, the Tet4 beam the "

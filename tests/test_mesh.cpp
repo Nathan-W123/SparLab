@@ -1,18 +1,21 @@
 /// \file test_mesh.cpp
 /// \brief Mesh generation, validation diagnostics, boundary edges, sub-meshes.
 #include "sparlab/core/Exceptions.hpp"
+#include "sparlab/elements/Hex8.hpp"
 #include "sparlab/fem/Selector.hpp"
 #include "sparlab/mesh/StructuredMesh.hpp"
 #include "sparlab/mesh/SubMesh.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <set>
 
 using namespace sparlab;
 using Catch::Approx;
+using Catch::Matchers::ContainsSubstring;
 
 TEST_CASE("structured generator produces the documented numbering", "[mesh]") {
   StructuredMeshSpec spec;
@@ -109,6 +112,88 @@ TEST_CASE("mesh validation catches invalid connectivity and geometry",
     const Mesh mesh(five, {0, 1, 2, 3}, ElementType::Quad4);
     REQUIRE_THROWS_AS(mesh.validate(), MeshError);
   }
+}
+
+TEST_CASE("mesh validation refuses a concave quadrilateral and a hexahedron folded at a corner",
+          "[mesh][diagnostics]") {
+  SECTION("a quadrilateral with a re-entrant corner") {
+    // Node 2 lies inside the triangle of the other three: the area is
+    // positive and all four Gauss points see a positive Jacobian (the
+    // smallest is 0.054), but the bilinear map folds near node 2.
+    Matrix dart(2, 4);
+    dart << 0.0, 2.0, 0.8, 0.0,
+            0.0, 0.0, 0.8, 2.0;
+    const Mesh mesh(dart, {0, 1, 2, 3}, ElementType::Quad4);
+    REQUIRE(mesh.element_measure(0) > 0.0);
+    REQUIRE(mesh.quality().min < 0.0);
+    REQUIRE_THROWS_WITH(mesh.validate(), ContainsSubstring("not convex") &&
+                                             ContainsSubstring("node 2"));
+
+    // Moved out past the diagonal from node 1 to node 3, the cell is convex.
+    Matrix kite = dart;
+    kite(0, 2) = kite(1, 2) = 1.2;
+    REQUIRE_NOTHROW(Mesh(kite, {0, 1, 2, 3}, ElementType::Quad4).validate());
+  }
+
+  SECTION("a hexahedron folded at a corner its Gauss points miss") {
+    // The unit cube with corner 6 pulled in to (0.55, 0.55, 0.55): the
+    // volume and every Gauss-point Jacobian stay positive, the corner's
+    // scaled Jacobian is -0.59.
+    Matrix cube(3, 8);
+    cube << 0, 1, 1, 0, 0, 1, 1, 0,
+            0, 0, 1, 1, 0, 0, 1, 1,
+            0, 0, 0, 0, 1, 1, 1, 1;
+    cube.col(6) = Vector3(0.55, 0.55, 0.55);
+    Scalar min_det = 0.0;
+    REQUIRE(hex8_volume(cube, &min_det) > 0.0);
+    REQUIRE(min_det > 0.0);
+    const Mesh mesh(cube, {0, 1, 2, 3, 4, 5, 6, 7}, ElementType::Hex8);
+    REQUIRE(mesh.quality().min < 0.0);
+    REQUIRE_THROWS_WITH(mesh.validate(), ContainsSubstring("folded at its corner at node 6"));
+  }
+}
+
+TEST_CASE("perturbed meshes keep every cell valid below the guaranteed bound and refuse a "
+          "folded one above it",
+          "[mesh][diagnostics]") {
+  // Below a quarter (Q4) or a sixth (Hex8) of the cell size no seed can make
+  // a cell concave or fold it at a corner.
+  StructuredMeshSpec quads;
+  quads.nx = quads.ny = 6;
+  for (unsigned int seed = 1; seed <= 200; ++seed) {
+    INFO("Q4 seed " << seed);
+    REQUIRE(make_perturbed_quad_mesh(quads, 0.249, seed).quality().min > 0.0);
+  }
+  StructuredMeshSpec hexes;
+  hexes.nx = hexes.ny = hexes.nz = 4;
+  for (unsigned int seed = 1; seed <= 50; ++seed) {
+    INFO("Hex8 seed " << seed);
+    REQUIRE(make_perturbed_hex_mesh(hexes, 0.166, seed).quality().min > 0.0);
+  }
+
+  // Near the top of the accepted ranges most seeds would make an invalid
+  // cell: the generator either returns a valid mesh or refuses it.
+  quads.nx = quads.ny = 10;
+  hexes.nx = hexes.ny = hexes.nz = 6;
+  int refused_quads = 0;
+  int refused_hexes = 0;
+  for (unsigned int seed = 1; seed <= 20; ++seed) {
+    // Built outside REQUIRE, which would catch the refusal itself.
+    try {
+      const Mesh mesh = make_perturbed_quad_mesh(quads, 0.449, seed);
+      REQUIRE(mesh.quality().min > 0.0);
+    } catch (const MeshError&) {
+      ++refused_quads;
+    }
+    try {
+      const Mesh mesh = make_perturbed_hex_mesh(hexes, 0.349, seed);
+      REQUIRE(mesh.quality().min > 0.0);
+    } catch (const MeshError&) {
+      ++refused_hexes;
+    }
+  }
+  REQUIRE(refused_quads > 0);
+  REQUIRE(refused_hexes > 0);
 }
 
 TEST_CASE("boundary edges are the edges owned by one element", "[mesh]") {

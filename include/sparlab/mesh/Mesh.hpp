@@ -191,7 +191,9 @@ class Mesh {
   void set_structured_info(const StructuredGridInfo& info) { structured_ = info; }
   const std::optional<StructuredGridInfo>& structured_info() const { return structured_; }
 
-  /// Validate connectivity ranges, element measures and node degeneracy.
+  /// Validate connectivity ranges, element measures and node degeneracy, and
+  /// that no quadrilateral (plane or shell) has a corner of 180 degrees or
+  /// more and no hexahedron folds at a corner or a Gauss point.
   /// \throws MeshError with an actionable message on the first problem found.
   void validate() const;
 

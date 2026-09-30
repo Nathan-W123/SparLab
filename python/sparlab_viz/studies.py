@@ -3283,3 +3283,107 @@ def plot_shell_benchmarks(directory: str, path: str) -> str:
         "torque as Bredt's shear flow against T L / (G b^3 t).",
     )
     return st.save_figure(fig, path)
+
+
+def plot_part_check(directory: str, path: str) -> str:
+    """The non-linear check of an exported part on a cantilever strip against
+    Euler's elastica: how far the large-displacement response departs from the
+    linear one, and the mesh error of the two ratios the check reports."""
+    from matplotlib.lines import Line2D
+
+    table = load_csv(os.path.join(directory, "part_check_elastica.csv"))
+    block = load_json(os.path.join(directory, "summary.json")).get("part_check", {})
+    extrapolated = {float(x["k"]): x for x in block.get("elastica_extrapolated", [])}
+    table["cells"] = table["mesh"].str.split("x").str[0].str.strip().astype(int)
+    finest = int(table["cells"].max())
+    fig, axes = st.figure(10.4, 4.3, ncols=3)
+    left, middle, right = axes
+
+    ref = table[table["cells"] == finest].sort_values("k[-]")
+    quantities = (("compliance", "end compliance P v"),
+                  ("displacement", "largest displacement"))
+    for slot, (name, label) in enumerate(quantities):
+        exact = 1.0 - ref[f"{name}_ratio_elastica[-]"].to_numpy()
+        measured = 1.0 - ref[f"{name}_ratio[-]"].to_numpy()
+        left.plot(ref["k[-]"], exact, "-", color=st.series_color(slot), linewidth=1.4)
+        left.plot(ref["k[-]"], measured, "o", color=st.series_color(slot), markersize=5.0,
+                  markerfacecolor="none", markeredgewidth=1.3)
+    k = ref["k[-]"].to_numpy()
+    guide = (1.0 - float(ref["compliance_ratio_elastica[-]"].iloc[0])) * (k / k[0]) ** 2
+    left.plot(k[:3], 0.45 * guide[:3], ":", color=st.INK_MUTED, linewidth=1.0)
+    left.annotate("order 2", (k[1], 0.45 * guide[1]), xytext=(4, -10),
+                  textcoords="offset points", fontsize=7.5, color=st.INK_MUTED)
+    left.set_xscale("log")
+    left.set_yscale("log")
+    left.set_xlabel("k = P L^2 / EI [-]")
+    left.set_ylabel("1 - non-linear / linear [-]")
+    st.title(left, "Departure from linear",
+             "the ratios the check reports, against the elastica", wrap=40)
+    handles = [Line2D([], [], color=st.series_color(slot), linewidth=1.4, label=label)
+               for slot, (_, label) in enumerate(quantities)]
+    handles += [Line2D([], [], color=st.INK_SECONDARY, linewidth=1.4, label="elastica"),
+                Line2D([], [], color=st.INK_SECONDARY, marker="o", markerfacecolor="none",
+                       markersize=5.0, markeredgewidth=1.3, linestyle="none",
+                       label=f"SparLab, {finest} x {finest // 25}")]
+    left.legend(handles=handles, loc="lower right", fontsize=7.2)
+
+    ks = sorted(table["k[-]"].unique())
+    colors = st.sequence_colors(len(ks))
+    for ax, (name, label) in zip((middle, right), quantities):
+        for color, value in zip(colors, ks):
+            sub = table[table["k[-]"] == value].sort_values("cells")
+            ax.plot(sub["cells"], sub[f"{name}_ratio_error[-]"].abs(), "o-", color=color,
+                    markersize=4.0, linewidth=1.2, label=f"{value:g}")
+        cells = np.array(sorted(table["cells"].unique()), dtype=float)
+        top = table[table["k[-]"] == ks[-1]].sort_values("cells")
+        anchor = 1.8 * float(abs(top[f"{name}_ratio_error[-]"].iloc[0]))
+        ax.plot(cells, anchor * (cells / cells[0]) ** -2.0, ":", color=st.INK_MUTED,
+                linewidth=1.0)
+        ax.annotate("order 2", (cells[1], anchor * (cells[1] / cells[0]) ** -2.0),
+                    xytext=(4, 2), textcoords="offset points", fontsize=7.5,
+                    color=st.INK_MUTED)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xticks(cells)
+        ax.set_xticklabels([f"{int(c)}" for c in cells])
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_xlabel("cells along the strip (depth: 1/25 of it) [-]")
+        orders = [float(x.get(f"{name}_ratio_observed_order", float("nan")))
+                  for kk, x in extrapolated.items() if kk >= 0.5]
+        subtitle = "|ratio - elastica ratio|"
+        if orders:
+            subtitle += (f"; observed order {min(orders):.2f} to {max(orders):.2f} for "
+                         "k >= 0.5")
+        st.title(ax, f"Mesh error: {label}", subtitle, wrap=40)
+    middle.set_ylabel("error [-]")
+    errors = pd.concat([table["compliance_ratio_error[-]"],
+                        table["displacement_ratio_error[-]"]]).abs()
+    right.sharey(middle)
+    middle.set_ylim(0.5 * float(errors[errors > 0].min()), 3.0 * float(errors.max()))
+    st.legend(right, loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=7.2,
+              title="k", title_fontsize=7.6)
+
+    st.figure_title(
+        fig, "The non-linear check of a part against Euler's elastica",
+        "a strip 1 m x 20 mm, plane stress, nu = 0, clamped at one end, a dead shear force "
+        "P = k EI / L^2 on the other; Saint Venant-Kirchhoff, load control; 50 x 2 to "
+        "400 x 16 fully integrated Q4 cells",
+    )
+    worst = block.get("extrapolated_worst_ratio_error")
+    worst_finest = block.get("finest_mesh_worst_ratio_error")
+    small = block.get("small_load_compliance_deviation_orders", [])
+    note = ("The check divides the large-displacement end compliance f.u and largest nodal "
+            "displacement by those of the linear analysis. The elastica is solved by "
+            "shooting; its largest displacement is a corner of the end section turning "
+            "rigidly with the end. The continuum and the elastica differ by the strip's "
+            "shear and the second order of its bending strain, (h/L)^2 + (k h / 2L)^2 <= "
+            "8e-4, which sets the tolerance 1e-3. The Q4 cells lock in bending, so the ratios "
+            "converge with the mesh at an observed order approaching 2 from below")
+    if worst_finest is not None and worst is not None:
+        note += (f"; the finest mesh's worst error is {worst_finest:.3g} and the Richardson "
+                 f"extrapolation with the observed order leaves {worst:.3g}")
+    if small:
+        note += (". At small loads the departure from linear is of second order in the load "
+                 f"(observed {', '.join(f'{o:.3f}' for o in small)})")
+    st.annotate_note(fig, note + ".")
+    return st.save_figure(fig, path)

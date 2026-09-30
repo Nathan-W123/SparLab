@@ -72,15 +72,28 @@ Mesh make_structured_hex_mesh(const StructuredMeshSpec& spec);
 /// Q4 element reproduces linear fields for trivial reasons, whereas on a
 /// distorted grid only a correctly formed isoparametric mapping does. The
 /// generator is deterministic for a given seed.
+///
+/// Below a quarter of the cell size every cell stays convex whatever the
+/// seed: the cross product of the two edges at a corner is at least
+/// (1 - 4 perturbation) dx dy. Above it a seed can make a cell concave, which
+/// `Mesh::validate` refuses.
 /// \param perturbation fraction of the cell size, in [0, 0.45).
-/// \throws ConfigError for an out-of-range perturbation.
+/// \throws ConfigError for an out-of-range perturbation, MeshError for a
+///         seed that makes a cell concave.
 Mesh make_perturbed_quad_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                               unsigned int seed = 12345u);
 
 /// 3-D counterpart of `make_perturbed_quad_mesh`: interior nodes of a
 /// structured Hex8 grid are displaced by up to `perturbation` of the cell
 /// size in every direction, boundary nodes stay in place.
+///
+/// Below a sixth of the cell size every corner Jacobian stays positive
+/// whatever the seed (the three edges at a corner, in cell units, form a
+/// strictly diagonally dominant matrix). Above it a seed can fold a cell at a
+/// corner, which `Mesh::validate` refuses.
 /// \param perturbation fraction of the cell size, in [0, 0.35).
+/// \throws ConfigError for an out-of-range perturbation, MeshError for a
+///         seed that folds a cell.
 Mesh make_perturbed_hex_mesh(const StructuredMeshSpec& spec, Scalar perturbation,
                              unsigned int seed = 12345u);
 

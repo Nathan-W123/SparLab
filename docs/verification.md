@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 330 cases, 21 724 assertions (GCC)
+make test              # the Catch2 suite: 332 cases, 21 986 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -274,6 +274,30 @@ covers each case:
 | Pin plus a roller at another node | well posed | 0 |
 | Two blocks, only one constrained | yes | the floating group is named |
 
+**Invalid cells.** `Mesh::validate` refuses an inverted, collapsed or
+degenerate cell with the element and the fix named, and checks the
+quadrilateral and the hexahedron at their corners as well as by their area,
+volume and Gauss points: a positive area or volume and positive Jacobians at
+the integration points do not make a bilinear or trilinear map one-to-one.
+`tests/test_mesh.cpp` builds a quadrilateral whose area and four Gauss-point
+Jacobians are positive (the smallest `0.054`) with a corner turned inwards
+(scaled Jacobian `-0.385`), and a hexahedron whose volume and eight
+Gauss-point Jacobians are positive (the smallest `0.020`) folded at a corner
+(`-0.59`); both are refused with that corner's node named. The perturbed
+meshes the tests and studies distort by moving interior nodes keep every cell
+valid whatever the seed below a quarter (Q4) or a sixth (Hex8) of the cell
+size - the edges at a corner stay a diagonally dominant matrix - which the
+test checks on 200 and 50 seeds; above it a seed can make a cell invalid and
+the generator refuses the mesh. How often, before the check existed: on a
+10 x 10 grid of quadrilaterals, 7, 172, 618 and 918 of 1000 seeds made a cell
+concave at 0.30, 0.35, 0.40 and 0.449 of the cell size; on a 6 x 6 x 6 grid
+of hexahedra, 4, 154 and 292 of 300 seeds folded one at a corner at 0.25,
+0.30 and 0.349. Every mesh the tests and studies use passes the check (the
+whole suite and every study run with it); the patch tests' meshes, perturbed
+furthest, keep a smallest corner sine of `0.55` (quadrilaterals at 0.30 and
+0.40) and a smallest scaled corner Jacobian of `0.087` (the 3-D patch test's
+hexahedra at 0.30).
+
 `StaticAnalysis` refuses to construct on an ill-posed model, so the failure
 appears before any solve. Where the analytic check cannot see the problem - an
 internal mechanism, two blocks joined at a single node - it surfaces as a
@@ -305,7 +329,9 @@ trivial reasons.
 | 0.30 | `< 1e-11` |
 | 0.40 | `< 1e-11` |
 
-The dedicated study measures `4.07e-15`, i.e. round-off. This case is also why
+Every cell of these meshes stays convex: the smallest sine of a corner angle
+is `0.94`, `0.77` and `0.58` at 0.15, 0.30 and 0.40 (and `0.55` on the
+study's 4x4 mesh at 0.30). The dedicated study measures `4.07e-15`, i.e. round-off. This case is also why
 `prescribed_displacement_only` exists on a load case: the test has no applied
 force at all, and declaring that explicitly keeps an accidentally empty load
 case an error.
@@ -2749,6 +2775,8 @@ order of the three finest and the Richardson extrapolation with it:
 | 0.5 | 0.9728615 | 0.9732750 | `-5.82e-05` | 1.777 | 0.9778954 | 0.9782409 | `-4.36e-05` | 1.775 |
 | 1 | 0.9051623 | 0.9064353 | `-1.44e-04` | 1.809 | 0.9214849 | 0.9225722 | `-1.08e-04` | 1.805 |
 | 2 | 0.7401862 | 0.7427026 | `-1.56e-04` | 1.871 | 0.7792858 | 0.7815458 | `-1.12e-04` | 1.864 |
+
+![The non-linear check against the elastica: the departure from linear, and the mesh error of both ratios](figures/verify_part_check.png)
 
 The worst extrapolated error, `1.56e-04`, is the study's value (tolerance
 `1e-3`); the finest mesh's own worst is `2.52e-03`. The observed orders,

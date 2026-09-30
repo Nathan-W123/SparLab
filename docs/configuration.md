@@ -141,7 +141,11 @@ node order - their normals - kept as the file gives it; S3 and eight-node
 shells are refused; a beam mesh anywhere in space, each element's node
 order its `x'` axis; B32, B33, the planar B2x beams, trusses and connectors
 are refused as cells), and a domain larger than 20 m or smaller
-than 0.1 mm draws a warning about units. Boundary conditions, loads and
+than 0.1 mm draws a warning about units. A cell that is still invalid after
+re-ordering is refused with its element and node named: a collapsed or flat
+cell, a quadrilateral (plane or shell) with a corner of 180 degrees or more,
+a hexahedron folded at a corner or at a Gauss point, a Tet10 whose curved
+edges fold it. Boundary conditions, loads and
 materials in an `.inp` file are not imported, and the report names every
 ignored keyword. What was read and done is recorded under `mesh.file` in
 `summary.json`, with the cell-quality statistics under `mesh.quality`.
@@ -1343,5 +1347,12 @@ linear penalty) and `*FRICTION`, a flat rigid obstacle as one C3D8 element
 that moves with it; a plane model (CalculiX's mortar contact refuses its
 expanded plane elements) or a curved obstacle (CalculiX has no analytical
 rigid surfaces) is not exported, and the log says why.
+
+`sparlab_solve` and `sparlab_topopt` both read `--config FILE` and take
+`--output DIR` (default `results/<name>`, the deck's `name` with characters
+other than letters, digits, `-` and `_` replaced by `_`), `--strict-config`,
+and `--no-vtk` / `--no-csv` (`output.vtk` / `output.csv` = false). Every app
+takes `--verbosity trace|debug|info|warn|error|silent`; without it the level
+is `SPARLAB_LOG_LEVEL`, or `info`.
 
 Run any app with `--help` for its full flag list.

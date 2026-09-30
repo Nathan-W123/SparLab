@@ -1008,12 +1008,12 @@ steer the constraint.
 **Against the equal-mass plate the constrained column loses** (stiffness
 gain 0.832 in the summary table), and the loss says more about the plane
 model than about the optimiser. The uniform plate of the same mass is
-2.5 mm thick instead of 10 mm. Its compliance is `C_solid / nu` = 155.286 J,
+2.5 mm thick instead of 10 mm. Its compliance is `C_solid / nu` = 155.287 J,
 and its in-plane load factor is `nu` times the solid's: at a fixed load `K`
 scales with the thickness while `K_G` - thickness times a stress that scales
 with its inverse - does not, so `lambda_1 = 0.25 x 149.65 = 37.41`
 (`sparlab_solve` on the thinned plate: 37.4129). In the plane model that
-plate is stiffer than both constrained designs (159.209 J and 186.636 J)
+plate is stiffer than both constrained designs (159.250 J and 186.551 J)
 and clears the requirement six times over. The optimiser cannot reach it: at uniform
 density 0.25, SIMP leaves 1.6 % of the solid's stiffness, and the projection
 drives the design to 0 and 1 anyway. What rules the thin plate out is what a
