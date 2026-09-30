@@ -142,7 +142,8 @@ int main(int argc, char** argv) {
         "no-csv",        "tag",         "method",      "stress-limit", "no-stress",
         "solver",        "projection",  "no-projection", "beta-max",   "buckling",
         "min-load-factor", "no-buckling-constraint", "robust", "no-robust",
-        "overhang",      "no-overhang-filter", "nonlinear", "help"};
+        "overhang",      "no-overhang-filter", "nonlinear", "gravity-scale",
+        "temperature-scale", "help"};
     app::CommandLine cli(argc, argv, known);
     if (cli.has("help") || argc == 1) {
       return app::print_usage(
@@ -158,6 +159,9 @@ int main(int argc, char** argv) {
            {"--nx <n> --ny <n> [--nz <n>]", "override the mesh resolution"},
            {"--youngs-modulus <E>", "override material.youngs_modulus [Pa]"},
            {"--load-weights <w1,w2,...>", "override the per-load-case weights"},
+           {"--gravity-scale <s>", "scale every load case's gravity (0 removes the self-weight)"},
+           {"--temperature-scale <s>", "scale every load case's uniform or regional temperature "
+                                       "change T - T_ref (0 removes it)"},
            {"--modes <n>", "enable modal analysis with n modes"},
            {"--method <oc|mma>", "override optimizer.method"},
            {"--stress-limit <Pa>", "enable the aggregated stress constraint at this "
@@ -219,14 +223,29 @@ int main(int argc, char** argv) {
                         "this deck reads its mesh from '" + config.mesh_file.path +
                         "'; refine that mesh in the mesher instead");
     }
-    if (cli.has("nx")) config.mesh_spec.nx = cli.integer("nx", config.mesh_spec.nx);
-    if (cli.has("ny")) config.mesh_spec.ny = cli.integer("ny", config.mesh_spec.ny);
-    if (cli.has("nz")) {
-      if (config.dim() != 3) {
+    if (config.mesh_kind == MeshKind::StructuredShell) {
+      // A plate of shells counts its cells along x and y; a cylinder or a
+      // sphere counts them around and along, which --nx/--ny do not name.
+      if (cli.has("nz")) {
         throw ConfigError("--nz applies to a solid (structured_hex or structured_tet) "
-                          "mesh only");
+                          "mesh only; a shell has no cells through its thickness");
       }
-      config.mesh_spec.nz = cli.integer("nz", config.mesh_spec.nz);
+      if ((cli.has("nx") || cli.has("ny")) && config.shell_mesh.shape != ShellShape::Plate) {
+        throw ConfigError("--nx/--ny set the cells of a plate; a cylinder or sphere of shells "
+                          "sets n_around and n_along or n_meridian in the deck");
+      }
+      if (cli.has("nx")) config.shell_mesh.n1 = cli.integer("nx", config.shell_mesh.n1);
+      if (cli.has("ny")) config.shell_mesh.n2 = cli.integer("ny", config.shell_mesh.n2);
+    } else {
+      if (cli.has("nx")) config.mesh_spec.nx = cli.integer("nx", config.mesh_spec.nx);
+      if (cli.has("ny")) config.mesh_spec.ny = cli.integer("ny", config.mesh_spec.ny);
+      if (cli.has("nz")) {
+        if (config.dim() != 3) {
+          throw ConfigError("--nz applies to a solid (structured_hex or structured_tet) "
+                            "mesh only");
+        }
+        config.mesh_spec.nz = cli.integer("nz", config.mesh_spec.nz);
+      }
     }
     if (cli.has("youngs-modulus")) {
       config.set_material(config.material().with_youngs_modulus(
@@ -242,6 +261,35 @@ int main(int argc, char** argv) {
       }
       for (std::size_t l = 0; l < weights.size(); ++l) {
         config.load_cases[l].weight = weights[l];
+      }
+    }
+    if (cli.has("gravity-scale")) {
+      // A parametric study of the self-weight.
+      const Scalar scale = cli.number("gravity-scale", 1.0);
+      if (!std::isfinite(scale)) throw ConfigError("--gravity-scale needs a finite factor");
+      for (LoadCaseSpec& lc : config.load_cases) lc.gravity *= scale;
+    }
+    if (cli.has("temperature-scale")) {
+      // A parametric study of the heating: the change from the material's
+      // reference temperature scaled, and removed altogether at 0. A
+      // conducted field is the solution of its own problem, and a topology
+      // run refuses it anyway.
+      const Scalar scale = cli.number("temperature-scale", 1.0);
+      if (!std::isfinite(scale)) throw ConfigError("--temperature-scale needs a finite factor");
+      const Scalar reference = config.material().reference_temperature();
+      for (LoadCaseSpec& lc : config.load_cases) {
+        TemperatureSpec& t = lc.temperature;
+        if (t.source == TemperatureSpec::Source::None) continue;
+        if (t.source == TemperatureSpec::Source::Conduction) {
+          throw ConfigError("--temperature-scale scales a uniform or regional temperature, but "
+                            "load case '" + lc.name + "' conducts its temperature field");
+        }
+        if (scale == 0.0) {
+          t = TemperatureSpec();
+          continue;
+        }
+        t.uniform = reference + scale * (t.uniform - reference);
+        for (RegionValue& r : t.regions) r.value = reference + scale * (r.value - reference);
       }
     }
     if (cli.has("modes")) {

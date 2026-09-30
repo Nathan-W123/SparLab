@@ -939,7 +939,17 @@ Per load case (`topopt/NonlinearPartCheck.hpp`) the check reports:
   expanding part, the displacements of a fully held one;
 * for a material with a yield stress, `linear_first_yield_load_factor`, the
   yield stress over the largest linear element von Mises stress, beside the
-  non-linear run's yielded points and largest equivalent plastic strain.
+  non-linear run's yielded points and largest equivalent plastic strain;
+* `path_softening`: the path's incremental stiffness - the load factor gained
+  per unit of the largest nodal displacement, over the loading increments -
+  against its first increment's, the smallest ratio along the path and the
+  increment in which it first falls below half. A member can buckle into a
+  stable post-buckled state, or yielding can spread, while every tangent
+  stays positive definite: the part keeps carrying load on a far softer
+  path, and no instability marks it. On a slightly asymmetric part the
+  member buckling a linear buckling analysis predicts shows here, near its
+  load factor, rather than as an unstable tangent. Softening below the design
+  load is warned about.
 
 **The law's range.** The Saint Venant-Kirchhoff form, which an elastoplastic
 material also takes with finite kinematics, is linear elasticity written in
@@ -964,7 +974,10 @@ second order in the small-load limit (observed 1.995 and 1.997); the collapse
 bracket of a uniform elastic-perfectly plastic bar, [0.666633, 0.666695]
 around the exact 2/3, with the linear first-yield estimate 2/3 to 1.5e-15;
 a column's bifurcation bracket within 2.8e-4 of the linear buckling factor
-of the same mesh, the size of its pre-buckling strain (3.9e-4); and free
+of the same mesh, the size of its pre-buckling strain (3.9e-4); the same
+column with a lateral imperfection, carried past its critical load on the
+stable post-buckled branch, its softening bracketed at [0.75, 0.7875] of
+the load where first-order imperfection theory puts it at 0.764; and free
 thermal expansion, which both analyses reproduce to 2.3e-14.
 
 The check does not feed back into the optimisation. A part that fails at its

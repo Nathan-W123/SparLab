@@ -2470,6 +2470,12 @@ json::Value nonlinear_part_check_json(const NonlinearPartCheck& check, const Fem
                         "compliance f^T u (f the load vector at lambda = 1), largest element von "
                         "Mises stress; each tends to 1 as the load tends to 0"));
   out.set("linear_deviation_warning_threshold", json::Value::make_number(kLinearDeviationWarning));
+  out.set("path_softening",
+          json::Value::make_string(
+              "the incremental stiffness of the path - the load factor gained per unit of the "
+              "largest nodal displacement, over the loading increments - against its first "
+              "increment's; where it falls below half, a member has buckled into a stable "
+              "post-buckled state or yielding has spread, without an unstable tangent"));
   if (!check.dropped_monitors.empty()) {
     out.set("dropped_monitors", json::array_of(check.dropped_monitors));
   }
@@ -2506,6 +2512,15 @@ json::Value nonlinear_part_check_json(const NonlinearPartCheck& check, const Fem
         bracket.push_back(json::Value::make_number(c.critical_upper));
         e.set("critical_load_factor_bracket", bracket);
       }
+      json::Value softening = json::Value::make_object();
+      optional(softening, "min_incremental_stiffness_ratio", c.min_stiffness_ratio);
+      if (std::isfinite(c.softening_lower)) {
+        json::Value bracket = json::Value::make_array();
+        bracket.push_back(json::Value::make_number(c.softening_lower));
+        bracket.push_back(json::Value::make_number(c.softening_upper));
+        softening.set("below_half_between", bracket);
+      }
+      e.set("path_softening", softening);
       json::Value ratios = json::Value::make_object();
       optional(ratios, "max_displacement", c.displacement_ratio);
       optional(ratios, "end_compliance", c.compliance_ratio);

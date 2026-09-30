@@ -188,6 +188,106 @@ TEST_CASE("a run's path is classified from its converged states", "[part_check]"
   }
 }
 
+TEST_CASE("the path's softening is bracketed from its incremental stiffness",
+          "[part_check]") {
+  const auto with_displacements = [](NonlinearPartCase c, const std::vector<Scalar>& d) {
+    for (std::size_t i = 0; i < d.size(); ++i) c.nonlinear.steps[i].max_displacement = d[i];
+    return c;
+  };
+  SECTION("a knee: the stiffness falls to a twentieth between 0.75 and 0.8") {
+    NonlinearPartCase c = with_displacements(
+        path({0.25, 0.5, 0.75, 0.8, 1.0}, {0, 0, 0, 0, 0}, true),
+        {0.25e-3, 0.5e-3, 0.75e-3, 1.75e-3, 2.0e-3});
+    assess_nonlinear_path(c);
+    REQUIRE(c.verdict == "carries");
+    REQUIRE(c.softening_lower == 0.75);
+    REQUIRE(c.softening_upper == 0.8);
+    REQUIRE(c.min_stiffness_ratio == Approx(0.05));
+    REQUIRE_THAT(c.assessment, ContainsSubstring("softens"));
+  }
+  SECTION("a linear or a stiffening path does not soften") {
+    NonlinearPartCase linear = with_displacements(path({0.5, 1.0}, {0, 0}, true),
+                                                  {1.0e-3, 2.0e-3});
+    assess_nonlinear_path(linear);
+    REQUIRE(std::isnan(linear.softening_lower));
+    REQUIRE(linear.min_stiffness_ratio == Approx(1.0));
+    NonlinearPartCase stiffening = with_displacements(
+        path({0.5, 1.0, 1.5}, {0, 0, 0}, true), {1.0e-3, 1.8e-3, 2.4e-3});
+    assess_nonlinear_path(stiffening);
+    REQUIRE(std::isnan(stiffening.softening_lower));
+    REQUIRE(stiffening.min_stiffness_ratio > 1.0);
+    REQUIRE_THAT(stiffening.assessment, !ContainsSubstring("softens"));
+  }
+  SECTION("unloading increments are not stiffnesses") {
+    NonlinearPartCase c = with_displacements(path({0.5, 1.0, 0.5}, {0, 0, 0}, true),
+                                             {1.0e-3, 2.0e-3, 1.9e-3});
+    assess_nonlinear_path(c);
+    REQUIRE(std::isnan(c.softening_lower));
+  }
+}
+
+TEST_CASE("an imperfect column past its critical load carries it, softened", "[part_check]") {
+  // A cantilever column under an axial dead load of 1.2 times the linear
+  // critical load of its mesh, with a lateral end load of 1e-5 of it: the
+  // imperfection turns the bifurcation into a smooth path that bends
+  // sharply near the critical load onto the elastica's stable post-buckled
+  // branch. Every tangent stays positive definite, so the part carries the
+  // load, and the knee shows as softening next to the linear buckling factor.
+  const Scalar length = 1.0;
+  const Scalar h = 0.04;
+  const Scalar t = 0.01;
+  const auto column = [&](Scalar axial, Scalar lateral) {
+    FemModel model(make_structured_quad_mesh(strip(40, 2, length, h)),
+                   IsotropicMaterial(200.0e9, 0.3, 7850.0, "steel"), t,
+                   StressState::PlaneStress, IntegrationOptions());
+    DisplacementConstraint root;
+    root.region.members.push_back(box_selector(-1.0, 0.0));
+    root.fix_x = root.fix_y = true;
+    model.constraints().push_back(root);
+    LoadCaseSpec load;
+    load.name = "axial";
+    TractionLoadSpec top;
+    top.region.members.push_back(box_selector(length, 2.0));
+    top.traction = Vector3(-axial / (h * t), lateral / (h * t), 0.0);
+    load.tractions.push_back(top);
+    model.load_case_specs().push_back(load);
+    model.finalize();
+    return model;
+  };
+  Scalar critical = 0.0;  // [N]
+  {
+    FemModel unit = column(1.0e3, 0.0);
+    Assembler assembler(unit);
+    BucklingOptions options;
+    options.num_modes = 1;
+    options.tolerance = 1.0e-12;
+    critical = 1.0e3 * analyse_buckling(unit, assembler, 0, options).load_factors(0);
+  }
+  FemModel model = column(1.2 * critical, 1.2e-5 * critical);
+  Assembler assembler(model);
+  const std::vector<StaticSolution> linear = linear_solutions(model, assembler);
+  const NonlinearPartCheck check =
+      check_part_nonlinear(model, assembler, NonlinearOptions(), {0}, linear);
+  const NonlinearPartCase& c = check.cases.at(0);
+  INFO(c.assessment);
+  REQUIRE(c.verdict == "carries");
+  REQUIRE(c.stability_assessed);
+  REQUIRE_FALSE(std::isnan(c.softening_lower));
+  // The knee lies a little below the critical load factor 1/1.2: the tip
+  // starts out moving sideways by about 0.025 of its shortening, and first-
+  // order imperfection theory halves the incremental stiffness of the
+  // largest displacement at P/P_cr = 0.92.
+  REQUIRE(c.softening_upper <= 1.0 / 1.2 * 1.001);
+  REQUIRE(c.softening_lower >= 1.0 / 1.2 * 0.85);
+  REQUIRE(c.min_stiffness_ratio < 0.05);
+  REQUIRE(c.displacement_ratio > 10.0);  // bent far beyond the linear prediction
+  bool warned = false;
+  for (const std::string& w : c.warnings) {
+    warned = warned || w.find("softens below the design load") != std::string::npos;
+  }
+  REQUIRE(warned);
+}
+
 TEST_CASE("the ratios of a part tend to 1 as its load tends to 0", "[part_check]") {
   // A cantilever strip with a transverse tip resultant. Reversing the load
   // mirrors the deflection, so the end compliance P v deviates from linear at

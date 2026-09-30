@@ -11,7 +11,9 @@
 # roughly half an hour. The buckling-constrained column takes under three
 # minutes (without the robust formulation about two); the robust and
 # overhang MBB beams about half a minute each, the overhang bracket under
-# two minutes.
+# two minutes. The self-weight bridge and the heated clamped beam take a
+# quarter of a minute a run, the buckling-constrained shell panel a little
+# over a minute.
 #
 # usage: scripts/run_all_benchmarks.sh [results-dir]
 set -euo pipefail
@@ -25,7 +27,8 @@ require_binaries sparlab_solve sparlab_topopt
 for case in cantilever_beam mbb_beam mbb_beam_projected aerospace_bracket wing_rib \
             l_bracket_stress bracket_3d bracket_3d_projected lug_bracket_2d engine_mount_3d \
             bracket_3d_large column_buckling mbb_beam_robust mbb_beam_overhang \
-            bracket_3d_overhang; do
+            bracket_3d_overhang bridge_self_weight clamped_beam_thermal \
+            shell_panel_buckling; do
   "$SPARLAB_ROOT/scripts/run_benchmark.sh" "$case" "$RESULTS"
 done
 
@@ -55,6 +58,19 @@ comparison mbb_beam_robust mbb_beam_robust_off --no-robust --tag robust_off
 comparison mbb_beam_overhang mbb_beam_overhang_off --no-overhang-filter --tag overhang_off
 comparison mbb_beam_overhang mbb_beam_overhang_down --overhang -y --tag build_down
 comparison bracket_3d_overhang bracket_3d_overhang_off --no-overhang-filter --tag overhang_off
+# The bridge without its weight, and with five times it.
+comparison bridge_self_weight bridge_self_weight_g0 --gravity-scale 0 --tag g0
+comparison bridge_self_weight bridge_self_weight_g5 --gravity-scale 5 --tag g5
+# The clamped beam at other temperature rises than the deck's 10 K.
+for dt in 0 1 2 3 5 20 40; do
+  comparison clamped_beam_thermal "clamped_beam_thermal_dT$dt" \
+             --temperature-scale "$(awk -v t="$dt" 'BEGIN { print t / 10 }')" --tag "dT$dt"
+done
+# The shell panel without the robust formulation, and without the buckling
+# constraint.
+comparison shell_panel_buckling shell_panel_buckling_nonrobust --no-robust --tag nonrobust
+comparison shell_panel_buckling shell_panel_buckling_unconstrained --no-buckling-constraint \
+           --tag unconstrained
 
 banner "all benchmarks complete"
 echo "results under: $RESULTS"

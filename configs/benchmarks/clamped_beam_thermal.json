@@ -1,0 +1,88 @@
+{
+  // ---------------------------------------------------------------------------
+  // Benchmark 16: a beam clamped at both ends, loaded at its centre and
+  // heated.
+  //
+  // A 1.6 m x 0.4 m steel web, 10 mm thick, clamped along both ends, with
+  // 10 kN downward at the middle of its top edge and a uniform temperature
+  // rise of 10 K. Held at both ends, the heated material pushes against the
+  // clamps: its thermal load, E(rho)/E0 times the solid's, follows the
+  // design (docs/topology_optimization.md, section 2b), and the objective is
+  // the compliance f^T u of the whole load, mechanical and thermal. A
+  // structure that lets its members expand freely escapes the thermal part,
+  // so above a few kelvin the optimum stops using its whole allowance.
+  //
+  // Settings:
+  //
+  //  * MMA with the Heaviside projection from beta = 1 to 16.
+  //  * The buckling check and the non-linear check of the exported part: the
+  //    heated designs thin out into slender members.
+  //  * The comparison runs (scripts/run_all_benchmarks.sh) sweep the
+  //    temperature rise with --temperature-scale: 0, 1, 2, 3, 5, 20 and
+  //    40 K beside this deck's 10 K.
+  //
+  // Units are SI throughout: metres, newtons, pascals, kilograms, kelvin.
+  // Material: structural steel (E = 200 GPa, nu = 0.3, rho = 7850 kg/m^3,
+  // alpha = 1.2e-5 1/K from 20 degrees).
+  // ---------------------------------------------------------------------------
+  "name": "clamped_beam_thermal",
+  "description": "Beam clamped at both ends under a central load and a uniform temperature rise, minimum compliance at 40% volume",
+  "units": "SI (m, N, Pa, kg, K)",
+
+  "mesh": { "type": "structured_quad", "nx": 160, "ny": 40, "lx": 1.6, "ly": 0.4 },
+
+  "material": {
+    "name": "steel",
+    "youngs_modulus": 200.0e9,
+    "poisson_ratio": 0.3,
+    "density": 7850.0,
+    "thermal_expansion": 1.2e-5,
+    "reference_temperature": 20.0
+  },
+
+  "model": { "thickness": 0.01, "stress_state": "plane_stress" },
+
+  "boundary_conditions": [
+    { "name": "left", "fix": ["x", "y"], "region": { "box": { "xmax": 0.0 } } },
+    { "name": "right", "fix": ["x", "y"], "region": { "box": { "xmin": 1.6 } } }
+  ],
+
+  "load_cases": [
+    {
+      "name": "load_and_heat",
+      "temperature": { "uniform": 30.0 },
+      "point_loads": [
+        { "name": "centre", "force": [0.0, -10.0e3], "distribution": "total",
+          "region": { "box": { "xmin": 0.79, "xmax": 0.81, "ymin": 0.4 } } }
+      ]
+    }
+  ],
+
+  "solver": {
+    "linear": { "type": "simplicial_ldlt", "residual_tolerance": 1e-8 },
+    "equilibrium_tolerance": 1e-6
+  },
+
+  "buckling": { "enabled": true, "num_modes": 3 },
+
+  "nonlinear": { "enabled": true },
+
+  "topology": {
+    "enabled": true,
+    "volume_fraction": 0.4,
+    "simp": { "penalty": 3.0 },
+    "filter": { "type": "density", "radius_elements": 2.0 },
+    "optimizer": {
+      "method": "mma",
+      "max_iterations": 400,
+      "change_tolerance": 1e-2,
+      "objective_tolerance": 1e-4,
+      "objective_window": 10,
+      "move_limit": 0.1,
+      "history_stride": 1
+    },
+    "projection": { "enabled": true, "eta": 0.5, "beta_start": 1.0, "beta_max": 16.0 }
+  },
+
+  "output": { "csv": true, "vtk": true, "density_history": true }
+}

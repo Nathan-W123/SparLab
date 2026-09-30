@@ -7,7 +7,8 @@
 # mbb_beam, mbb_beam_projected, aerospace_bracket, wing_rib, l_bracket_stress,
 # bracket_3d, bracket_3d_projected, bracket_3d_large, lug_bracket_2d,
 # engine_mount_3d, column_buckling, mbb_beam_robust, mbb_beam_overhang,
-# bracket_3d_overhang) or
+# bracket_3d_overhang, bridge_self_weight, clamped_beam_thermal,
+# shell_panel_buckling) or
 # in configs/verification/ (cantilever_analysis, block_3d_analysis and the
 # other static decks). A deck with a topology section is run through
 # sparlab_topopt; one without is run through sparlab_solve.

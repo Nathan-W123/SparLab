@@ -509,6 +509,12 @@ def plot_modal_comparison(summary: Dict, path: str, case_name: str,
 # ---------------------------------------------------------------------------
 def plot_final_topology(case: CaseResults, path: str) -> str:
     """Final density field plus the thresholded interpretation."""
+    if case.mesh.element_type == "Shell4":
+        # A flat panel is drawn in its plane; a curved shell as a surface.
+        flat = case.mesh.flat_shell_as_plane()
+        if flat is None:
+            return p3.plot_final_topology(case, path)
+        case = CaseResults(directory=case.directory, mesh=flat, summary=case.summary)
     if case.dim == 3:
         return p3.plot_final_topology(case, path)
     density_table = case.density()

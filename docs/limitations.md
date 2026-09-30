@@ -443,7 +443,13 @@ with its stiffness, so the minimum-compliance design can use less than its
 volume allowance and stay grey, down to no element at the interpretation
 threshold and so no part to export. The run warns of both; the projection sharpens such a design, and a stress constraint bounds
 what the heating does to the material that remains, but compliance is not a
-strength criterion for a thermal load. The body-load interpolation and the
+strength criterion for a thermal load. The relaxed objective is also
+optimistic under heating: the grey edges that thin members keep, even at a
+sharp projection, carry less thermal load in the SIMP model than full
+material does in the part, and on the heated clamped beam the exported
+part's compliance is 1.23 times the objective at 10 K and 3.01 times at
+40 K (`docs/benchmarks.md`, section 16) - the part's re-analysis is the
+number to judge. The body-load interpolation and the
 gradients are verified (`docs/verification.md`, section 29); no optimised
 design under these loads is compared with another code or an experiment.
 

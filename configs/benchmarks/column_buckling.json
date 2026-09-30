@@ -98,6 +98,17 @@
     "residual_tolerance": 1e-6
   },
 
+  // The non-linear check of the exported part (docs/topology_optimization.md,
+  // section 11): large displacement along a load path to the required load
+  // factor, 6. The design load (lambda = 1) is what its verdict judges; where
+  // the part bifurcates before 6, the bracket it reports sits beside the
+  // linear buckling factor of the buckling check above.
+  "nonlinear": {
+    "enabled": true,
+    "load_path": [6.0],
+    "steps": 12
+  },
+
   "topology": {
     "enabled": true,
     "volume_fraction": 0.25,

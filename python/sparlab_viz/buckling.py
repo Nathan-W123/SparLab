@@ -10,6 +10,10 @@ appear and are always labelled apart:
   interpretation threshold, largest face-connected group, full material,
   re-analysed after the run (the `buckling_check` block). That is the number
   that says whether the part meets the requirement.
+
+Where the run also checked the part with the non-linear analysis along a
+load path (the `nonlinear_check` block), the bracket of its critical load
+factor is drawn beside the linear one.
 """
 
 from __future__ import annotations
@@ -43,6 +47,33 @@ def simp_load_factor(case: CaseResults) -> Optional[float]:
         return None
     value = block.get("min_load_factor")
     return float(value) if value is not None else None
+
+
+def nonlinear_bracket(case: CaseResults,
+                      load_case: Optional[str] = None) -> Optional[Tuple[float, float]]:
+    """The load factors between which the non-linear check of the exported
+    part met its critical point, or None (no check, or none met)."""
+    block = case.summary.get("nonlinear_check", {})
+    for entry in block.get("load_cases", []):
+        if load_case is None or entry.get("load_case") == load_case:
+            bracket = entry.get("critical_load_factor_bracket")
+            if bracket and len(bracket) == 2:
+                return float(bracket[0]), float(bracket[1])
+            return None
+    return None
+
+
+def plane_mesh(case: CaseResults):
+    """The mesh a plane figure draws: a plane mesh itself, a flat shell panel
+    in its plane (its buckling modes then leave the plane and show as colour
+    alone); anything else is refused."""
+    if case.dim == 2:
+        return case.mesh
+    flat = case.mesh.flat_shell_as_plane()
+    if flat is None:
+        raise ValueError("the buckling comparison figure is drawn for plane cases and flat "
+                         "shell panels")
+    return flat
 
 
 def required_load_factor(case: CaseResults) -> Optional[float]:
@@ -100,11 +131,10 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
     figure (default: the last design's case)."""
     if not designs:
         raise ValueError("no designs to compare")
-    for _, case in designs:
-        if case.dim != 2:
-            raise ValueError("the buckling comparison figure is drawn for plane cases")
+    meshes = [plane_mesh(case) for _, case in designs]
+    shell = designs[0][1].mesh.element_type == "Shell4"
     count = len(designs)
-    mesh = designs[0][1].mesh
+    mesh = meshes[0]
     xmin, xmax, ymin, ymax = mesh.extent
     height = ymax - ymin
     aspect = height / max(xmax - xmin, 1.0e-12)
@@ -120,21 +150,24 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
     chart = fig.add_subplot(fig.axes[0].get_gridspec()[2, :])
 
     mode_mappable = None
-    simp, part, labels = [], [], []
+    simp, part, labels, brackets = [], [], [], []
     required = None
+    # An out-of-plane mode of a flat shell has no in-plane motion to draw.
+    amplitude = 0.0 if shell else 0.06 * height
     for k, (label, case) in enumerate(designs):
         table = case.density()
         if table is None:
             raise FileNotFoundError(f"{case.directory} has no density_final.csv")
         density = table["physical_density[-]"].to_numpy()
         ax = axes[0, k]
-        fld.element_collection(ax, case.mesh, density, cmap=st.DENSITY_CMAP_SURFACE,
+        fld.element_collection(ax, meshes[k], density, cmap=st.DENSITY_CMAP_SURFACE,
                                vmin=0.0, vmax=1.0)
-        fld.mesh_outline(ax, case.mesh, color=st.INK_MUTED, linewidth=0.6)
-        fld.set_domain_limits(ax, case.mesh, margin=0.03)
+        fld.mesh_outline(ax, meshes[k], color=st.INK_MUTED, linewidth=0.6)
+        fld.set_domain_limits(ax, meshes[k], margin=0.03)
         fld.bare_axes(ax)
         result = case.summary.get("optimization_result", {})
-        ax.set_title(f"{label}\ncompliance {st.format_si(result.get('compliance_J', 0.0))} J",
+        ax.set_title(f"{textwrap_label(label, 26)}\n"
+                     f"compliance {st.format_si(result.get('compliance_J', 0.0))} J",
                      loc="left", fontsize=8.6)
 
         lam_part = part_load_factor(case, load_case)
@@ -143,6 +176,7 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
         simp.append(lam_simp)
         part.append(lam_part)
         labels.append(label)
+        brackets.append(nonlinear_bracket(case, load_case))
 
         ax = axes[1, k]
         cases = case.summary.get("buckling_check", {}).get("interpreted_structure", {})
@@ -154,9 +188,9 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
                     transform=ax.transAxes)
             ax.axis("off")
             continue
-        mode_mappable = _mode_panel(ax, grid, 0.06 * height)
+        mode_mappable = _mode_panel(ax, grid, amplitude)
         pts = np.vstack([grid.points[:, :2],
-                         (grid.points + 0.06 * height * grid.point_data["buckling_mode"])[:, :2]])
+                         (grid.points + amplitude * grid.point_data["buckling_mode"])[:, :2]])
         pad = 0.04 * height
         ax.set_xlim(min(xmin, pts[:, 0].min()) - pad, max(xmax, pts[:, 0].max()) + pad)
         ax.set_ylim(min(ymin, pts[:, 1].min()) - pad, max(ymax, pts[:, 1].max()) + pad)
@@ -175,6 +209,21 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
                color=st.series_color(0), label="SIMP model (the constraint's view)")
     chart.plot(x + 0.08, [np.nan if v is None else v for v in part], "s", markersize=8,
                color=st.series_color(1), label="exported part (re-analysed)")
+    if any(b is not None for b in brackets):
+        # The bracket of the non-linear check's critical load factor, at the
+        # part's position: the two states it lies between.
+        for i, b in enumerate(brackets):
+            if b is None:
+                continue
+            chart.plot([x[i] + 0.24, x[i] + 0.24], [b[0], b[1]], color=st.series_color(2),
+                       linewidth=2.2, solid_capstyle="butt")
+            chart.plot([x[i] + 0.24], [0.5 * (b[0] + b[1])], "^", markersize=7,
+                       color=st.series_color(2),
+                       label="non-linear check: critical bracket" if i == min(
+                           j for j, v in enumerate(brackets) if v is not None) else None)
+            chart.annotate(f"{0.5 * (b[0] + b[1]):.3f}", (x[i] + 0.24, b[1]),
+                           xytext=(6, 4), textcoords="offset points", ha="left",
+                           va="bottom", fontsize=7.6, color=st.INK_SECONDARY)
     for i in range(count):
         if simp[i] is not None:
             chart.annotate(f"{simp[i]:.2f}", (x[i] - 0.08, simp[i]), xytext=(-8, 7),
@@ -189,11 +238,15 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
                            textcoords="offset points", ha="left", va="top",
                            fontsize=8, color=st.INK_SECONDARY)
     if required is not None:
+        # The label sits just right of the first design, clear of the markers
+        # and their labels (the first design is the unconstrained one).
         chart.axhline(required, color=st.INK_SECONDARY, linewidth=1.0, linestyle="--")
-        chart.annotate(f"required lambda >= {required:g}", (count - 0.5, required),
-                       xytext=(0, 4), textcoords="offset points", ha="right",
+        chart.annotate(f"required lambda >= {required:g}",
+                       (0.25 if count > 1 else -0.45, required), xytext=(0, 4),
+                       textcoords="offset points", ha="center" if count > 1 else "left",
                        va="bottom", fontsize=8, color=st.INK_SECONDARY)
-    top = max([v for v in simp + part if v is not None] + [required or 0.0])
+    top = max([v for v in simp + part if v is not None] + [required or 0.0] +
+              [b[1] for b in brackets if b is not None])
     chart.set_ylim(0.0, 1.45 * top)
     chart.set_xlim(-0.5, count - 0.5)
     chart.set_xticks(x)
@@ -202,27 +255,32 @@ def plot_buckling_comparison(designs: Sequence[Tuple[str, CaseResults]], path: s
     st.title(chart, "Lowest buckling load factor",
              "multiples of the design load at which the linear (bifurcation) "
              "analysis predicts buckling")
-    st.legend(chart, loc="upper left")
+    st.legend(chart, loc="lower right")
 
     first = designs[-1][1]
     setup = first.summary.get("optimization_setup", {})
+    drawn = ("coloured by the mode's out-of-plane magnitude on the sheet (the mode "
+             "leaves the plane)" if shell else
+             "drawn at 6 % of the height on its dashed undeformed outline")
     st.figure_title(
         fig, f"{name or first.name}: minimum compliance with and without a buckling "
         "constraint",
         f"same mesh, load, filter and volume fraction "
         f"({setup.get('volume_fraction_target', float('nan')):g}); top row: blueprint "
         "density; middle row: the first buckling mode of the thresholded part "
-        "(density >= 0.5, largest face-connected group, full material), drawn at "
-        "6 % of the height on its dashed undeformed outline",
+        f"(density >= 0.5, largest face-connected group, full material), {drawn}",
     )
-    st.annotate_note(
-        fig,
-        "Linear buckling is bifurcation of the ideal geometry under the linear "
-        "static stress state: an upper bound for a real, imperfect part, with no "
-        "post-buckling. The SIMP model's load factor includes the stress stiffness "
-        "of intermediate densities; the exported part has none, which is why the "
-        "two differ and why the part's value is the one to judge.",
-    )
+    note = ("Linear buckling is bifurcation of the ideal geometry under the linear "
+            "static stress state: an upper bound for a real, imperfect part, with no "
+            "post-buckling. The SIMP model's load factor includes the stress stiffness "
+            "of intermediate densities; the exported part has none, which is why the "
+            "two differ and why the part's value is the one to judge.")
+    if any(b is not None for b in brackets):
+        note += (" The non-linear check follows the part along a load path with large "
+                 "displacement; its bracket is where the tangent stops being positive "
+                 "definite. A member can buckle before that into a stable post-buckled "
+                 "state, which the check reports as softening instead.")
+    st.annotate_note(fig, note)
     return st.save_figure(fig, path)
 
 

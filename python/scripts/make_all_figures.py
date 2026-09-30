@@ -38,14 +38,19 @@ CASES = [
     "mbb_beam_robust",
     "mbb_beam_overhang",
     "bracket_3d_overhang",
+    "bridge_self_weight",
+    "clamped_beam_thermal",
+    "shell_panel_buckling",
 ]
 
 #: Variants of another benchmark (the same problem with the projection, a
-#: buckling constraint, the robust formulation or the overhang filter on):
-#: only their topology and convergence figures are drawn, the rest would repeat
-#: the parent; plot_manufacturing.py draws their comparisons.
+#: buckling constraint, the robust formulation or the overhang filter on), and
+#: the decks whose comparison runs scale a load: only their topology and
+#: convergence figures are drawn, the rest would repeat the parent or show
+#: nothing new; plot_manufacturing.py draws their comparisons.
 MINIMAL_CASES = {"mbb_beam_projected", "bracket_3d_projected", "column_buckling",
-                 "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang"}
+                 "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang",
+                 "bridge_self_weight", "clamped_beam_thermal", "shell_panel_buckling"}
 
 #: Cases whose density animation is skipped: 110k hexahedra per frame make the
 #: GIF slow to render and large, and the small-multiples figure shows the same.
@@ -121,11 +126,14 @@ def main(argv=None) -> int:
 
     if not args.only or any(c in cases for c in ("column_buckling", "mbb_beam_robust",
                                                  "mbb_beam_overhang",
-                                                 "bracket_3d_overhang")):
-        if not run("buckling, robust and overhang comparison figures",
+                                                 "bracket_3d_overhang",
+                                                 "bridge_self_weight",
+                                                 "clamped_beam_thermal",
+                                                 "shell_panel_buckling")):
+        if not run("buckling, robust, overhang and load comparison figures",
                    [os.path.join(SCRIPTS, "plot_manufacturing.py"),
                     "--results", args.results, "--figures", args.figures]):
-            failures.append("buckling / robust / overhang figures failed")
+            failures.append("buckling / robust / overhang / load figures failed")
 
     study_dir = os.path.join(args.results, "study")
     if os.path.isdir(study_dir):

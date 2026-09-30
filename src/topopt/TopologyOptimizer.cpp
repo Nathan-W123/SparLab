@@ -507,13 +507,25 @@ void TopologyOptimizer::finish(TopologyOptimizationResult& result,
       result.volume_constraint_violation < -1.0e-2) {
     // Under body or thermal loads material brings load as well as stiffness,
     // so the optimum need not use the whole allowance.
+    const DesignLoads& loads = objective.design_loads();
+    bool body = false;
+    bool thermal = false;
+    for (std::size_t l = 0; l < model_.load_case_specs().size(); ++l) {
+      body = body || loads.has_body(l);
+      thermal = thermal || loads.has_thermal(l);
+    }
     std::ostringstream os;
     os << "the volume constraint is inactive: the design uses a volume fraction of "
        << result.volume_fraction << " of the " << domain_.volume_fraction()
-       << " allowed, because its body or thermal loads grow with the material; under a "
-          "temperature field the thermal compliance falls with the stiffness, which can "
-          "also leave the design grey (grey level "
-       << result.gray_level << "). The Heaviside projection drives it towards 0 and 1";
+       << " allowed, because its "
+       << (body && thermal ? "body and thermal loads grow" : body ? "body loads grow"
+                                                                 : "thermal loads grow")
+       << " with the material";
+    if (thermal) {
+      os << "; under a temperature field the thermal compliance falls with the stiffness, "
+            "which can also leave the design grey (grey level "
+         << result.gray_level << "). The Heaviside projection drives it towards 0 and 1";
+    }
     result.warnings.push_back(os.str());
     log::warn(os.str());
   }

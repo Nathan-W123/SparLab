@@ -1,0 +1,85 @@
+{
+  // ---------------------------------------------------------------------------
+  // Benchmark 15: a bridge under a deck load and its own weight.
+  //
+  // A 3 m x 1 m steel web, 20 mm thick, on two pins at its lower corners,
+  // with a solid deck along its top edge (two cell rows, kept solid) carrying
+  // 2 kN of traffic spread over the 3 m. Every cell also carries its own
+  // weight, which follows the design: gamma(rho) times the solid's weight,
+  // with gamma = rho above topology.simp.body_load_threshold (0.1) and
+  // falling like rho^p below it, so that near-void material cannot sag
+  // without bound (docs/topology_optimization.md, section 2b). The solid web
+  // weighs 4.6 kN, a 30 % design about 1.4 kN - the same order as the deck
+  // load, so both shape the design.
+  //
+  // Settings:
+  //
+  //  * MMA, which a design-dependent load needs (its compliance gradient can
+  //    change sign, which the optimality criteria cannot take).
+  //  * The Heaviside projection from beta = 1 to 16, so the part is crisp.
+  //  * The comparison runs (scripts/run_all_benchmarks.sh) repeat the deck
+  //    with --gravity-scale 0 (the deck load alone) and 5 (the weight
+  //    dominant, as on a longer span).
+  //
+  // Units are SI throughout: metres, newtons, pascals, kilograms.
+  // Material: S355 structural steel (E = 210 GPa, nu = 0.3, rho = 7850 kg/m^3).
+  // ---------------------------------------------------------------------------
+  "name": "bridge_self_weight",
+  "description": "Bridge on two pins under a deck load and its own weight, minimum compliance at 30% volume",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "structured_quad", "nx": 120, "ny": 40, "lx": 3.0, "ly": 1.0 },
+
+  "material": {
+    "name": "S355 steel",
+    "youngs_modulus": 210.0e9,
+    "poisson_ratio": 0.3,
+    "density": 7850.0
+  },
+
+  "model": { "thickness": 0.02, "stress_state": "plane_stress" },
+
+  "boundary_conditions": [
+    { "name": "left_pin", "fix": ["x", "y"], "region": { "box": { "xmax": 0.05, "ymax": 0.0 } } },
+    { "name": "right_pin", "fix": ["x", "y"], "region": { "box": { "xmin": 2.95, "ymax": 0.0 } } }
+  ],
+
+  "load_cases": [
+    {
+      "name": "deck_and_weight",
+      "gravity": [0.0, -9.81],
+      // 2 kN over the 3 m deck, 20 mm thick: 33.3 kPa on the top edge.
+      "tractions": [
+        { "name": "traffic", "traction": [0.0, -33333.333333333336],
+          "region": { "box": { "ymin": 1.0 } } }
+      ]
+    }
+  ],
+
+  "solver": {
+    "linear": { "type": "simplicial_ldlt", "residual_tolerance": 1e-8 },
+    "equilibrium_tolerance": 1e-6
+  },
+
+  "topology": {
+    "enabled": true,
+    "volume_fraction": 0.3,
+    "simp": { "penalty": 3.0 },
+    "filter": { "type": "density", "radius_elements": 2.0 },
+    "optimizer": {
+      "method": "mma",
+      "max_iterations": 400,
+      "change_tolerance": 1e-2,
+      "objective_tolerance": 1e-4,
+      "objective_window": 10,
+      "move_limit": 0.1,
+      "history_stride": 1
+    },
+    "projection": { "enabled": true, "eta": 0.5, "beta_start": 1.0, "beta_max": 16.0 },
+    "passive_regions": [
+      { "name": "deck", "type": "solid", "region": { "box": { "ymin": 0.95 } } }
+    ]
+  },
+
+  "output": { "csv": true, "vtk": true, "density_history": true }
+}

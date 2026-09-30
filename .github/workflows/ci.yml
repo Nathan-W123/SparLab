@@ -7,9 +7,11 @@ name: build-and-verify
 #                    documented tolerances?
 #   benchmark        does a full topology-optimisation benchmark still run end to
 #                    end and produce its figures - with the buckling constraint,
-#                    the robust formulation and the overhang filter too - and do
-#                    displacements, buckling load factors and large-deflection
-#                    states still agree with scikit-fem?
+#                    the robust formulation and the overhang filter, loads that
+#                    follow the design, shell designs and the non-linear check of
+#                    the exported part too - and do displacements, buckling load
+#                    factors and large-deflection states still agree with
+#                    scikit-fem?
 #
 # The verify job is the one that can catch a numerical regression, so it uploads
 # its summary either way.
@@ -354,6 +356,39 @@ jobs:
           $T --config $C/bracket_3d_overhang.json --output results/bracket_3d_overhang_off \
              --nx 16 --ny 8 --nz 4 --max-iterations 30 --no-overhang-filter --tag overhang_off
 
+      - name: Loads that follow the design, shell designs and the non-linear check (reduced)
+        # The bridge under its own weight at 0, 1 and 5 g; the clamped beam
+        # heated by 0 to 40 K, with the buckling and non-linear checks of its
+        # parts; and the shell panel with its out-of-plane buckling
+        # constraint (robust and plain) and without it - each at a fraction of
+        # the resolution and a short budget. The column decks above also run
+        # the non-linear check of their parts.
+        run: |
+          T=./build/bin/sparlab_topopt
+          C=configs/benchmarks
+          $T --config $C/bridge_self_weight.json --output results/bridge_self_weight \
+             --nx 60 --ny 20 --max-iterations 40
+          $T --config $C/bridge_self_weight.json --output results/bridge_self_weight_g0 \
+             --nx 60 --ny 20 --max-iterations 40 --gravity-scale 0 --tag g0
+          $T --config $C/bridge_self_weight.json --output results/bridge_self_weight_g5 \
+             --nx 60 --ny 20 --max-iterations 40 --gravity-scale 5 --tag g5
+          $T --config $C/clamped_beam_thermal.json --output results/clamped_beam_thermal \
+             --nx 80 --ny 20 --max-iterations 40
+          for dt in 0 1 2 3 5 20 40; do
+            $T --config $C/clamped_beam_thermal.json \
+               --output "results/clamped_beam_thermal_dT$dt" --nx 80 --ny 20 \
+               --max-iterations 40 --tag "dT$dt" \
+               --temperature-scale "$(awk -v t="$dt" 'BEGIN { print t / 10 }')"
+          done
+          $T --config $C/shell_panel_buckling.json --output results/shell_panel_buckling \
+             --nx 24 --ny 12 --max-iterations 20
+          $T --config $C/shell_panel_buckling.json \
+             --output results/shell_panel_buckling_nonrobust \
+             --nx 24 --ny 12 --max-iterations 20 --no-robust --tag nonrobust
+          $T --config $C/shell_panel_buckling.json \
+             --output results/shell_panel_buckling_unconstrained \
+             --nx 24 --ny 12 --max-iterations 20 --no-buckling-constraint --tag unconstrained
+
       - name: Runtime scaling (small sizes, direct and multigrid)
         run: |
           B=./build/bin/sparlab_bench
@@ -375,7 +410,8 @@ jobs:
                                                 --figures ci-figures --no-animation
           done
           for case in mbb_beam_projected bracket_3d_projected column_buckling \
-                      mbb_beam_robust mbb_beam_overhang bracket_3d_overhang; do
+                      mbb_beam_robust mbb_beam_overhang bracket_3d_overhang \
+                      bridge_self_weight clamped_beam_thermal shell_panel_buckling; do
             python3 python/scripts/plot_case.py --case results/$case \
                                                 --figures ci-figures --minimal
           done

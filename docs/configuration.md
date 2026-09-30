@@ -1297,9 +1297,13 @@ duplicate a deck. Each corresponds to one deck field:
 --method oc|mma          topology.optimizer.method
 --stress-limit <Pa>      topology.stress.limit, and enables the constraint and MMA
 --no-stress              topology.stress.enabled = false
---nx --ny (--nz)         mesh.nx, mesh.ny (mesh.nz, solid meshes only; an error on a file mesh)
+--nx --ny (--nz)         mesh.nx, mesh.ny (mesh.nz, solid meshes only; a plate of shells: its
+                         cells along x and y; an error on a file mesh or a curved shell)
 --youngs-modulus         material.youngs_modulus
 --load-weights w1,w2,... one weight per load case, in deck order
+--gravity-scale S        every load case's gravity times S (0 removes the self-weight)
+--temperature-scale S    every load case's uniform or regional temperature change T - T_ref times S
+                         (0 removes the temperature; a conducted field is refused)
 --modes N                modal.enabled = true, modal.num_modes = N
 --solver TYPE            solver.linear.type
 --projection             topology.projection.enabled = true (deck or default schedule)

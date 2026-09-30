@@ -38,6 +38,15 @@
 ///   estimate of the load factor of first yield - the yield stress over the
 ///   largest linear element von Mises stress - beside the non-linear run's
 ///   plastic points and largest plastic strain.
+/// * **Does the path soften?** A member can buckle into a stable
+///   post-buckled state, or yielding can spread, while every tangent stays
+///   positive definite: the part keeps carrying load, on a far softer path.
+///   The check measures the path's incremental stiffness - the load factor
+///   gained per unit of the largest nodal displacement, over the loading
+///   increments - against its first increment's, and brackets where it first
+///   falls below half. On an imperfect part the member buckling of a linear
+///   buckling analysis shows here, near its load factor, and not as an
+///   unstable tangent.
 ///
 /// **The model's range.** A verdict rests on the laws the run used, so it is
 /// withheld ("undetermined") when the final state lies outside their range: an
@@ -74,6 +83,9 @@ constexpr Scalar kLinearDeviationWarning = 0.05;
 /// The strain beyond which the solver warns that the Saint Venant-Kirchhoff
 /// form, the elastoplastic law or small-strain kinematics is outside its range.
 constexpr Scalar kSmallStrainRange = 0.05;
+/// A path whose incremental stiffness falls below this fraction of its first
+/// increment's has softened.
+constexpr Scalar kSofteningRatio = 0.5;
 
 /// The check of one load case.
 struct NonlinearPartCase {
@@ -110,6 +122,13 @@ struct NonlinearPartCase {
   /// it lies between (along the path); NaN when there is none.
   Scalar critical_lower = std::numeric_limits<Scalar>::quiet_NaN();
   Scalar critical_upper = std::numeric_limits<Scalar>::quiet_NaN();
+  /// The path's incremental stiffness over its first increment's: the
+  /// smallest along the loading increments, and the load factors of the
+  /// increment in which it first fell below kSofteningRatio. NaN where the
+  /// path has no second loading increment, or never softened so far.
+  Scalar min_stiffness_ratio = std::numeric_limits<Scalar>::quiet_NaN();
+  Scalar softening_lower = std::numeric_limits<Scalar>::quiet_NaN();
+  Scalar softening_upper = std::numeric_limits<Scalar>::quiet_NaN();
   /// "carries" (shown to carry the design load), "fails" (an unstable
   /// state met below it) or "undetermined" (neither shown: the run stopped
   /// without meeting an unstable state, ended below the design load, or

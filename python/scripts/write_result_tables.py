@@ -27,12 +27,24 @@ from sparlab_viz.loaders import ResultError, load_csv, load_json
 BENCHMARK_CASES = ["cantilever_beam", "mbb_beam", "mbb_beam_projected", "aerospace_bracket",
                    "wing_rib", "l_bracket_stress", "bracket_3d", "bracket_3d_projected",
                    "lug_bracket_2d", "engine_mount_3d", "bracket_3d_large", "column_buckling",
-                   "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang"]
-#: The buckling-constrained column and its comparison runs (the same deck with
-#: one feature switched off; scripts/run_all_benchmarks.sh).
+                   "mbb_beam_robust", "mbb_beam_overhang", "bracket_3d_overhang",
+                   "bridge_self_weight", "clamped_beam_thermal", "shell_panel_buckling"]
+#: The buckling-constrained column and shell panel and their comparison runs
+#: (the same deck with one feature switched off; scripts/run_all_benchmarks.sh).
 BUCKLING_CASES = [("column_buckling_unconstrained", "compliance only"),
                   ("column_buckling_nonrobust", "lambda >= 6, plain projection"),
-                  ("column_buckling", "lambda >= 6, robust projection")]
+                  ("column_buckling", "lambda >= 6, robust projection"),
+                  ("shell_panel_buckling_unconstrained", "shell: compliance only"),
+                  ("shell_panel_buckling_nonrobust", "shell: lambda >= 10, plain projection"),
+                  ("shell_panel_buckling", "shell: lambda >= 10, robust projection")]
+#: The decks whose loads follow the design, and the comparison runs that
+#: scale those loads (scripts/run_all_benchmarks.sh): the label and the scale.
+DESIGN_LOAD_CASES = [("bridge_self_weight_g0", "no self-weight"),
+                     ("bridge_self_weight", "1 g"),
+                     ("bridge_self_weight_g5", "5 g")] + \
+                    [(f"clamped_beam_thermal_dT{dt}", f"dT = {dt} K") for dt in (0, 1, 2, 3, 5)] + \
+                    [("clamped_beam_thermal", "dT = 10 K")] + \
+                    [(f"clamped_beam_thermal_dT{dt}", f"dT = {dt} K") for dt in (20, 40)]
 ROBUST_CASES = [("mbb_beam_robust_off", "plain projection, erosion check"),
                 ("mbb_beam_robust", "robust formulation"),
                 ("column_buckling", "robust formulation, buckling constraint")]
@@ -45,7 +57,7 @@ ANALYSIS_CASES = ["cantilever_analysis", "block_3d_analysis"]
 #: Runs on meshes read from files (Gmsh / Abaqus-CalculiX input).
 REAL_GEOMETRY_CASES = ["lug_bracket_2d", "engine_mount_3d"]
 ELEMENT_LABELS = {"Quad4": "Q4", "Tri3": "Tri3", "Hex8": "Hex8", "Tet4": "Tet4",
-                  "Tet10": "Tet10"}
+                  "Tet10": "Tet10", "Shell4": "MITC4"}
 #: The unconstrained run of the stress-constrained deck (sparlab_topopt
 #: --no-stress) that the stress table sets beside it.
 STRESS_REFERENCE = {"l_bracket_stress": "l_bracket_unconstrained"}
@@ -621,10 +633,23 @@ def buckling_table(results_dir: str) -> Optional[str]:
             "linear_solves": result.get("linear_solves"),
             "runtime_s": result.get("total_seconds"),
         }
+        # The non-linear check of the part, where the deck ran one: its
+        # verdict at the design load and the bracket of its critical point.
+        checked = (doc.get("nonlinear_check", {}).get("load_cases") or [{}])[0]
+        bracket = checked.get("critical_load_factor_bracket")
+        record["nonlinear_verdict"] = checked.get("verdict")
+        record["nonlinear_critical_lower"] = bracket[0] if bracket else None
+        record["nonlinear_critical_upper"] = bracket[1] if bracket else None
         frames.append(record)
+        nonlinear = "not run"
+        if record["nonlinear_verdict"]:
+            nonlinear = record["nonlinear_verdict"]
+            if bracket:
+                nonlinear += f"; [{_fmt(bracket[0], 6)}, {_fmt(bracket[1], 6)}]"
         rows.append([case, label, _fmt(record["compliance_J"], 6),
                      _fmt(record["simp_lambda_1"], 5), _fmt(fraction, 3),
                      _fmt(record["part_lambda_1"], 5), _fmt(record["full_solid_lambda_1"], 5),
+                     nonlinear,
                      f"{record['iterations']}, {record['stop_reason']}",
                      _fmt(record["linear_solves"])])
     if not rows:
@@ -632,8 +657,95 @@ def buckling_table(results_dir: str) -> Optional[str]:
     pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "buckling.csv"), index=False)
     return _markdown_table(
         ["case", "run", "compliance [J]", "SIMP lambda_1", "mode 1 energy in solid",
-         "exported part lambda_1", "full solid lambda_1", "iterations, stop",
+         "exported part lambda_1", "full solid lambda_1",
+         "non-linear check: verdict; critical bracket", "iterations, stop",
          "linear solves"], rows)
+
+
+def design_load_table(results_dir: str) -> Optional[str]:
+    """The bridge under its own weight and the heated clamped beam, each at
+    the loads its comparison runs scale."""
+    rows, frames = [], []
+    for case, label in DESIGN_LOAD_CASES:
+        path = os.path.join(results_dir, case, "summary.json")
+        if not os.path.isfile(path):
+            continue
+        doc = load_json(path)
+        setup = doc.get("optimization_setup", {})
+        result = doc.get("optimization_result", {})
+        part = doc.get("interpreted_solid_analysis", {})
+        checked = (doc.get("nonlinear_check", {}).get("load_cases") or [{}])[0]
+        record = {
+            "case": case, "run": label,
+            "compliance_J": result.get("compliance_J"),
+            "volume_fraction_target": setup.get("volume_fraction_target"),
+            "volume_fraction_used": result.get("volume_fraction"),
+            "grey_level": result.get("grey_level"),
+            "part_compliance_J": part.get("weighted_compliance_J"),
+            "part_mass_kg": part.get("mass_kg"),
+            "part_lambda_1": _first_factor(doc.get("buckling_check", {})
+                                           .get("interpreted_structure")),
+            "nonlinear_verdict": checked.get("verdict"),
+            "iterations": result.get("iterations"),
+            "stop_reason": result.get("stop_reason"),
+        }
+        frames.append(record)
+        rows.append([case, label, _fmt(record["compliance_J"], 6),
+                     f"{_fmt(record['volume_fraction_used'], 4)} of "
+                     f"{_fmt(record['volume_fraction_target'])}",
+                     _fmt(record["grey_level"], 3), _fmt(record["part_compliance_J"], 6),
+                     _fmt(record["part_mass_kg"], 4), _fmt(record["part_lambda_1"], 5),
+                     record["nonlinear_verdict"] or "not run",
+                     f"{record['iterations']}, {record['stop_reason']}"])
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "design_loads.csv"), index=False)
+    return _markdown_table(
+        ["case", "run", "compliance [J]", "volume fraction", "grey",
+         "part compliance [J]", "part mass [kg]", "part lambda_1", "non-linear check",
+         "iterations, stop"], rows)
+
+
+def part_check_verification_table(results_dir: str) -> Optional[str]:
+    """The non-linear check of an exported part against Euler's elastica
+    (sparlab_verify --study part-check)."""
+    path = os.path.join(results_dir, "verification", "summary.json")
+    if not os.path.isfile(path):
+        return None
+    block = load_json(path).get("part_check")
+    if not block:
+        return None
+    rows, frames = [], []
+    for x in block.get("elastica_extrapolated", []):
+        frames.append(x)
+        rows.append([_fmt(x["k"]),
+                     _fmt(x["compliance_ratio_extrapolated"], 8),
+                     _fmt(x["compliance_ratio_extrapolated_error"], 3),
+                     _fmt(x["compliance_ratio_observed_order"], 3),
+                     _fmt(x["displacement_ratio_extrapolated"], 8),
+                     _fmt(x["displacement_ratio_extrapolated_error"], 3),
+                     _fmt(x["displacement_ratio_observed_order"], 3)])
+    if not rows:
+        return None
+    pd.DataFrame(frames).to_csv(os.path.join(_OUTPUT, "part_check.csv"), index=False)
+    table = _markdown_table(
+        ["k = P L^2 / (E I)", "compliance ratio (extrapolated)", "error vs elastica",
+         "order", "displacement ratio (extrapolated)", "error vs elastica", "order"], rows)
+    bar = block.get("bar_collapse", {})
+    column = block.get("column_bifurcation", {})
+    thermal = block.get("free_thermal_expansion", {})
+    extra = _markdown_table(
+        ["check", "exact", "measured"],
+        [["uniform bar: collapse bracket", _fmt(bar.get("exact_collapse_load_factor"), 6),
+          f"[{_fmt(bar.get('critical_lower'), 6)}, {_fmt(bar.get('critical_upper'), 6)}]"],
+         ["uniform bar: linear first yield", _fmt(bar.get("exact_collapse_load_factor"), 6),
+          _fmt(bar.get("linear_first_yield_load_factor"), 16)],
+         ["column: bifurcation bracket vs linear buckling",
+          _fmt(column.get("linear_buckling_load_factor"), 6),
+          f"[{_fmt(column.get('critical_lower'), 6)}, {_fmt(column.get('critical_upper'), 6)}]"
+          f", gap {_fmt(column.get('relative_gap'), 3)}"],
+         ["free thermal expansion: ratios", "1", f"error {_fmt(thermal.get('ratio_error'), 3)}"]])
+    return table + "\n\n" + extra
 
 
 def robust_table(results_dir: str) -> Optional[str]:
@@ -1711,6 +1823,13 @@ def main(argv=None) -> int:
          "`results/verification/summary.json`. Verification compares against "
          "exact answers for the discrete problem; validation compares against an "
          "independent theory, where a finite gap is expected."),
+        ("The non-linear check of an exported part", part_check_verification_table(args.results),
+         "From `results/verification/summary.json` (`part_check`): the ratios of the "
+         "non-linear to the linear end compliance and largest displacement of a strip "
+         "1 m x 20 mm under a dead end force, Richardson-extrapolated with the observed "
+         "order of the 100 x 4, 200 x 8 and 400 x 16 Q4 meshes, against Euler's "
+         "elastica; then the exact limits: a uniform bar's collapse, a column's "
+         "bifurcation against its linear buckling factor, free thermal expansion."),
         ("Linear simplices: cantilever convergence", simplex_convergence_table(args.results),
          "From `results/verification/mesh_convergence_simplex.csv`. The Tri3 beam is "
          "the plane-stress cantilever of the Q4 study at nu = 0.3, the Tet4 beam the "
@@ -2011,13 +2130,23 @@ def main(argv=None) -> int:
          "the same mass; it is a plane-stress quantity and is n/a for the solid "
          "cases. The L-bracket's plate would fill its passive void quadrant, so "
          "its gain is not a fair comparison (`docs/benchmarks.md`, section 5)."),
-        ("Linear buckling: the constrained column", buckling_table(args.results),
+        ("Linear buckling: the constrained column and shell panel", buckling_table(args.results),
          "`SIMP lambda_1` is the lowest load factor of the SIMP model the "
          "constraint acts on (the eroded design in a robust run), `mode 1 energy "
          "in solid` the share of that mode's strain energy in elements at density "
          ">= 0.5, and `exported part lambda_1` the lowest load factor of the "
          "thresholded part re-analysed as solid material - the number that says "
-         "whether the part meets the requirement of 6."),
+         "whether the part meets the requirement (6 for the column, 10 for the "
+         "panel's out-of-plane buckling). The column's parts are also checked "
+         "with the non-linear analysis along a load path to 6: its verdict judges "
+         "the design load, and its bracket the critical point it met."),
+        ("Loads that follow the design: self-weight and heating", design_load_table(args.results),
+         "The bridge under a deck load and its own weight at 0, 1 and 5 g, and the "
+         "clamped beam under a central load and a uniform temperature rise from 0 to "
+         "40 K (`--gravity-scale`, `--temperature-scale`). The volume fraction is the "
+         "one used of the allowance, which these loads can leave unused; the part is "
+         "the thresholded design re-analysed as solid material, with its buckling "
+         "and non-linear checks where the deck runs them."),
         ("Robust formulation and erosion check", robust_table(args.results),
          "Eroded (eta + 0.1 for the MBB beam, + 0.05 for the column), blueprint "
          "(eta = 0.5) and dilated (eta - delta) designs of the final filtered "

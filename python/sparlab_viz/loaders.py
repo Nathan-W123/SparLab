@@ -61,11 +61,16 @@ TET10_FACES = np.array([[0, 2, 1, 6, 5, 4], [0, 1, 3, 4, 8, 7],
 #: resolution of its nodes.
 TRI6_SPLIT = np.array([[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]], dtype=int)
 
-#: Face table of each solid element type.
-SOLID_FACES = {"Hex8": HEX_FACES, "Tet4": TET_FACES, "Tet10": TET10_FACES}
+#: A shell cell is its own face: the surface is drawn cell by cell.
+SHELL_FACES = np.array([[0, 1, 2, 3]], dtype=int)
+
+#: Face table of each solid element type, and of the shell, whose surface is
+#: made of its cells.
+SOLID_FACES = {"Hex8": HEX_FACES, "Tet4": TET_FACES, "Tet10": TET10_FACES,
+               "Shell4": SHELL_FACES}
 
 #: Corner nodes per face, which alone identify a face shared by two cells.
-FACE_CORNERS = {"Hex8": 4, "Tet4": 3, "Tet10": 3}
+FACE_CORNERS = {"Hex8": 4, "Tet4": 3, "Tet10": 3, "Shell4": 4}
 
 
 @dataclass
@@ -121,13 +126,27 @@ class Mesh:
         """True for triangles and tetrahedra (linear or quadratic)."""
         return self.element_type in ("Tri3", "Tet4", "Tet10")
 
+    def flat_shell_as_plane(self) -> Optional["Mesh"]:
+        """A shell mesh lying in a plane z = constant as the plane quad mesh of
+        its cells (x, y), which is how a flat panel is best drawn; None for a
+        curved shell, or one in another plane, which is drawn as a surface."""
+        if self.element_type != "Shell4" or self.dim != 3:
+            return None
+        size = max(float(np.ptp(self.nodes[:, 0])), float(np.ptp(self.nodes[:, 1])), 1.0e-300)
+        if float(np.ptp(self.nodes[:, 2])) > 1.0e-9 * size:
+            return None
+        return Mesh(nodes=self.nodes[:, :2].copy(), elements=self.elements,
+                    element_type="Quad4", prescribed=self.prescribed,
+                    load_cases=self.load_cases, element_materials=self.element_materials)
+
     def boundary_faces(self, mask: Optional[np.ndarray] = None,
                        return_owners: bool = False):
         """Outward-wound boundary faces of a solid mesh (or of a subset of it).
 
         Returns an (n_faces, k) array of node indices - quads (k = 4) for a
         Hex8 mesh, triangles (k = 3) for a Tet4 mesh, and for a Tet10 mesh
-        each 6-node face split into four triangles through its edge nodes:
+        each 6-node face split into four triangles through its edge nodes; a
+        shell mesh's faces are its cells, wound by their directors:
         the faces owned by exactly one element of the subset, wound so the
         right-hand normal points out of the material. `mask` selects the elements (all when
         None). With `return_owners`, also returns the index (into the full

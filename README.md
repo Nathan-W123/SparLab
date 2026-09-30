@@ -186,7 +186,7 @@ All numbers below are read from the `summary.json` of the run named beside them.
 | Quarter-circle cantilever of straight beam elements vs Castigliano | verification | largest tip-displacement error at 128 elements (order `2.00`) | `6.69e-05` | `1e-4` |
 | **Topology optimisation under loads that follow the design**: self-weight, rotation with a body force, uniform and regional heating; Q4 and Hex8 | verification | worst compliance, stress-aggregate and buckling gradient error vs central differences (near-void compliance within 0.35 % of the solid half, 20x without the body-load threshold) | `1.88e-06` | `1e-5` |
 | **Topology optimisation of shells**: compliance of a plate and a cylinder panel, **out-of-plane buckling** of a compressed plate (MITC4) | verification | worst gradient error vs central differences (a buckling-constrained run lifting `lambda_1` from 5.68 to 9.80 against 7.38 required at 0.6 of the volume) | `1.46e-06` | `1e-5` |
-| **Non-linear check of the exported part**: a strip vs Euler's elastica (`k` to 2), a bar's plastic collapse, a column's bifurcation, free thermal expansion | verification | largest error of the displacement and end-compliance ratios vs the elastica, extrapolated from three meshes (collapse bracketed around the exact 2/3, bifurcation within `2.8e-4` of the linear factor, thermal ratios exact to `2.3e-14`) | `1.56e-04` | `1e-3` |
+| **Non-linear check of the exported part**: a strip vs Euler's elastica (`k` to 2), a bar's plastic collapse, a column's bifurcation and its imperfect post-buckling, free thermal expansion | verification | largest error of the displacement and end-compliance ratios vs the elastica, extrapolated from three meshes (collapse bracketed around the exact 2/3, bifurcation within `2.8e-4` of the linear factor, the imperfect column's softening at `[0.75, 0.7875]` against `0.764` from imperfection theory, thermal ratios exact to `2.3e-14`) | `1.56e-04` | `1e-3` |
 
 `make verify` exits non-zero if any tolerance is missed, so it is a usable
 numerical regression gate. Full detail, including what is *not* covered, in
@@ -296,10 +296,13 @@ and pass, and 19 are informational.
 | Solid bracket, 356k DOFs | 110 592 Hex8 | OC + projection | multigrid CG | 0.30 | 171 | 0.170987 | - | - | 0.000862 | 1339.9 |
 | Lug bracket, Gmsh mesh | 20 336 Tri3 | OC + projection | Cholesky | 0.35 | 211 | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
 | Engine mount, Abaqus mesh | 39 936 Tet4 | OC + projection | multigrid CG | 0.25 | 265 | 0.443669 | - | - | 0.0484 | 278.5 |
-| Column, buckling-constrained (`lambda >= 6`) | 3 200 Q4 | MMA + robust projection | Cholesky | 0.25 | 375 | 186.636 | 155.286 | 0.832 | 0.0426 | 156.7 |
+| Column, buckling-constrained (`lambda >= 6`) | 3 200 Q4 | MMA + robust projection | Cholesky | 0.25 | 378 | 186.551 | 155.287 | 0.832 | 0.0422 | 138.1 |
 | MBB beam, robust | 10 800 Q4 | OC + robust projection | Cholesky | 0.50 | 236 | 195.485 | 260.601 | **1.333** | 0.0253 | 35.2 |
 | MBB beam, overhang filter | 10 800 Q4 | MMA + projection + AM filter | Cholesky | 0.50 | 211 | 193.255 | 259.526 | **1.343** | 0.0166 | 26.4 |
 | Solid bracket, overhang filter | 4 096 Hex8 | MMA + projection + AM filter | multigrid CG | 0.30 | 177 | 0.188922 | - | - | 0.00967 | 100.3 |
+| Bridge under its own weight | 4 800 Q4 | MMA + projection | Cholesky | 0.30 | 193 | 0.0121146 | 0.0254754 | **2.103** | 0.00989 | 8.9 |
+| Clamped beam, heated by 10 K | 6 400 Q4 | MMA + projection | Cholesky | 0.40 (0.115 used) | 265 | 3.39861 | 6.67573 | **1.964** | 0.0999 | 17.4 |
+| Shell panel, out-of-plane buckling (`lambda >= 10`) | 1 152 MITC4 | MMA + robust projection | Cholesky | 0.50 | 112 | 0.0179808 | - | - | 0.00119 | 67.8 |
 
 Every OC run but the robust one meets the volume constraint at its returned
 design to between `1.1e-11` and `9.6e-11` relative. Without the projection it
@@ -393,18 +396,55 @@ material. The same deck three ways:
 
 | | Compliance only | `lambda >= 6`, plain projection | `lambda >= 6`, robust projection |
 |---|---:|---:|---:|
-| Compliance | 112.182 J | 159.209 J | 186.636 J |
-| Lowest load factor, SIMP model | - | 6.0005 | 6.0020 (eroded design) |
-| Lowest load factor, **exported part** | **2.86** | **3.65** | **5.81** |
+| Compliance | 112.182 J | 159.250 J | 186.551 J |
+| Lowest load factor, SIMP model | - | 6.0005 | 6.0033 (eroded design) |
+| Lowest load factor, **exported part** | **2.86** | **3.63** | **5.81** |
+| Non-linear check of the part: where its tangent turns indefinite | 2.858 | 4.100 (a leg buckles stably at 3.615) | 5.808 |
 
 The compliance optimum is a single strut that buckles at 2.86 times its
 load. With the constraint, the SIMP model the optimiser sees meets
 `lambda >= 6` - but with a plain projection its bracing is grey, and the
 exported part, thresholded and re-analysed as solid aluminium, buckles at
-3.65. Acting on the eroded design, the robust formulation denies the
+3.63. Acting on the eroded design, the robust formulation denies the
 optimiser members that erosion removes, and the part reaches 5.81, 3 %
 short of the requirement. The part's value is the one to judge; both are
-reported ([details](docs/benchmarks.md)).
+reported. The non-linear check of each part, along a load path to 6 with
+large displacement, agrees where the part's instability is a bifurcation
+(2.858 against 2.862, 5.808 against 5.806) and shows what the linear factor
+cannot where it is not: the plain part's leg buckles into a stable
+post-buckled state at 3.615 and the part carries on to 4.10
+([details](docs/benchmarks.md#12-a-column-with-a-buckling-constraint)).
+
+![The shell panel with and without the buckling constraint](docs/figures/shell_panel_buckling_comparison.png)
+
+A shell design buckles out of its plane, which a plane model cannot
+represent. A 3 mm aluminium panel of MITC4 shells, simply supported and
+compressed along its length, with half its material: the compliance optimum
+is one strip with free long edges, and its exported part buckles out of
+plane at **1.13** times its load (the full sheet at 25.3). With
+`lambda >= 10` and the robust formulation the material moves to the two
+supported edges, tied near the loaded end, and the part buckles at
+**10.52**, for 3.3 % more compliance; with a plain projection a grey tie
+carries the SIMP model to 10.0 while the part buckles at 5.58
+([details](docs/benchmarks.md#17-a-thin-panel-with-an-out-of-plane-buckling-constraint)).
+
+### Loads that follow the design: what they do
+
+![The clamped beam heated by 0 to 40 K](docs/figures/clamped_beam_thermal_sweep.png)
+
+Self-weight and heating put a load in every cell, so the load changes with
+the design. A steel bridge under 2 kN of deck load keeps its deck-arch
+layout at 1 g, its compliance more than doubled by the 1.4 kN of steel; at
+5 g it uses only 0.238 of the 0.30 allowed, because past a point another
+cell costs more in weight than it returns in stiffness. A beam clamped at
+both ends, loaded at its centre and heated, turns into a two-bar frame by
+1 K - statically determinate, so its bars expand without stress - and from
+3 K leaves its allowance unused: 0.115 of 0.40 at 10 K, 0.068 at 40 K,
+where the thin bars' part buckles at 4.05 times its load. Under heating the
+relaxed objective is optimistic - the part's compliance is 1.23 times it at
+10 K and 3.01 times at 40 K, from the grey edges of the thin bars - so the
+part's re-analysis is the number to judge
+([details](docs/benchmarks.md#15-a-bridge-under-its-own-weight)).
 
 ### Robust formulation and overhang filter: what they buy
 
@@ -611,6 +651,8 @@ aggregates and starts every solve from the previous design's answer
 | MITC4 plates against the exact Reissner-Mindlin deflection from `t / a = 0.1` to `1e-4` (no shear locking), the locking of a coarse distorted mesh, and a cylinder converging to the thick-ring state | The Scordelis-Lo roof, the pinched cylinder and the pinched hemisphere against thin-shell theory, and a box beam's bending and torsion against the drilling stiffness |
 | ![Shell frequencies and buckling](docs/figures/verify_shell_eigen.png) | ![Timoshenko beam](docs/figures/verify_beam.png) |
 | A plate's frequencies with consistent and lumped mass, its harmonic response and its buckling loads, converging at second order to the exact Reissner-Mindlin values | A Timoshenko beam's frequencies, harmonic response and buckling loads converging at second order to the exact values of its model, and a curved cantilever of chords converging to Castigliano's |
+| ![Bridge under its own weight](docs/figures/bridge_self_weight_comparison.png) | ![Shell panel with the buckling constraint](docs/figures/shell_panel_buckling_topology.png) |
+| A bridge optimised under its deck load and a weight that follows the design, at 0, 1 and 5 g: at 5 g it stops using its allowance | A panel of MITC4 shells optimised with its out-of-plane buckling load factor held at 10 or above, and its interpretation as the exported part |
 
 Further figures in [`docs/figures/`](docs/figures/): deformed shapes,
 displacement and stress fields, reaction and equilibrium checks, mode shapes,
@@ -1142,7 +1184,10 @@ treating any number here as a design answer.
   stress constraint, the Hex8 path, the projection with and without, the
   multigrid solver, the two parts read from mesh files, the buckling
   constraint, the robust formulation and the overhang filter with their
-  comparison runs, small direct / multigrid / Jacobi scaling runs, and
+  comparison runs, the loads that follow the design (a bridge under its own
+  weight at three gravity scales, a clamped beam heated by 0 to 40 K), the
+  shell panel with its out-of-plane buckling constraint and the non-linear
+  check of the exported parts, small direct / multigrid / Jacobi scaling runs, and
   regenerates the figures and tables - so a break in the whole pipeline, not
   just the library, is caught.
 

@@ -29,7 +29,8 @@
 /// displacement) over a mesh ladder, and their order in the small-load limit;
 /// the linear first-yield estimate and the collapse bracket of a uniform bar
 /// against the exact collapse load; the bifurcation bracket of a column
-/// against the linear buckling factor of the same mesh; and free thermal
+/// against the linear buckling factor of the same mesh; the softening of the
+/// same column, imperfect, past its critical load; and free thermal
 /// expansion, which both analyses reproduce exactly.
 #include "VerifySupport.hpp"
 
@@ -1018,6 +1019,43 @@ StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary) 
   const bool column_ok = column.verdict == "fails" && column_gap <= 5.0 * prebuckling_strain;
   passed = passed && column_ok;
 
+  // --- the same column, imperfect, past its critical load ------------------------
+  // 1.2 times the critical load of the mesh with a lateral end load of 1e-5
+  // of it: the path bends sharply near the critical load onto the stable
+  // post-buckled branch. The part carries the load, and the check brackets
+  // the knee where the path's incremental stiffness falls below half.
+  NonlinearPartCase imperfect;
+  const Scalar critical_force = lambda_linear * column_force;
+  {
+    FemModel model(make_structured_quad_mesh(box_spec(40, 2, 1, 1.0, column_h, 1.0)),
+                   IsotropicMaterial(200.0e9, 0.3, 7850.0, "steel"), column_t,
+                   StressState::PlaneStress, IntegrationOptions());
+    DisplacementConstraint root;
+    root.region.members.push_back(x_range(-1.0, 0.0));
+    root.fix_x = root.fix_y = true;
+    model.constraints().push_back(root);
+    LoadCaseSpec axial;
+    axial.name = "axial";
+    TractionLoadSpec top;
+    top.region.members.push_back(x_range(1.0, 2.0));
+    top.traction = Vector3(-1.2 * critical_force / (column_h * column_t),
+                           1.2e-5 * critical_force / (column_h * column_t), 0.0);
+    axial.tractions.push_back(top);
+    model.load_case_specs().push_back(axial);
+    model.finalize();
+    imperfect = check_case(model, NonlinearOptions());
+  }
+  // The critical load in this load's factors. The tip starts out moving
+  // sideways by about 4 (L/h)^2 1e-5 = 0.025 of its shortening, and the
+  // amplification 1 / (1 - P/P_cr) halves the incremental stiffness of the
+  // largest displacement at P/P_cr = 0.92 by first-order imperfection
+  // theory: the knee lies a little below the critical load.
+  const Scalar knee = 1.0 / 1.2;
+  const bool imperfect_ok = imperfect.verdict == "carries" &&
+                            imperfect.softening_upper <= knee * 1.001 &&
+                            imperfect.softening_lower >= knee * 0.85;
+  passed = passed && imperfect_ok;
+
   // --- free thermal expansion -----------------------------------------------------
   // The finite-strain law splits the free thermal stretch off
   // multiplicatively, so both analyses give u = alpha dT x exactly.
@@ -1058,6 +1096,15 @@ StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary) 
   col.set("prebuckling_axial_strain", json::Value::make_number(prebuckling_strain));
   col.set("passed", json::Value::make_bool(column_ok));
   block.set("column_bifurcation", col);
+  json::Value imp = json::Value::make_object();
+  imp.set("verdict", json::Value::make_string(imperfect.verdict));
+  imp.set("critical_load_factor", json::Value::make_number(knee));
+  imp.set("softening_lower", json::Value::make_number(imperfect.softening_lower));
+  imp.set("softening_upper", json::Value::make_number(imperfect.softening_upper));
+  imp.set("min_stiffness_ratio", json::Value::make_number(imperfect.min_stiffness_ratio));
+  imp.set("displacement_ratio", json::Value::make_number(imperfect.displacement_ratio));
+  imp.set("passed", json::Value::make_bool(imperfect_ok));
+  block.set("imperfect_column", imp);
   json::Value th = json::Value::make_object();
   th.set("verdict", json::Value::make_string(thermal.verdict));
   th.set("ratio_error", json::Value::make_number(thermal_error));
@@ -1075,8 +1122,10 @@ StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary) 
                 "first-yield estimate and the collapse bracket of a uniform "
                 "elastic-perfectly plastic bar at 1.5 times its yield load (small strain) "
                 "against 1/1.5; the bifurcation bracket of a cantilever column against the "
-                "linear buckling factor of the same mesh; and free thermal expansion, "
-                "exact in both analyses."));
+                "linear buckling factor of the same mesh; the same column with a lateral "
+                "imperfection of 1e-5 at 1.2 times its critical load, carried on its stable "
+                "post-buckled branch with the path's softening bracketed next to the "
+                "critical load; and free thermal expansion, exact in both analyses."));
   summary.set("part_check", block);
 
   StudyOutcome outcome;
@@ -1086,8 +1135,8 @@ StudyOutcome study_part_check(const std::string& out_dir, json::Value& summary) 
       "largest error of the compliance and displacement ratios, Richardson-extrapolated with "
       "the observed order of the three finest meshes, against the elastica (for k >= 0.5 "
       "that order within 1.5 ... 2.5 and the error falling on every refinement; the "
-      "small-load order, the bar's collapse bracket, the column's bifurcation and free "
-      "thermal expansion also required)";
+      "small-load order, the bar's collapse bracket, the column's bifurcation, the imperfect "
+      "column's softening and free thermal expansion also required)";
   outcome.value = worst;
   outcome.tolerance = kTolerance;
   outcome.passed = passed && worst <= kTolerance;

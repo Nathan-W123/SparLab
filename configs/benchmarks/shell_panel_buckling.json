@@ -1,0 +1,101 @@
+{
+  // ---------------------------------------------------------------------------
+  // Benchmark 17: a thin panel compressed in its plane, with a lower bound on
+  // its out-of-plane buckling load factor.
+  //
+  // A 0.6 m x 0.3 m aluminium sheet, 3 mm thick, of MITC4 shells, simply
+  // supported on all four edges (w = 0) and compressed along x by 1 MPa on
+  // its right edge (900 N), with half of its material. For minimum
+  // compliance alone the best use of it is a single strip along the load -
+  // stiff in its plane and, with its long edges free, a wide column out of
+  // it. The constraint topology.buckling_constraint asks for the four lowest
+  // positive load factors of (K + lambda K_G) phi = 0, whose geometric
+  // stiffness comes from the shell's membrane stresses, to stay at or above
+  // 10: the out-of-plane buckling a plane model cannot represent
+  // (docs/topology_optimization.md, section 2c).
+  //
+  // Settings, as for the column (benchmark 12): MMA, the robust formulation
+  // with the projection from beta = 1 to 16, so that the constraint holds
+  // the eroded design and grey ties do not count; the buckling section
+  // checks the full solid sheet and the exported part. The comparison runs
+  // (scripts/run_all_benchmarks.sh) repeat the deck with --no-robust and
+  // with --no-buckling-constraint.
+  //
+  // Units are SI throughout: metres, newtons, pascals, kilograms.
+  // Material: aluminium (E = 70 GPa, nu = 0.3, rho = 2700 kg/m^3).
+  // ---------------------------------------------------------------------------
+  "name": "shell_panel_buckling",
+  "description": "Thin panel of MITC4 shells compressed in its plane, minimum compliance at 50% volume with its out-of-plane buckling load factor >= 10",
+  "units": "SI (m, N, Pa, kg)",
+
+  "mesh": { "type": "structured_shell", "shape": "plate", "nx": 48, "ny": 24, "lx": 0.6, "ly": 0.3 },
+
+  "material": {
+    "name": "aluminium",
+    "youngs_modulus": 70.0e9,
+    "poisson_ratio": 0.3,
+    "density": 2700.0
+  },
+
+  "model": { "thickness": 0.003 },
+
+  "boundary_conditions": [
+    { "name": "edges", "fix": ["z"],
+      "region": { "any_of": [ { "box": { "xmax": 0.0 } }, { "box": { "xmin": 0.6 } },
+                              { "box": { "ymax": 0.0 } }, { "box": { "ymin": 0.3 } } ] } },
+    { "name": "held_x", "fix": ["x"], "region": { "box": { "xmax": 0.0 } } },
+    { "name": "held_y", "fix": ["y"], "region": { "box": { "ymax": 0.0 } } },
+    { "name": "drill", "fix": ["rz"], "region": { "nearest_node": [0.0, 0.0, 0.0] } }
+  ],
+
+  "load_cases": [
+    {
+      "name": "compression",
+      "tractions": [ { "traction": [-1.0e6, 0.0, 0.0], "region": { "box": { "xmin": 0.6 } } } ]
+    }
+  ],
+
+  "solver": {
+    "linear": { "type": "simplicial_ldlt", "residual_tolerance": 1e-8 },
+    "equilibrium_tolerance": 1e-6
+  },
+
+  "buckling": { "enabled": true, "num_modes": 3 },
+
+  "topology": {
+    "enabled": true,
+    "volume_fraction": 0.5,
+    "simp": { "penalty": 3.0 },
+    "filter": { "type": "density", "radius_elements": 1.5 },
+    "optimizer": {
+      "method": "mma",
+      "max_iterations": 300,
+      "change_tolerance": 1e-2,
+      "objective_tolerance": 1e-4,
+      "objective_window": 10,
+      "move_limit": 0.1,
+      "history_stride": 1
+    },
+    "projection": {
+      "enabled": true,
+      "eta": 0.5,
+      "beta_start": 1.0,
+      "beta_max": 16.0,
+      "beta_factor": 2.0,
+      "beta_interval": 50,
+      "robust": true,
+      "robust_delta": 0.05
+    },
+    "buckling_constraint": {
+      "enabled": true,
+      "min_load_factor": 10.0,
+      "num_modes": 4,
+      "ks_parameter": 40.0
+    },
+    "passive_regions": [
+      { "name": "loaded_edge", "type": "solid", "region": { "box": { "xmin": 0.575 } } }
+    ]
+  },
+
+  "output": { "csv": true, "vtk": true, "density_history": true }
+}

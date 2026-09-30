@@ -64,6 +64,34 @@ void assess_nonlinear_path(NonlinearPartCase& c) {
     previous = s.load_factor;
   }
   c.stable_load_factor = stable;
+
+  // The incremental stiffness of the loading increments that move the part,
+  // against the first one's.
+  {
+    Scalar initial = std::numeric_limits<Scalar>::quiet_NaN();
+    Scalar lambda0 = 0.0;
+    Scalar d0 = 0.0;
+    for (const NonlinearStep& s : r.steps) {
+      const Scalar dl = s.load_factor - lambda0;
+      const Scalar dd = s.max_displacement - d0;
+      const Scalar from = lambda0;
+      lambda0 = s.load_factor;
+      d0 = s.max_displacement;
+      if (!(dl > 0.0) || !(dd > 0.0)) continue;
+      const Scalar stiffness = dl / dd;
+      if (std::isnan(initial)) {
+        initial = stiffness;
+        continue;
+      }
+      const Scalar ratio = stiffness / initial;
+      c.min_stiffness_ratio =
+          std::isnan(c.min_stiffness_ratio) ? ratio : std::min(c.min_stiffness_ratio, ratio);
+      if (std::isnan(c.softening_lower) && ratio < kSofteningRatio) {
+        c.softening_lower = from;
+        c.softening_upper = s.load_factor;
+      }
+    }
+  }
   const bool bound = !r.completed && !unstable && !std::isnan(r.critical_bound);
   const bool unreached = !r.completed && !unstable && !bound &&
                          !std::isnan(r.unreached_load_factor);
@@ -142,6 +170,14 @@ void assess_nonlinear_path(NonlinearPartCase& c) {
     c.verdict = "undetermined";
     os << "the run's load path ends at lambda = " << number(stable)
        << " at most, below the design load (lambda = 1)";
+  }
+  if (c.within_law_range && !std::isnan(c.softening_lower)) {
+    os << "; the path softens: its incremental stiffness (load factor per largest "
+          "displacement) fell below half its initial value between lambda = "
+       << number(c.softening_lower) << " and " << number(c.softening_upper) << ", to "
+       << number(c.min_stiffness_ratio)
+       << " of it at least - a member buckling into a stable post-buckled state, or "
+          "yielding spreading";
   }
   if (c.within_law_range && (small || svk_form) && r.max_green_strain > kSmallStrainRange) {
     os << "; strains reach " << number(r.max_green_strain)
@@ -285,6 +321,15 @@ NonlinearPartCheck check_part_nonlinear(const FemModel& part, const Assembler& a
     deviation(c.displacement_ratio, "largest displacement");
     deviation(c.compliance_ratio, "end compliance f^T u");
     deviation(c.von_mises_ratio, "largest von Mises stress");
+    if (c.within_law_range && !std::isnan(c.softening_upper) &&
+        c.softening_upper <= 1.0 + 1.0e-9) {
+      std::ostringstream os;
+      os << "the path softens below the design load: its incremental stiffness fell below "
+            "half its initial value between lambda = "
+         << number(c.softening_lower) << " and " << number(c.softening_upper)
+         << ", so at the design load a member has buckled or material has yielded";
+      c.warnings.push_back(os.str());
+    }
     if (r.plastic && r.plastic_points > 0) {
       std::ostringstream os;
       os << r.plastic_points << " of " << r.total_points

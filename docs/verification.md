@@ -15,7 +15,7 @@ is a stronger statement than asserting agreement.
 Reproduce everything below with:
 
 ```bash
-make test              # the Catch2 suite: 328 cases, 21 705 assertions (GCC)
+make test              # the Catch2 suite: 330 cases, 21 724 assertions (GCC)
 make verify            # the studies, which exit non-zero if any tolerance is missed
 make cross-validation  # the same problems in CalculiX and scikit-fem, node by node
 ```
@@ -81,7 +81,7 @@ All numbers in this document come from `results/verification/summary.json`,
 | Beam: a quarter-circle cantilever of straight elements vs Castigliano (bending, torsion, stretching, shear) | verification | largest tip-displacement error at 128 elements (order `>= 1.9` also required) | `6.69e-05` | `1e-4` | PASS |
 | Topology optimisation under loads that follow the design: self-weight, a rotation with a body force, uniform and regional temperatures; compliance, stress-aggregate and buckling gradients (Q4, Hex8) | verification | worst best-step max scaled gradient error (the load vectors to `1e-14`, near-void compliance within 2 % of the solid half and x10 without the threshold also required) | `1.88e-06` | `1e-5` | PASS |
 | Topology optimisation of MITC4 shells: compliance of a plate and a cylinder panel, out-of-plane buckling of a compressed plate | verification | worst best-step max scaled gradient error (a buckling-constrained run meeting its load factor within the volume, the lowest mode out of plane and the thickened part closed with the plate's volume also required) | `1.46e-06` | `1e-5` | PASS |
-| Non-linear check of the exported part: a strip vs Euler's elastica, a bar's plastic collapse, a column's bifurcation, free thermal expansion | verification | largest error of the end-compliance and displacement ratios vs the elastica, Richardson-extrapolated from the three finest meshes (their order within 1.5 ... 2.5 for `k >= 0.5`, the small-load order 2, the exact collapse bracketed, the bifurcation within 5 times the pre-buckling strain of the linear factor and the thermal ratios `1` to `1e-8` also required) | `1.56e-04` | `1e-3` | PASS |
+| Non-linear check of the exported part: a strip vs Euler's elastica, a bar's plastic collapse, a column's bifurcation and its imperfect post-buckling, free thermal expansion | verification | largest error of the end-compliance and displacement ratios vs the elastica, Richardson-extrapolated from the three finest meshes (their order within 1.5 ... 2.5 for `k >= 0.5`, the small-load order 2, the exact collapse bracketed, the bifurcation within 5 times the pre-buckling strain of the linear factor, the imperfect column carried with its softening within 15 % below the critical load and the thermal ratios `1` to `1e-8` also required) | `1.56e-04` | `1e-3` | PASS |
 
 Supporting measurements from the same runs:
 
@@ -2708,18 +2708,21 @@ and, where its material yields, J2 plasticity, beside its linear analysis
 critical bracket, and the ratios of the non-linear to the linear
 displacement, end compliance and peak stress.
 
-**Unit tests** (`tests/test_nonlinear_part_check.cpp`, 6 cases): the
+**Unit tests** (`tests/test_nonlinear_part_check.cpp`, 8 cases): the
 classification of a run's path - stable to the design load (also along a
 path that unloads), an arc-length path past a limit point, load control
 meeting an unstable tangent, a step no halving converges, a tangent without
 inertia, a path ending below the design load, a state compressed beyond the
 Saint Venant-Kirchhoff range (withheld; not for the neo-Hookean law), strains
-beyond the small-strain range and small-strain kinematics (qualified); a
+beyond the small-strain range and small-strain kinematics (qualified); the
+softening of a path from its incremental stiffness (a knee bracketed, a
+linear and a stiffening path not flagged, unloading increments ignored); a
 cantilever strip whose end compliance deviates from linear at second order in
 the load and whose peak stress at first; a uniform bar's first yield and
-collapse; a column's bifurcation against its linear buckling factor; free
-thermal expansion; the monitors that miss the part dropped, a refused run
-recorded, contact and missing linear solutions refused.
+collapse; a column's bifurcation against its linear buckling factor, and the
+same column, imperfect, carried past it on its stable post-buckled branch;
+free thermal expansion; the monitors that miss the part dropped, a refused
+run recorded, contact and missing linear solutions refused.
 
 **The study** (`sparlab_verify --study part-check`,
 `part_check_elastica.csv`). A strip 1 m long, 20 mm deep (plane stress,
@@ -2757,13 +2760,14 @@ and stated as such. On the finest mesh the end compliance's deviation from
 linear falls at second order in the load, observed `1.995` and `1.997`
 between `k = 0.025, 0.05, 0.1`. Every run carries its design load.
 
-Three exact limits complete it:
+Four exact or classical limits complete it:
 
 | Check | Exact | Measured |
 |-------|-------|----------|
 | Uniform bar (10 x 2 Q4, plane stress), elastic-perfectly plastic, `sigma_y = 250` MPa, end traction `1.5 sigma_y`, small strain: linear first-yield load factor | `2/3` | `0.6666666666666651` |
 | the same: collapse bracket (verdict `fails`, the tangent turning singular) | `2/3` | `[0.666633, 0.666695]` |
 | Cantilever column 1 m x 40 mm (40 x 2 Q4), 80 kN axial: bifurcation bracket against the linear buckling factor `0.386514` of the same mesh | the linear factor, to the order of the pre-buckling strain `3.87e-4` (the study allows 5 times it) | `[0.386438, 0.386623]`, relative gap `2.83e-4` |
+| The column with a lateral end load of `1e-5` of an axial one at 1.2 times its critical load: verdict, and where the path's incremental stiffness halves | carries (the elastica's post-buckled branch is stable); the knee a little below `1/1.2 = 0.8333` - first-order imperfection theory, with the tip's initial sideways motion about 0.025 of its shortening, puts it at `0.764` | carries; softening bracketed in `[0.75, 0.7875]`, the stiffness down to `1.1e-5` of its initial value; the largest displacement 1579 times the linear one |
 | Bar heated by 100 K, `alpha = 1.2e-5`, free to expand: displacement and compliance ratios | `1` (both analyses give `u = alpha dT x`) | `1` to `2.3e-14`; no stress ratio formed (round-off stresses) |
 
 ## What is not covered

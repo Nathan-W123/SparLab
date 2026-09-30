@@ -7,7 +7,7 @@ is refreshed by `make results`; this document adds the interpretation.
 Reproduce all of it with:
 
 ```bash
-make benchmarks     # all fifteen decks, two analysis decks and seven comparison runs, a little over an hour
+make benchmarks     # all eighteen decks, two analysis decks and eighteen comparison runs, a little over an hour
 make figures        # every figure and the animations
 make results        # refresh the generated tables
 ```
@@ -35,10 +35,13 @@ part.
 | `lug_bracket_2d` | 20 336 Tri3 | 20 834 | OC + projection (`beta` 32) | Cholesky | 0.35 | 211 | objective stall | 0.828909 | 0.950635 | **1.147** | 0.00387 | 37.7 |
 | `engine_mount_3d` | 39 936 Tet4 | 25 920 | OC + projection (`beta` 16) | multigrid CG | 0.25 | 265 | objective stall | 0.443669 | n/a (solid) | - | 0.0484 | 278.5 |
 | `bracket_3d_large` | 110 592 Hex8 | 356 475 | OC + projection (`beta` 16) | multigrid CG | 0.30 | 171 | objective stall | 0.170987 | n/a (solid) | - | 0.000862 | 1339.9 |
-| `column_buckling` | 3 200 Q4 | 6 642 | MMA + buckling + robust projection (`beta` 16) | Cholesky | 0.25 | 375 | objective stall | 186.636 | 155.286 | 0.832 | 0.0426 | 156.7 |
+| `column_buckling` | 3 200 Q4 | 6 642 | MMA + buckling + robust projection (`beta` 16) | Cholesky | 0.25 | 378 | design change | 186.551 | 155.287 | 0.832 | 0.0422 | 138.1 |
 | `mbb_beam_robust` | 10 800 Q4 | 22 082 | OC + robust projection (`beta` 32) | Cholesky | 0.50 | 236 | objective stall | 195.485 | 260.601 | **1.333** | 0.0253 | 35.2 |
 | `mbb_beam_overhang` | 10 800 Q4 | 22 082 | MMA + projection (`beta` 32) + overhang filter | Cholesky | 0.50 | 211 | objective stall | 193.255 | 259.526 | **1.343** | 0.0166 | 26.4 |
 | `bracket_3d_overhang` | 4 096 Hex8 | 15 147 | MMA + projection (`beta` 16) + overhang filter | multigrid CG | 0.30 | 177 | objective stall | 0.188922 | n/a (solid) | - | 0.00967 | 100.3 |
+| `bridge_self_weight` | 4 800 Q4 | 9 922 | MMA + projection (`beta` 16); self-weight | Cholesky | 0.30 | 193 | design change | 0.0121146 | 0.0254754 | **2.103** | 0.00989 | 8.9 |
+| `clamped_beam_thermal` | 6 400 Q4 | 13 202 | MMA + projection (`beta` 16); heating | Cholesky | 0.40 (0.115 used) | 265 | design change | 3.39861 | 6.67573 | **1.964** | 0.0999 | 17.4 |
+| `shell_panel_buckling` | 1 152 MITC4 | 7 350 | MMA + out-of-plane buckling + robust projection (`beta` 16) | Cholesky | 0.50 | 112 | design change | 0.0179808 | n/a (shell) | - | 0.00119 | 67.8 |
 
 A robust run's compliance, grey level and volume are its blueprint's
 (`eta` = 0.5); the optimiser minimised the eroded design's compliance
@@ -53,7 +56,11 @@ equal-mass plate is taken at the achieved volume fraction, which is why the
 robust MBB's differs from the plain one's. The L-bracket's baseline plate would fill
 the passive void quadrant, so the ratio is not a fair one there and is not
 quoted; a solid has no thickness to thin, so the solid cases have no such
-baseline at all (section 6). A projected run's gain is higher than its
+baseline at all (section 6), and neither has the shell panel, whose bending
+stiffness goes with the cube of its thickness. The plates of the bridge and
+the heated beam carry their own weight and thermal load at the thinned
+thickness, and the heated beam's is taken at the 0.115 of its allowance it
+uses (section 16). A projected run's gain is higher than its
 unprojected twin's because its objective describes the thresholded part
 rather than a grey field (section 7), not because the part is stiffer.
 
@@ -68,7 +75,9 @@ lug bracket), and the first design after each `beta` step, off by up to
 design, which meets its rescaled target to `9.6e-11`; the blueprint follows
 only through the ratio of the two volumes and ends 0.41 % under the fraction
 (section 13). The MMA runs meet it between `-2.0e-4` (section 5) and
-`-2.8e-6`, on the feasible side.
+`-2.8e-6`, on the feasible side - except where the loads follow the design
+and the optimum leaves the allowance unused on purpose: the heated beam
+(section 16) and the bridge at five times gravity (section 15).
 
 ## The equal-mass baseline
 
@@ -918,18 +927,24 @@ Kreisselmeier-Steinhauser function (`P = 40`). MMA with a move limit of
 eroded design (`docs/topology_optimization.md`, sections 3c and 5d). After
 the run the `buckling` section analyses the full solid domain and the
 exported part - the density thresholded at 0.5, largest face-connected
-group, full material. The deck is repeated with `--no-buckling-constraint`
-and with `--no-robust`.
+group, full material - and its `nonlinear` block checks that part with
+large displacement along a load path to the required factor, 6
+(`docs/topology_optimization.md`, section 11). The deck is repeated with
+`--no-buckling-constraint` and with `--no-robust`.
 
-| Run | Compliance [J] | SIMP `lambda_1` | Mode-1 energy in solid | Exported part `lambda_1` | Iterations, stop | Linear solves | Optimisation [s] |
-|-----|---------------:|----------------:|-----------------------:|-------------------------:|------------------|--------------:|-----------------:|
-| compliance only | 112.182 | - | - | **2.862** | 55, design change | 58 | 1.6 |
-| `lambda >= 6`, plain projection | 159.209 | 6.0005 | 0.80 | **3.645** | 298, design change | 63 407 | 107.9 |
-| `lambda >= 6`, robust projection | 186.636 | 6.0020 (eroded design) | 0.66 | **5.815** | 375, objective stall | 90 702 | 156.7 |
+| Run | Compliance [J] | SIMP `lambda_1` | Mode-1 energy in solid | Exported part `lambda_1` | Non-linear check: critical bracket | Iterations, stop | Linear solves | Optimisation [s] |
+|-----|---------------:|----------------:|-----------------------:|-------------------------:|-----------------------------------:|------------------|--------------:|-----------------:|
+| compliance only | 112.182 | - | - | **2.862** | [2.8583, 2.8591] | 55, design change | 58 | 1.3 |
+| `lambda >= 6`, plain projection | 159.250 | 6.0005 | 0.81 | **3.633** | [4.0997, 4.0997] (softening at [3.6151, 3.6169]) | 289, design change | 62 140 | 92.5 |
+| `lambda >= 6`, robust projection | 186.551 | 6.0033 (eroded design) | 0.68 | **5.806** | [5.8076, 5.8076] | 378, design change | 91 507 | 138.1 |
 
 "Mode-1 energy in solid" is the share of the SIMP model's first buckling
 mode's strain energy in elements at density `>= 0.5`. The full solid domain
-buckles at `lambda_1 = 149.65`.
+buckles at `lambda_1 = 149.65`. These are the runs of the current code; the
+earlier runs this section first reported (159.209 J, 298 iterations; 186.636
+J, 375 iterations) differ in the last digits and the iteration counts, as a
+long MMA run with a buckling constraint amplifies any change in the order of
+the floating-point operations between versions.
 
 ![The column with and without the buckling constraint](figures/column_buckling_comparison.png)
 
@@ -953,7 +968,7 @@ Four things to read from it:
   exported part buckles at 3.65;
 * **the robust formulation closes most of the gap.** The constraint now
   holds the eroded design, so members that erosion removes do not count: the
-  exported part buckles at 5.81, 3.1 % short of 6. The rest of the gap is
+  exported part buckles at 5.81, 3.2 % short of 6. The rest of the gap is
   still the SIMP model's: 34 % of the eroded design's first-mode energy sits
   in elements below 0.5 at `beta = 16`. A slightly higher requirement or a
   sharper final projection is the engineering answer; neither was run. At
@@ -961,6 +976,24 @@ Four things to read from it:
   here: the length-scale scan still finds members about one cell thick, and
   a probe of one cell's radius removes 14 % of the part's solid
   (`docs/results/README.md`).
+
+**The non-linear check agrees with the linear one where the part's
+instability is a bifurcation, and reads it where it is not.** Every part
+carries its design load (verdict `carries`). The compliance optimum's strut
+stops at `[2.8583, 2.8591]`, 0.14 % under its linear buckling factor: the
+straight strut bifurcates, and its pre-buckling shortening lowers the load a
+little. The robust part stops at `[5.8076, 5.8076]`, 0.024 % over its linear
+factor; it is not quite symmetric, so its path approaches a limit point with
+the displacement amplified - 7.6 times the linear one just before it - and
+the check reports the path softening from `lambda` 5 to 5.5. The plain part
+is the instructive one: its linear factor is 3.633, yet its tangent stays
+positive definite to 4.0997. Between `lambda` 3.6151 and 3.6169 - 0.5 %
+under the linear factor - its largest displacement starts to run away, from
+5.8 mm to about 58 mm within the next half per cent of the load: a leg
+buckles into a stable post-buckled state, and the rest of the part carries the load on,
+with 52 times the linear displacement, until it gives way at 4.10. The
+linear factor predicts the member buckling; the non-linear path shows what
+follows it. The check's time is 0.2 to 3.9 s of each run.
 
 The constraint is not cheap: each iteration solves the eigenproblem with
 subspace iteration warm-started from the previous design (8 to 10 subspace
@@ -1105,14 +1138,154 @@ Four things to read from it:
   support removal, residual stress, surface finish or a minimum wall
   (`docs/limitations.md`).
 
+## 15. A bridge under its own weight
+
+`configs/benchmarks/bridge_self_weight.json` - a 3 m x 1 m steel web (S355,
+20 mm thick, 120 x 40 Q4) on two pins at its lower corners, with a solid deck
+of two cell rows along its top carrying 2 kN of traffic, and 30 % of the
+material. Every cell also carries its own weight, which follows the design:
+`gamma(rho)` times the solid's, with `gamma = rho` at and above the body-load
+threshold (0.1) and falling like `rho^p` below it
+(`docs/topology_optimization.md`, section 2b). The full web weighs 4.6 kN,
+a 30 % design 1.4 kN - the order of the deck load. MMA with the projection
+to `beta = 16`. The deck is repeated with `--gravity-scale 0` (the deck load
+alone) and `--gravity-scale 5` (the weight dominant, as on a longer span).
+
+| Run | Compliance [J] | Volume fraction used (allowed 0.30) | Grey | Exported part: compliance [J], mass [kg] | Iterations, stop | Optimisation [s] |
+|-----|---------------:|------------------------------------:|-----:|------------------------------------------:|------------------|-----------------:|
+| no self-weight | 0.00546629 | 0.3000 | 0.0088 | 0.00543718, 141.9 | 179, design change | 8.0 |
+| 1 g | 0.0121146 | 0.3000 | 0.0099 | 0.0120945, 141.9 | 193, design change | 8.9 |
+| 5 g | 0.0549423 | **0.2382** | 0.0194 | 0.0548324, 113.6 | 305, design change | 14.5 |
+
+![The bridge without its weight, with it and with five times it](figures/bridge_self_weight_comparison.png)
+
+* **The deck load alone makes a deck arch:** an arch from pin to pin that
+  meets the deck at mid-span, with struts carrying the deck down to it
+  nearer the supports.
+* **At 1 g the layout holds and the compliance more than doubles**
+  (0.0055 to 0.0121 J): the 1.4 kN of steel the design keeps is of the order
+  of the 2 kN deck load, and it hangs where the deck load does not.
+* **At 5 g the optimum stops using its allowance:** 0.238 of the 0.30
+  allowed. Material now brings load as well as stiffness, and past a point
+  another cell costs more in weight than it returns in stiffness; the run
+  says so ("the volume constraint is inactive ... because its body loads
+  grow with the material"). The arch thins and the material gathers at the
+  springings, where the accumulated weight comes down.
+* **The exported part agrees with the objective:** re-analysed at full
+  material under its own weight, it comes within 0.5 % (no weight) and 0.2 %
+  (1 g, 5 g) below the compliance the optimiser minimised. Every retained
+  cell lies above the body-load threshold, where `gamma = rho` is the part's
+  own weight, and the projection leaves little grey.
+
+The compliances of different loads are not comparable with one another; each
+is the objective its own run minimised. Against the equal-mass uniform plate
+- thinned to the used volume fraction and carrying its own weight - the gains
+are 1.66, 2.10 and 2.85.
+
+## 16. A beam clamped at both ends, loaded and heated
+
+`configs/benchmarks/clamped_beam_thermal.json` - a 1.6 m x 0.4 m steel web
+(10 mm thick, 160 x 40 Q4) clamped along both ends, with 10 kN downward at
+the middle of its top edge and a uniform temperature rise, 10 K in the deck,
+from 0 to 40 K in the comparison runs (`--temperature-scale`), with 40 % of
+the material. Held at both ends, the heated material pushes on the clamps;
+its thermal load is `E(rho)/E0` times the solid's, and the objective is the
+compliance of the whole load, mechanical and thermal
+(`docs/topology_optimization.md`, section 2b). MMA with the projection to
+`beta = 16`; each part also gets the buckling check and the non-linear check.
+
+| `dT` [K] | Compliance [J] | Volume fraction used (allowed 0.40) | Grey | Part compliance [J] (over the objective) | Part `lambda_1` | Non-linear check | Iterations, stop |
+|---------:|---------------:|------------------------------------:|-----:|-----------------------------------------:|----------------:|------------------|------------------|
+| 0 | 0.913300 | 0.4000 | 0.012 | 0.905962 (0.992) | 751.2 | carries | 174, design change |
+| 1 | 0.744222 | 0.4000 | 0.013 | 0.759438 (1.020) | 744.4 | carries | 172, objective stall |
+| 2 | 0.826583 | 0.3994 | 0.036 | 0.840106 (1.016) | 876.3 | carries | 172, objective stall |
+| 3 | 1.12193 | **0.3030** | 0.104 | 1.17108 (1.044) | 373.9 | carries | 234, objective stall |
+| 5 | 1.75507 | **0.1983** | 0.112 | 1.91828 (1.093) | 105.2 | carries | 234, objective stall |
+| 10 | 3.39861 | **0.1153** | 0.0999 | 4.17518 (1.228) | 20.09 | carries | 265, design change |
+| 20 | 7.94448 | **0.0895** | 0.086 | 13.2948 (1.673) | 10.22 | carries | 191, design change |
+| 40 | 15.0193 | **0.0677** | 0.113 | 45.2294 (3.011) | 4.053 | carries | 140, design change |
+
+![The clamped beam heated by 0 to 40 K](figures/clamped_beam_thermal_sweep.png)
+
+* **A little heat helps.** At 1 K the compliance, 0.744 J, is below the
+  unheated design's 0.913 J: held at both ends, the expanding material lifts
+  the loaded point against the load - its deflection is 91.8 um at 0 K,
+  79.0 um at 1 K and 56.3 um at 2 K.
+* **By 1 K the topology has changed:** the web of the unheated beam gives
+  way to a two-bar frame, an "A" from the lower clamps to the loaded point,
+  still using the whole allowance in thick bars. At 1 K two ties one cell
+  thick also run to the upper corners; joined cell to cell only at corners,
+  they fall apart under the interpretation's face connectivity (seven
+  groups, `5.2e-5` m^3 discarded as islands), which is why that part is
+  2 % softer than its objective.
+* **From 3 K the optimum stops using its allowance** - 0.303 at 3 K, 0.198
+  at 5 K, down to 0.068 at 40 K. The two-bar frame is statically
+  determinate: its bars lengthen freely (the apex rises), so the heating
+  stresses nothing, while each cell of bar adds thermal load. The optimum
+  thins the bars as the heating grows, and the run warns that the volume
+  constraint is inactive.
+* **The relaxed objective is optimistic under heating.** The part's
+  compliance over the objective grows with the temperature: 1.02 at 1 K,
+  1.23 at 10 K, 3.01 at 40 K. The thin bars keep grey edges (grey level
+  about 0.1 even at `beta = 16`), and a grey cell's thermal compliance falls
+  with its stiffness; the part, at full material, has no such relief. The
+  part's number is the one to judge (`docs/limitations.md`).
+* **The thinner the bars, the less stable the part:** its lowest buckling
+  load factor falls from 751 unheated to 20.1 at 10 K and 4.05 at 40 K. The
+  non-linear check confirms that every part carries its design load, its
+  largest displacement within 0.1 % of the linear prediction except at 10 K
+  (2.2 % more).
+
+## 17. A thin panel with an out-of-plane buckling constraint
+
+`configs/benchmarks/shell_panel_buckling.json` - a 0.6 m x 0.3 m aluminium
+sheet, 3 mm thick (48 x 24 MITC4 shells), simply supported on all four
+edges, compressed along its length by 1 MPa (900 N) on a solid strip at its
+loaded edge, with half of the material. Minimum compliance subject to the
+four lowest positive load factors of `(K + lambda K_G) phi = 0` at or above
+10, where `K_G` comes from the shell's membrane stresses, so the constraint
+acts on the sheet's **out-of-plane** buckling - what a plane model cannot
+represent (`docs/topology_optimization.md`, section 2c). MMA and the robust
+formulation with the projection to `beta = 16`, as for the column
+(section 12); the deck is repeated with `--no-robust` and with
+`--no-buckling-constraint`.
+
+| Run | Compliance [J] | SIMP `lambda_1` | Mode-1 energy in solid | Exported part `lambda_1` | Iterations, stop | Linear solves | Optimisation [s] |
+|-----|---------------:|----------------:|-----------------------:|-------------------------:|------------------|--------------:|-----------------:|
+| compliance only | 0.0173997 | - | - | **1.130** | 133, objective stall | 136 | 10.9 |
+| `lambda >= 10`, plain projection | 0.0178492 | 10.003 | 0.96 | **5.577** | 139, design change | 17 580 | 76.2 |
+| `lambda >= 10`, robust projection | 0.0179808 | 10.038 (eroded design) | 1.00 | **10.520** | 112, design change | 16 631 | 67.8 |
+
+The full sheet buckles at `lambda_1 = 25.31`.
+
+![The shell panel with and without the buckling constraint](figures/shell_panel_buckling_comparison.png)
+
+* **Minimum compliance alone designs a panel that buckles at its load.**
+  The compliance optimum is a single strip along the load, with both long
+  edges free: out of its plane it is a wide column, and the exported part
+  buckles at 1.13 times the design load, against 25.3 for the full sheet.
+* **With the constraint the material moves to the supported edges.** Each
+  of the two strips is held out of its plane along one long edge, and a
+  transverse tie near the loaded end joins them.
+* **The plain projection's SIMP model leans on a grey tie.** It meets
+  `lambda >= 10` (10.003), but a single cell of intermediate density joins
+  the upper strip to its supported edge near the middle of the span; below
+  the threshold, it is not in the part, whose upper strip is then free over
+  0.3 m and buckles at 5.58.
+* **The robust formulation delivers the part.** Acting on the eroded design,
+  the constraint cannot count ties that erosion removes: the exported part
+  buckles at 10.52, above the requirement, for 3.3 % more compliance than
+  the compliance optimum.
+
 ## Convergence behaviour
 
 ![Cantilever convergence history](figures/cantilever_beam_convergence.png)
 
 Both stopping criteria are exercised. The cantilever, the MBB beam, the
-stress-constrained L-bracket and the unprojected solid bracket stop on the
-design change; the aerospace bracket, the wing rib and all nine projected
-runs stop on the objective stall. The stall measure is the relative spread
+stress-constrained L-bracket, the unprojected solid bracket and the four
+projected MMA runs of the column, the bridge, the heated beam and the shell
+panel stop on the design change; the aerospace bracket, the wing rib and the
+other eight projected runs stop on the objective stall. The stall measure is the relative spread
 `(max - min) / |C|` of the last `objective_window + 1` compliances, which an
 oscillating design cannot satisfy mid-cycle. The design-change tolerance is
 0.01 in every deck; the stall tolerance is set per deck. Final indicator
@@ -1131,19 +1304,25 @@ values:
 | `lug_bracket_2d` | objective stall | 0.1 | `9.7e-04` | `1e-03` | 11 |
 | `engine_mount_3d` | objective stall | 0.1 | `9.9e-04` | `1e-03` | 11 |
 | `bracket_3d_large` | objective stall | 0.1 | `2.1e-04` | `1e-03` | 11 |
-| `column_buckling` | objective stall | 0.0398 | `6.8e-05` | `1e-04` | 11 |
+| `column_buckling` | design change | 0.00984 | `5.7e-04` | `1e-04` | 11 |
 | `mbb_beam_robust` | objective stall | 0.1 | `8.0e-04` | `1e-03` | 11 |
 | `mbb_beam_overhang` | objective stall | 0.0811 | `7.9e-04` | `1e-03` | 11 |
 | `bracket_3d_overhang` | objective stall | 0.0446 | `9.8e-04` | `1e-03` | 11 |
+| `bridge_self_weight` | design change | 0.00999 | `1.1e-04` | `1e-04` | 11 |
+| `clamped_beam_thermal` | design change | 0.00962 | `2.0e-04` | `1e-04` | 11 |
+| `shell_panel_buckling` | design change | 0.00749 | n/a | `1e-04` | 11 |
 
 The projected OC runs all stop on the stall with the design change at the
 move limit of 0.1. At a sharp projection single elements on the solid-void
 interface flip between their bounds while the compliance stands still
-(section 7). The three MMA runs stop on the stall too, with the design
-change below their move limits (0.05 for the column, 0.1 for the overhang
-decks). Of the comparison runs, the column without the constraint and the
-column without the robust formulation stop on the design change (55 and 298
-iterations); the rest stop on the stall.
+(section 7). The two overhang MMA runs stop on the stall too, with the
+design change below their move limit of 0.1; the column (move limit 0.05),
+the bridge, the heated beam and the shell panel stop on the design change.
+Of the comparison runs, the column without the constraint and the column
+without the robust formulation stop on the design change (55 and 289
+iterations), and so do the bridge and heated-beam sweeps except the beam at
+1, 2, 3 and 5 K, which stall; of the shell panel's, the plain-projection run
+stops on the design change and the unconstrained one on the stall.
 
 The objective criterion is what makes the fine-mesh cases terminate. A measured
 example on the cantilever benchmark, with both criteria disabled and the cap
@@ -1318,7 +1497,7 @@ second in 3-D.
 
 From the `timings_s` block of each summary:
 
-| Case | Optimisation [s] | Modal or buckling [s] | Solid reference [s] | Re-solve [s] | Output [s] | Total [s] |
+| Case | Optimisation [s] | Modal, buckling or non-linear check [s] | Solid reference [s] | Re-solve [s] | Output [s] | Total [s] |
 |------|-----------------:|----------------------:|--------------------:|-------------:|-----------:|----------:|
 | `cantilever_beam` | 48.9 | 3.09 | 0.12 | 0.04 | 0.49 | 52.7 |
 | `mbb_beam` | 56.6 | - | 0.09 | 0.03 | 0.28 | 57.2 |
@@ -1332,10 +1511,13 @@ From the `timings_s` block of each summary:
 | `engine_mount_3d` | 278.5 | 10.15 | 0.53 | 0.16 | 1.67 | 292.4 |
 | `bracket_3d_large` | 1339.9 | 320.75 | 7.82 | 4.36 | 6.58 | 1681.0 |
 | `l_bracket_unconstrained` | 3.8 | - | 0.03 | 0.01 | 0.10 | 4.0 |
-| `column_buckling` | 156.7 | 0.64 (buckling) | 0.02 | 0.01 | 0.15 | 157.6 |
+| `column_buckling` | 138.1 | 0.51 (buckling), 2.46 (non-linear) | 0.02 | < 0.01 | 0.17 | 141.3 |
 | `mbb_beam_robust` | 35.2 | - | 0.11 | 0.04 | 0.33 | 35.9 |
 | `mbb_beam_overhang` | 26.4 | - | 0.10 | 0.03 | 0.32 | 27.0 |
 | `bracket_3d_overhang` | 100.3 | - | 0.59 | 0.31 | 0.26 | 101.5 |
+| `bridge_self_weight` | 8.9 | - | 0.04 | 0.01 | 0.17 | 9.2 |
+| `clamped_beam_thermal` | 17.4 | 1.41 (buckling), 0.14 (non-linear) | 0.05 | < 0.01 | 0.27 | 19.4 |
+| `shell_panel_buckling` | 67.8 | 0.82 (buckling) | 0.08 | 0.03 | 0.06 | 68.8 |
 
 The optimisation loop dominates everywhere, which is the intended cost
 profile. The modal analyses of the solid domain and of the extracted
@@ -1343,7 +1525,8 @@ topology cost a few percent with the direct solver, where one factorisation
 serves every solve of the subspace iteration. With multigrid CG each of
 those solves is a new CG run, and the share rises to 18 % on the projected
 bracket and 19 % on the 356 475-DOF bracket. The column's buckling check of
-the solid domain and the exported part costs 0.4 % of its run; the
+the solid domain and the exported part costs 0.4 % of its run, and the
+non-linear check of the part along its load path to 6 another 1.7 %; the
 constraint inside the loop is what makes that run expensive (section 12).
 All of the file output, including the density snapshots that drive the
 animations, costs under 2 % of every run longer than ten seconds, and 2.5 %

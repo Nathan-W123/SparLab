@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Comparison figures for the buckling-constrained column, the robust MBB
-beam and the overhang-filtered designs.
+"""Comparison figures for the buckling-constrained column and shell panel,
+the robust MBB beam, the overhang-filtered designs, the bridge under its own
+weight and the heated clamped beam.
 
 usage:
     python3 python/scripts/plot_manufacturing.py --results results \
@@ -8,7 +9,7 @@ usage:
 
 Each figure sets a benchmark beside the comparison runs that
 scripts/run_all_benchmarks.sh makes of the same deck with one feature
-switched off. A missing run is reported and its figure skipped; the exit
+switched off or a load scaled. A missing run is reported and its figure skipped; the exit
 code is non-zero if any figure could not be drawn.
 """
 
@@ -20,7 +21,7 @@ import sys
 
 import _bootstrap  # noqa: F401
 
-from sparlab_viz import buckling, manufacturing
+from sparlab_viz import buckling, manufacturing, physics
 from sparlab_viz.loaders import ResultError, load_case
 
 
@@ -46,6 +47,19 @@ def main(argv=None) -> int:
             figure("column_buckling_comparison.png"), name="column_buckling")),
         ("buckling-constrained convergence", lambda: buckling.plot_buckling_history(
             case("column_buckling"), figure("column_buckling_history.png"))),
+        ("shell buckling comparison", lambda: buckling.plot_buckling_comparison(
+            [("compliance only", case("shell_panel_buckling_unconstrained")),
+             ("lambda >= 10, plain projection", case("shell_panel_buckling_nonrobust")),
+             ("lambda >= 10, robust projection", case("shell_panel_buckling"))],
+            figure("shell_panel_buckling_comparison.png"), name="shell_panel_buckling")),
+        ("self-weight comparison", lambda: physics.plot_self_weight_comparison(
+            [(0.0, case("bridge_self_weight_g0")), (1.0, case("bridge_self_weight")),
+             (5.0, case("bridge_self_weight_g5"))],
+            figure("bridge_self_weight_comparison.png"), name="bridge_self_weight")),
+        ("thermal sweep", lambda: physics.plot_thermal_sweep(
+            [(float(dt), case(f"clamped_beam_thermal_dT{dt}")) for dt in (0, 1, 2, 3, 5, 20, 40)]
+            + [(10.0, case("clamped_beam_thermal"))],
+            figure("clamped_beam_thermal_sweep.png"), name="clamped_beam_thermal")),
         ("robust formulation", lambda: manufacturing.plot_robust_comparison(
             case("mbb_beam_robust_off"), case("mbb_beam_robust"),
             figure("mbb_beam_robust_comparison.png"))),
