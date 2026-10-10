@@ -1,0 +1,245 @@
+{
+ "name": "tower_skin_simp",
+ "units": "SI (m, N, Pa, kg)",
+ "description": "Square tower skin (MITC4) clamped at the base, pressed and twisted both ways at the top",
+ "mesh": {
+  "type": "file",
+  "path": "skin.inp"
+ },
+ "material": {
+  "name": "Ti-6Al-4V",
+  "youngs_modulus": 113800000000.0,
+  "poisson_ratio": 0.342,
+  "density": 4430.0
+ },
+ "model": {
+  "thickness": 0.006
+ },
+ "boundary_conditions": [
+  {
+   "name": "footing",
+   "fix": [
+    "x",
+    "y",
+    "z",
+    "rx",
+    "ry",
+    "rz"
+   ],
+   "region": {
+    "box": {
+     "zmax": 0.0
+    }
+   }
+  }
+ ],
+ "load_cases": [
+  {
+   "name": "twist_ccw",
+   "weight": 1.0,
+   "point_loads": [
+    {
+     "force": [
+      0.0,
+      500.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "xmin": 0.1
+      }
+     }
+    },
+    {
+     "force": [
+      0.0,
+      -500.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "xmax": 0.0
+      }
+     }
+    },
+    {
+     "force": [
+      -500.0,
+      0.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "ymin": 0.1
+      }
+     }
+    },
+    {
+     "force": [
+      500.0,
+      0.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "ymax": 0.0
+      }
+     }
+    },
+    {
+     "force": [
+      0.0,
+      0.0,
+      -1000.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "twist_cw",
+   "weight": 1.0,
+   "point_loads": [
+    {
+     "force": [
+      0.0,
+      -500.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "xmin": 0.1
+      }
+     }
+    },
+    {
+     "force": [
+      0.0,
+      500.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "xmax": 0.0
+      }
+     }
+    },
+    {
+     "force": [
+      500.0,
+      0.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "ymin": 0.1
+      }
+     }
+    },
+    {
+     "force": [
+      -500.0,
+      0.0,
+      0.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25,
+       "ymax": 0.0
+      }
+     }
+    },
+    {
+     "force": [
+      0.0,
+      0.0,
+      -1000.0
+     ],
+     "distribution": "total",
+     "region": {
+      "box": {
+       "zmin": 0.25
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "solver": {
+  "linear": {
+   "type": "simplicial_ldlt",
+   "residual_tolerance": 1e-08
+  }
+ },
+ "modal": {
+  "enabled": false
+ },
+ "topology": {
+  "enabled": true,
+  "volume_fraction": 0.35,
+  "simp": {
+   "penalty": 3.0,
+   "emin_ratio": 1e-09
+  },
+  "filter": {
+   "type": "density",
+   "radius_elements": 2.5
+  },
+  "passive_regions": [
+   {
+    "name": "cap_and_ring",
+    "type": "solid",
+    "region": {
+     "box": {
+      "zmin": 0.24375
+     }
+    }
+   },
+   {
+    "name": "footing_ring",
+    "type": "solid",
+    "region": {
+     "box": {
+      "zmax": 0.003125
+     }
+    }
+   }
+  ],
+  "projection": {
+   "enabled": false
+  },
+  "optimizer": {
+   "max_iterations": 220,
+   "change_tolerance": 0.01,
+   "objective_tolerance": 0.001,
+   "objective_window": 10,
+   "move_limit": 0.1,
+   "history_stride": 2
+  }
+ },
+ "output": {
+  "csv": true,
+  "vtk": false,
+  "density_history": true
+ }
+}

@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Options</title>
+<style>
+  html, body { margin: 0; width: 1080px; height: 1080px; overflow: hidden; background: #0d1117; }
+  canvas { position: absolute; left: 0; top: 0; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1080"></canvas>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const params = new URLSearchParams(location.search);
+const info = await (await fetch(params.get('meshes') + '/index.json')).json();
+const D = info.count;                       // contour meshes: full knot ... final design
+
+// ---- timeline (frames at 30 fps) ----------------------------------------------
+const T = { intro: 45, dissolve: 210, hold: 105 };
+const START = { dissolve: T.intro, hold: T.intro + T.dissolve };
+const TOTAL = START.hold + T.hold;
+window.TOTAL_FRAMES = TOTAL;
+
+// ---- the look of the reference knot render -----------------------------------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1080, 1080, false);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1117);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 1000);
+const view = new THREE.Vector3(...(info.view || [3, 1.6, 4])).normalize();
+const fit = (info.radius * info.scale) / Math.sin(THREE.MathUtils.degToRad(15)) * (info.margin || 1.08);
+camera.position.copy(view).multiplyScalar(fit);
+camera.lookAt(0, 0, 0);
+const material = new THREE.MeshStandardMaterial({ color: 0xc9ced6, metalness: 0.7, roughness: 0.3 });
+
+const knot = new THREE.Mesh(new THREE.BufferGeometry(), material);
+knot.scale.setScalar(info.scale);
+const upright = new THREE.Group();          // model z up on screen
+upright.rotation.x = -Math.PI / 2;
+const c = info.center || [0, 0, 0];
+knot.position.set(-c[0] * info.scale, -c[1] * info.scale, -c[2] * info.scale);
+const spin = new THREE.Group();             // turn about the model's vertical axis
+spin.add(knot);
+upright.add(spin);
+scene.add(upright);
+
+const cache = new Map();
+async function meshAt(index) {
+  if (!cache.has(index)) {
+    const buf = await (await fetch(`${params.get('meshes')}/${String(index).padStart(4, '0')}.bin`)).arrayBuffer();
+    const head = new Uint32Array(buf, 0, 2);
+    const nv = head[0], nf = head[1];
+    const pos = new Float32Array(buf, 8, nv * 3);
+    const idx = new Uint32Array(buf, 8 + nv * 12, nf * 3);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    cache.clear();
+    cache.set(index, g);
+  }
+  return cache.get(index);
+}
+
+const ease = (v) => { v = Math.min(1, Math.max(0, v)); return v * v * (3 - 2 * v); };
+function meshIndex(frame) {
+  if (frame < START.dissolve) return 0;
+  if (frame >= START.hold) return D - 1;
+  return Math.round((frame - START.dissolve) / (T.dissolve - 1) * (D - 1));
+}
+
+// Stills for comparisons: ?still=1 renders mesh number `frame` at the
+// rotation of frame 270.
+const still = params.has('still');
+window.renderFrame = async (frame) => {
+  const g = await meshAt(still ? frame : meshIndex(frame));
+  if (still) frame = Number(params.get('at') || 270);
+  if (knot.geometry !== g) { knot.geometry = g; }
+  // A slow turn about the knot's own axis, easing in and out.
+  spin.rotation.z = THREE.MathUtils.degToRad((info.spin0 ?? -30) + (info.spin ?? 60) * (frame / (TOTAL - 1)));
+  renderer.render(scene, camera);
+  return true;
+};
+await window.renderFrame(0);
+window.__ready = true;
+</script>
+</body>
+</html>
